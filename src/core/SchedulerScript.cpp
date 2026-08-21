@@ -44,18 +44,23 @@ std::string generate(const RemoteJobSpec& spec)
             << "#SBATCH --nodes=" << nodes << "\n"
             << "#SBATCH --ntasks-per-node=" << perNode << "\n"
             << "#SBATCH --time=" << spec.walltime << "\n";
-        // --mem is per node in SLURM, which is what the field means.
-        if (spec.memoryMbPerNode > 0)
-            out << "#SBATCH --mem=" << spec.memoryMbPerNode << "M\n";
+        // --mem is per node in SLURM, which is what the field means. The
+        // field itself stays MB internally (unchanged — PBS/SGE below still
+        // read it as MB) but SLURM's own directive is emitted in GB (Task 3:
+        // the Scheduler tab's memory field switched from MB to GB), rounded
+        // UP to the next whole GB rather than down — under-requesting
+        // memory risks an OOM kill, over-requesting by less than 1 GB does
+        // not.
+        if (spec.memoryMbPerNode > 0) {
+            const int memoryGbPerNode = (spec.memoryMbPerNode + 1023) / 1024;
+            out << "#SBATCH --mem=" << memoryGbPerNode << "G\n";
+        }
         if (!spec.queue.empty())
             out << "#SBATCH --partition=" << spec.queue << "\n";
         // SLURM-only extensions (Task 4): each "" / 0 = omit, so a spec
         // that never touches these produces exactly the output it always
-        // did.
-        if (!spec.account.empty())
-            out << "#SBATCH --account=" << spec.account << "\n";
-        if (!spec.qos.empty())
-            out << "#SBATCH --qos=" << spec.qos << "\n";
+        // did. (account/qos removed in Task 3 — see RemoteJobSpec's own
+        // comment on where they went: extraDirectives.)
         if (spec.cpusPerTask > 1)
             out << "#SBATCH --cpus-per-task=" << spec.cpusPerTask << "\n";
         if (spec.gpusPerNode > 0)

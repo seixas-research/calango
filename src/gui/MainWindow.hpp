@@ -529,6 +529,12 @@ private Q_SLOTS:
     void showAdsorption();
     void showWarrenCowley();
     void showLocalEntropy();
+    /// Analysis → "Benzene-Ring / sp2 Percolation Analysis…": six-membered
+    /// carbon rings intact/disrupted from GrapheneOxideBuilder's own
+    /// functional-group labelling, grouped into connected sp2 domains,
+    /// with a periodic percolation check per axis. Current structure or
+    /// every frame of a loaded trajectory.
+    void showRingPercolation();
     /// Analysis → "Partial Charge Analysis…": Bader / Voronoi / Hirshfeld
     /// partitioning as a background DFT job, tabulated and colour-mapped.
     void showPartialCharge();

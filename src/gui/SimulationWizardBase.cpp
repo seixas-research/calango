@@ -16,6 +16,8 @@
 
 #include <QCheckBox>
 #include <QComboBox>
+#include <QCoreApplication>
+#include <QDir>
 #include <QFileInfo>
 #include <QDoubleSpinBox>
 #include <QDoubleValidator>
@@ -241,6 +243,14 @@ QWidget* SimulationWizardBase::buildCalculatorPage()
     // potentials below, and priced accordingly.
     addCalc(tr("xTB (semi-empirical tight binding)"), core::CalculatorKind::Xtb);
     addCalc(tr("DFTB+ (tight binding DFT)"), core::CalculatorKind::DftbPlus);
+    // Calango's OWN Slater-Koster engine — unlike CalangoDft below, this is
+    // a real, working, tested implementation (see src/dftb/), not a
+    // scaffold, so it belongs in its natural family position rather than
+    // the "Experimental" section. Placed right after DFTB+: the two read
+    // the same .skf parameter format and share this page's Slater-Koster
+    // settings group (buildDftbGroup()).
+    addCalc(tr("Calango DFTB (native, tight binding)"),
+            core::CalculatorKind::CalangoDftb);
     separate();
 
     // -- Machine-learning interatomic potentials ----------------------------
@@ -1212,15 +1222,23 @@ void SimulationWizardBase::updateXtbRows()
 
 QWidget* SimulationWizardBase::buildDftbGroup(QWidget* parent)
 {
-    dftbGroup_ = new QGroupBox(tr("DFTB+ settings"), parent);
+    // Shared between DFTB+ (external `dftb+` binary, via ASE) and
+    // CalangoDftb (Calango's own native Slater-Koster engine, src/dftb) —
+    // both take exactly the same Slater-Koster directory + SCC/mixing/
+    // filling-temperature knobs, so the title and note below are worded to
+    // apply to either rather than duplicating this whole group for one
+    // engine that reads the same file format the same way.
+    dftbGroup_ = new QGroupBox(tr("DFTB settings"), parent);
     auto* form = new QFormLayout(dftbGroup_);
 
     auto* note = new QLabel(
-        tr("DFTB+ needs a <b>Slater-Koster parameter set</b> (mio, 3ob, … "
+        tr("DFTB needs a <b>Slater-Koster parameter set</b> (mio, 3ob, … "
            "from dftb.org): the pairwise .skf tables are the "
            "parameterization, so element coverage is decided by the set, "
-           "not by the code. The k-point grid comes from the shared "
-           "Brillouin-zone controls above."),
+           "not by the code — this applies equally to the external DFTB+ "
+           "binary and to Calango's own native engine (CalangoDftb), which "
+           "reads the same .skf files with its own parser. The k-point grid "
+           "comes from the shared Brillouin-zone controls above."),
         dftbGroup_);
     note->setWordWrap(true);
     note->setTextFormat(Qt::RichText);
@@ -2499,7 +2517,12 @@ void SimulationWizardBase::updateCalculatorEnabled()
             updateXtbRows();
     }
     if (dftbGroup_) {
-        const bool isDftb = kind == core::CalculatorKind::DftbPlus;
+        // Shared between DFTB+ (external binary) and CalangoDftb (native) —
+        // both read the same .skf Slater-Koster format and take the same
+        // SCC/mixing/filling-temperature controls, so one group serves
+        // both rather than duplicating it (see buildDftbGroup()'s own doc).
+        const bool isDftb = kind == core::CalculatorKind::DftbPlus
+            || kind == core::CalculatorKind::CalangoDftb;
         dftbGroup_->setVisible(isDftb);
         if (isDftb)
             updateDftbRows();
@@ -2946,7 +2969,7 @@ core::CalculatorConfig SimulationWizardBase::baseCalculatorConfig() const
         c.xtbMaxIterations = xtbMaxIterSpin_->value();
     }
 
-    // -- DFTB+ --------------------------------------------------------------
+    // -- DFTB+ / CalangoDftb (shared group — see buildDftbGroup()) ----------
     if (dftbSccCheck_) {
         c.dftbSlakoDir = dftbSlakoEdit_->text().trimmed().toStdString();
         c.dftbScc = dftbSccCheck_->isChecked();
@@ -2961,6 +2984,16 @@ core::CalculatorConfig SimulationWizardBase::baseCalculatorConfig() const
         c.dftbMaxSccIterations = dftbMaxSccSpin_->value();
         c.dftbFillingTemperatureK = dftbFillingTempSpin_->value();
     }
+    // The native calango-dftb-run binary ships beside whichever `calango`
+    // instance is currently running (see CMakeLists.txt's install() rules —
+    // same directory on every platform, Contents/MacOS on macOS). Resolved
+    // here rather than baked into the generator: this is Qt-free code and
+    // cannot call QCoreApplication itself (see CalculatorConfig.hpp's own
+    // doc on this field).
+    c.dftbNativeBinaryPath =
+        QDir(QCoreApplication::applicationDirPath())
+            .filePath(QStringLiteral("calango-dftb-run"))
+            .toStdString();
 
     // -- GROMACS ------------------------------------------------------------
     if (gromacsForceFieldCombo_) {
@@ -3052,7 +3085,11 @@ void SimulationWizardBase::updateStage()
     nextButton_->setVisible(!onReview);
     exportButton_->setVisible(onReview);
     runLocalButton_->setVisible(onReview);
-    runRemoteButton_->setVisible(onReview);
+    // CalangoDftb ships as a binary beside this application, not on a
+    // remote cluster — offering "Run Remote" for it would fail the moment
+    // the generated wrapper tries to exec a path that only exists here.
+    runRemoteButton_->setVisible(
+        onReview && selectedCalculator() != core::CalculatorKind::CalangoDftb);
     if (onReview)
         runLocalButton_->setDefault(true);
 }

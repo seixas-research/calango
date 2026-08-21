@@ -1709,15 +1709,62 @@ void ViewportWidget::wheelEvent(QWheelEvent* event)
     update();
 }
 
+bool ViewportWidget::focusNextPrevChild(bool next)
+{
+    // THIS is the real interception point for [Tab]/[Shift+Tab] cycling —
+    // not keyPressEvent() below, even though that override looks like it
+    // should handle it. QWidget::event() special-cases a literal
+    // Tab/Shift+Tab/Backtab keypress BEFORE keyPressEvent() ever runs: it
+    // calls focusNextPrevChild(bool) directly and only falls through to
+    // keyPressEvent() if THAT returns false. A keyPressEvent() override
+    // alone — however correct its own logic — is simply never reached for
+    // this specific family of keys, which is exactly why the previous
+    // implementation (which had ONLY the keyPressEvent() branch below, with
+    // no focusNextPrevChild() override at all) silently did nothing: Qt's
+    // own focus traversal ran first, moved focus to the next widget in the
+    // window, returned true, and keyPressEvent() was never called.
+    //
+    // Overriding focusNextPrevChild() here also gets the "only while the
+    // viewport has focus" scoping for free, by construction rather than by
+    // a runtime check: Qt only calls THIS widget's focusNextPrevChild()
+    // when THIS widget currently holds keyboard focus (Qt::StrongFocus,
+    // set in the constructor, is what lets it hold focus at all). A
+    // spinbox or line edit elsewhere in the window has its own focus chain
+    // and never reaches this override, so their Tab handling is untouched.
+    //
+    // Deferring to ShortcutRegistry's CURRENT binding — not a hardcoded
+    // Qt::Key_Tab — is what makes a remap behave correctly: if the user
+    // rebinds "viewport.tab.next" away from Tab, a literal Tab keypress
+    // here no longer matches `wanted` below, so it falls through to
+    // QOpenGLWidget::focusNextPrevChild(), i.e. ordinary focus traversal
+    // resumes — and the new binding (now some non-Tab key Qt never routes
+    // through this method) fires through the ordinary keyPressEvent() path
+    // below instead, with no special-casing needed for that side at all.
+    const QKeySequence wanted = next
+        ? ShortcutRegistry::binding(QStringLiteral("viewport.tab.next"))
+        : ShortcutRegistry::binding(QStringLiteral("viewport.tab.previous"));
+    const bool matches = next ? wanted == QKeySequence(Qt::Key_Tab)
+                              : wanted == QKeySequence(Qt::SHIFT | Qt::Key_Tab);
+    if (matches) {
+        Q_EMIT cycleTabRequested(next ? 1 : -1);
+        return true;
+    }
+    return QOpenGLWidget::focusNextPrevChild(next);
+}
+
 void ViewportWidget::keyPressEvent(QKeyEvent* event)
 {
-    // [Tab]/[Shift+Tab] cycles the workspace tab bar, but ONLY while this
-    // widget itself holds keyboard focus (Qt::StrongFocus, set in the
-    // constructor) — returning here without calling the base class is what
-    // stops Qt's own Tab-focus-traversal from ALSO firing for this one key
-    // press; every other widget in the app (text fields, spin boxes,
-    // dialogs) never routes through this override at all, so their Tab
-    // handling is completely untouched.
+    // Defensive fallback only: focusNextPrevChild() above is the real
+    // interception point and handles the common case entirely on its own
+    // (see its own comment for why). This branch only still matters if
+    // QOpenGLWidget::focusNextPrevChild() ever returns false for a literal
+    // Tab/Backtab press that ISN'T currently bound to tab-cycling (e.g.
+    // nowhere else in the window can take focus) — QWidget::event() falls
+    // through to keyPressEvent() in exactly that case, and the check here
+    // (correctly, via the same registry lookup) still declines to cycle,
+    // so behaviour stays correct either way. Kept rather than deleted so
+    // that guarantee doesn't rest on an unwritten assumption about when
+    // Qt's own traversal succeeds.
     //
     // Key_Backtab is not a platform quirk to route around, it is the
     // regular way Shift+Tab arrives on several platforms (X11 among them) —

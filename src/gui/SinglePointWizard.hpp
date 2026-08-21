@@ -36,9 +36,18 @@ protected:
     /// against another code. Everything else stays on the base class's default
     /// until the engine can actually serve it — an engine offered in a wizard
     /// whose run path cannot dispatch to it is worse than one not offered.
+    ///
+    /// CalangoDftb (the native Slater-Koster engine) belongs here for the
+    /// same reason, and for an additional one specific to it: its forces are
+    /// finite-difference (see src/dftb/DftbForces.hpp), so a single point —
+    /// one evaluation, not a hot optimizer/MD loop calling get_forces()
+    /// hundreds of times — is the only task that cost is acceptable for; see
+    /// SimulationWizardBase::calculatorAllowed()'s own doc for why it is
+    /// excluded everywhere else by default.
     bool calculatorAllowed(core::CalculatorKind kind) const override
     {
         return kind == core::CalculatorKind::CalangoDft
+            || kind == core::CalculatorKind::CalangoDftb
             || GpawElectronicWizard::calculatorAllowed(kind);
     }
 

@@ -46,12 +46,14 @@ calango::gui::ClusterPreset sample()
     preset.parallelEnvironment = QStringLiteral("mpi");
     preset.setupLines = QStringLiteral("module load gpaw\nconda activate dft");
     preset.vaspPotcarPath = QStringLiteral("/gpfs/projects/bsc/pseudo/potcars");
-    preset.account = QStringLiteral("phys-2026");
-    preset.qos = QStringLiteral("priority");
+    // account/qos removed (Task 3) -- extraDirectives below is the escape
+    // hatch a cluster requiring either now uses.
     preset.cpusPerTask = 8;
     preset.gpusPerNode = 2;
     preset.nodeList = QStringLiteral("work1");
-    preset.extraDirectives = QStringLiteral("#SBATCH --mail-type=END");
+    preset.extraDirectives = QStringLiteral(
+        "#SBATCH --account=phys-2026\n#SBATCH --qos=priority\n"
+        "#SBATCH --mail-type=END");
     preset.command = QStringLiteral("mpirun -n 4 gpaw python run_gpaw.py\n\nconda deactivate");
     return preset;
 }
@@ -79,14 +81,13 @@ int main(int argc, char** argv)
         check(restored.vaspPotcarPath == original.vaspPotcarPath
                   && !restored.vaspPotcarPath.isEmpty(),
               "and the per-cluster VASP POTCAR override (Task 1)");
-        check(restored.account == original.account
-                  && restored.qos == original.qos
-                  && restored.cpusPerTask == 8 && restored.gpusPerNode == 2
+        check(restored.cpusPerTask == 8 && restored.gpusPerNode == 2
                   && restored.nodeList == original.nodeList
                   && restored.extraDirectives == original.extraDirectives
                   && restored.command == original.command,
-              "and every Task 4 SLURM extension (account/QOS/cpus-per-task/"
-              "GPUs/node list/extra directives/command)");
+              "and every Task 4 SLURM extension (cpus-per-task/GPUs/node "
+              "list/extra directives/command) -- account/QOS travel inside "
+              "extraDirectives now (Task 3), already covered above");
     }
 
     std::printf("The password is not persisted:\n");
@@ -188,21 +189,44 @@ int main(int argc, char** argv)
             QStringLiteral("[{\"name\":\"Legacy\",\"host\":\"old.host\"}]"));
         check(old.size() == 1, "a preset from an older build still loads");
         check(old[0].nodes == 1 && old[0].tasksPerNode == 1
-                  && old[0].walltime == QStringLiteral("01:00:00")
+                  && old[0].walltime == QStringLiteral("48:00:00")
                   && old[0].port == 22,
               "with usable defaults for the fields it predates — an empty "
-              "walltime would be submitted verbatim and rejected");
+              "walltime would be submitted verbatim and rejected, and the "
+              "default itself is 48:00:00 now (Task 3), not 01:00:00");
         check(old[0].vaspPotcarPath.isEmpty(),
               "including an empty VASP POTCAR override, which just leaves "
               "the local default in charge — not a crash on the field it "
               "predates");
-        check(old[0].account.isEmpty() && old[0].qos.isEmpty()
-                  && old[0].cpusPerTask == 1 && old[0].gpusPerNode == 0
+        check(old[0].cpusPerTask == 1 && old[0].gpusPerNode == 0
                   && old[0].nodeList.isEmpty()
                   && old[0].extraDirectives.isEmpty() && old[0].command.isEmpty(),
               "and every Task 4 SLURM extension it predates too — cpusPerTask "
               "specifically defaults to 1, not 0, matching SLURM's own "
               "default so an old preset does not suddenly request 0 cores");
+
+        // A preset that DID set an explicit walltime keeps ITS OWN value —
+        // changing the default-constructed fallback (above) must never
+        // reach back and override a value someone actually saved.
+        const QVector<ClusterPreset> explicitWalltime = ClusterPresets::fromJsonText(
+            QStringLiteral(
+                "[{\"name\":\"Old\",\"host\":\"h\",\"walltime\":\"02:30:00\"}]"));
+        check(explicitWalltime.size() == 1
+                  && explicitWalltime[0].walltime == QStringLiteral("02:30:00"),
+              "an explicitly-saved walltime survives the new-default-only "
+              "rule (Task 3) unchanged");
+
+        // A preset written BEFORE Task 3 removed account/QOS may still carry
+        // those two keys in its raw JSON (a real file on disk, not just a
+        // predates-the-field gap) — it must still load cleanly, the keys
+        // simply going unread.
+        const QVector<ClusterPreset> withAccountQos = ClusterPresets::fromJsonText(
+            QStringLiteral("[{\"name\":\"Old2\",\"host\":\"h\","
+                           "\"account\":\"phys-2026\",\"qos\":\"priority\"}]"));
+        check(withAccountQos.size() == 1 && withAccountQos[0].name == QStringLiteral("Old2"),
+              "a preset whose JSON still has \"account\"/\"qos\" keys "
+              "(Task 3 removed both fields) loads without error, the keys "
+              "simply ignored");
 
         // A nameless entry can never be selected, saved over or deleted.
         check(ClusterPresets::fromJsonText(

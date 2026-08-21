@@ -14,6 +14,7 @@ QString presetName(core::CalculatorKind kind)
 {
     switch (kind) {
     case core::CalculatorKind::CalangoDft: return QStringLiteral("CalangoDFT");
+    case core::CalculatorKind::CalangoDftb: return QStringLiteral("CalangoDFTB");
     case core::CalculatorKind::Gpaw: return QStringLiteral("GPAW");
     case core::CalculatorKind::Mace: return QStringLiteral("MACE");
     case core::CalculatorKind::QuantumEspresso:
@@ -61,6 +62,8 @@ QString displayName(core::CalculatorKind kind)
     // there are two engines.
     case core::CalculatorKind::CalangoDft:
         return QStringLiteral("Calango Native DFT (experimental)");
+    case core::CalculatorKind::CalangoDftb:
+        return QStringLiteral("Calango DFTB (native)");
     case core::CalculatorKind::Gpaw: return QStringLiteral("GPAW");
     case core::CalculatorKind::Mace: return QStringLiteral("MACE");
     case core::CalculatorKind::QuantumEspresso:

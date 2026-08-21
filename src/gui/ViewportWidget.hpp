@@ -445,6 +445,13 @@ protected:
     void mouseDoubleClickEvent(QMouseEvent* event) override;
     void wheelEvent(QWheelEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
+    /// Qt intercepts a literal Tab/Shift+Tab/Backtab keypress INSIDE
+    /// QWidget::event(), calling this before keyPressEvent() ever runs —
+    /// so the Tab-cycling logic has to live here, not in keyPressEvent(),
+    /// or it is unreachable for the exact keys it exists to handle. See
+    /// the .cpp for the full explanation and why keyPressEvent() still
+    /// keeps its own (now defensive-fallback) copy of the same check.
+    bool focusNextPrevChild(bool next) override;
 
 private:
     /// Ray-cast from a screen position against atom display spheres.

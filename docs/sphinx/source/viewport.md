@@ -42,10 +42,29 @@ An editable angle step (1.0–180.0°, default **15.0°**, step 5.0) feeds six b
 
 {kbd}`Tab` switches to the next open structure tab and {kbd}`Shift+Tab` to the previous one, wrapping around at the ends — a no-op with a single tab open. Both are scoped to the viewport itself: they only fire while the 3D canvas has keyboard focus (click into it, or into anything inside it, first), so {kbd}`Tab` keeps its ordinary meaning — move to the next field — everywhere else in the app, text fields and dialogs included. Also remappable; see below.
 
+### Showing and hiding panels
+
+{kbd}`Ctrl+0` through {kbd}`Ctrl+9` ({kbd}`Cmd+0`…{kbd}`Cmd+9` on macOS — the same shortcut, Qt maps {kbd}`Ctrl` to {kbd}`Cmd` there on its own) toggle ten of the application's docked panels:
+
+| Key | Panel |
+|---|---|
+| {kbd}`Ctrl+0` | Structure |
+| {kbd}`Ctrl+1` | Volumetric Data |
+| {kbd}`Ctrl+2` | Additional Overlays |
+| {kbd}`Ctrl+3` | Processes |
+| {kbd}`Ctrl+4` | Representation |
+| {kbd}`Ctrl+5` | Spatial References |
+| {kbd}`Ctrl+6` | Visual Effects |
+| {kbd}`Ctrl+7` | Orchestration |
+| {kbd}`Ctrl+8` | HPC |
+| {kbd}`Ctrl+9` | Results |
+
+Each one shows the panel (bringing it to front, if hidden) or hides it, mirroring the checkbox next to the same panel's entry in {menuselection}`View` — which now displays the shortcut too. Also remappable; see below.
+
 (remapping-shortcuts)=
 ## Remapping shortcuts
 
-{menuselection}`Edit --> Preferences --> Hotkeys` lists every remappable shortcut — the six mouse modes and tab-cycling above, the camera resets ({kbd}`F`, {kbd}`O`), and {menuselection}`Edit --> Undo/Redo/Delete Selected Atoms` — as a table of action and key. Click a row's shortcut field, then press the new key or combination; a key already used elsewhere, including by a fixed (non-remappable) shortcut such as {kbd}`Ctrl+P` for Preferences itself, is refused with a message naming the clash rather than silently duplicated. Each row has its own {guilabel}`Reset` button, and {guilabel}`Reset All to Defaults` restores every one at once. Changes apply immediately — no restart, and no separate Apply/OK step, matching the rest of Preferences.
+{menuselection}`Edit --> Preferences --> Hotkeys` lists every remappable shortcut — the six mouse modes and tab-cycling above, the ten panel toggles, the camera resets ({kbd}`F`, {kbd}`O`), and {menuselection}`Edit --> Undo/Redo/Delete Selected Atoms` — as a table of action and key. Click a row's shortcut field, then press the new key or combination; a key already used elsewhere, including by a fixed (non-remappable) shortcut such as {kbd}`Ctrl+P` for Preferences itself, is refused with a message naming the clash rather than silently duplicated. Each row has its own {guilabel}`Reset` button, and {guilabel}`Reset All to Defaults` restores every one at once. Changes apply immediately — no restart, and no separate Apply/OK step, matching the rest of Preferences.
 
 ---
 

@@ -641,6 +641,16 @@ int main(int argc, char** argv)
             nonScc.dftbSlakoDir.clear(); // the EDIT-ME branch
             dump("dftb_nonscc.py", nonScc);
 
+            CalculatorConfig dftbNative;
+            dftbNative.calculator = CalculatorKind::CalangoDftb;
+            dftbNative.task = TaskKind::SinglePoint;
+            dftbNative.dftbSlakoDir = "/opt/slako/mio-1-1";
+            dftbNative.dftbNativeBinaryPath = "/opt/calango/calango-dftb-run";
+            dump("dftb_native_scc.py", dftbNative);
+            CalculatorConfig dftbNativeNonScc = dftbNative;
+            dftbNativeNonScc.dftbScc = false;
+            dump("dftb_native_nonscc.py", dftbNativeNonScc);
+
             CalculatorConfig gromacs;
             gromacs.calculator = CalculatorKind::Gromacs;
             gromacs.task = TaskKind::SinglePoint;
@@ -5110,6 +5120,75 @@ int main(int argc, char** argv)
         const std::string unset = AseScriptGenerator::calculatorSnippet(blank);
         checkContains(unset, "EDIT ME",
                       "a missing Slater-Koster dir is flagged, not defaulted");
+    }
+
+    // -- Calango DFTB (native) -------------------------------------------------
+    std::printf("Calango DFTB (native) calculator:\n");
+    {
+        CalculatorConfig dftb;
+        dftb.calculator = CalculatorKind::CalangoDftb;
+        dftb.dftbSlakoDir = "/opt/slako/mio-1-1";
+        dftb.dftbScc = true;
+        dftb.dftbSccTolerance = 1e-5;
+        dftb.dftbMaxSccIterations = 100;
+        dftb.dftbFillingTemperatureK = 0.0;
+        dftb.kpts[0] = 6;
+        dftb.kpts[1] = 6;
+        dftb.kpts[2] = 4;
+        dftb.dftbNativeBinaryPath = "/Applications/Calango.app/Contents/MacOS/calango-dftb-run";
+        const std::string script = AseScriptGenerator::calculatorSnippet(dftb);
+
+        checkContains(script, "write(\"structure.extxyz\", atoms)",
+                      "the structure is exported for the native binary to read");
+        checkContains(script, "_fh.write(\"task singlepoint\\n\")",
+                      "the manifest's task is singlepoint");
+        checkContains(script, "skdir /opt/slako/mio-1-1",
+                      "the Slater-Koster directory reaches the manifest");
+        checkContains(script, "_fh.write(\"scc true\\n\")",
+                      "SCC is on by default");
+        checkContains(script, "for v in (6, 6, 4))",
+                      "the shared k-grid reaches the manifest-writing "
+                      "expression (formatted at RUN time, not baked into "
+                      "this generated source as literal text)");
+        checkContains(script,
+                      "[r\"/Applications/Calango.app/Contents/MacOS/"
+                      "calango-dftb-run\", \"dftb_manifest.txt\"]",
+                      "the resolved native-binary path reaches the subprocess call");
+        checkContains(script, "for _line in _proc.stdout:",
+                      "the native binary's stdout (CALANGO_* markers) is relayed "
+                      "line by line, not swallowed");
+        checkContains(script, "raise RuntimeError(",
+                      "a non-zero exit from the native binary is surfaced, not "
+                      "silently ignored");
+
+        // The generic single-point tail (right after calculatorSnippet's own
+        // output, in the full script) needs an atoms.calc — CalangoDftb has
+        // no ASE calculator of its own, so emitCalculator() must build a
+        // SinglePointCalculator from the native engine's own JSON.
+        const std::string full =
+            AseScriptGenerator::generate(dftb, "structure.extxyz");
+        checkContains(full, "from ase.calculators.singlepoint import "
+                      "SinglePointCalculator",
+                      "the full script wraps the native result in a "
+                      "SinglePointCalculator");
+        checkContains(full, "atoms.calc = SinglePointCalculator(",
+                      "so the generic single-point tail's "
+                      "get_potential_energy()/get_forces() have something to "
+                      "call");
+        checkContains(full, "fermi_energy=_dftb_result[\"fermi_eV\"]",
+                      "and the Fermi level round-trips through "
+                      "Calculator.get_fermi_level()");
+
+        // Non-SCC: the tolerance/iteration-count knobs describe a cycle that
+        // does not run — DftbTaskConfig.hpp's parser does not actually
+        // require their ABSENCE (unlike DFTB+'s HSD emission), but the
+        // manifest's own "scc false" line is the one thing that MUST be
+        // right, since DftbEngine.cpp branches on it directly.
+        CalculatorConfig nonScc = dftb;
+        nonScc.dftbScc = false;
+        const std::string oneShot = AseScriptGenerator::calculatorSnippet(nonScc);
+        checkContains(oneShot, "_fh.write(\"scc false\\n\")",
+                      "non-SCC (DFTB0) is honored in the manifest");
     }
 
     // -- GROMACS --------------------------------------------------------------

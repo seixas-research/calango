@@ -132,6 +132,35 @@ enum class CalculatorKind {
     /// rather than landing all at once — but nothing in the application may
     /// treat a result from it as a number until those pieces exist.
     CalangoDft,
+
+    /// Calango's OWN Slater-Koster (SCC-)DFTB engine: parses the standard
+    /// .skf parameter format with its own parser (src/dftb), builds and
+    /// diagonalizes the tight-binding Hamiltonian natively in C++ — it does
+    /// not link or shell out to DFTB+ or any other tight-binding package
+    /// (see src/dftb/SlaterKosterFile.hpp for exactly what "native" means
+    /// here and the license note on parameter sets).
+    ///
+    /// UNLIKE CalangoDft above, this is NOT an in-process scaffold: it runs
+    /// out-of-process, launched the same way every scripted engine is (a
+    /// thin, self-contained Python wrapper — see
+    /// core::emitDftbNativeWrapper — writes the structure and a plain-text
+    /// task manifest, then execs the native `calango-dftb-run` binary and
+    /// relays its stdout), so it participates fully in job staging,
+    /// remote... actually LOCAL ONLY (see below), and the existing
+    /// three-place result-dispatch convention.
+    ///
+    /// STATUS: non-SCC (DFTB0) and SCC (DFTB2) both implemented; s and p
+    /// orbitals only (d parsed, not yet assembled — FUTURE.md); analytic
+    /// forces are NOT implemented — forces are by finite difference of the
+    /// total energy (see src/dftb/DftbForces.hpp for why, following
+    /// CalangoDFTEngine's own ForceCalculator precedent), which is fine for
+    /// a single point but is why this engine is offered for SinglePoint
+    /// only, not geometry optimization or MD (restricting task support
+    /// honestly rather than offering a run path that silently costs 6N
+    /// extra SCF solves per relaxation step). LOCAL EXECUTION ONLY: the
+    /// native binary ships beside the app, not on a remote cluster, so
+    /// wizards offering this engine should not present "Run Remote" for it.
+    CalangoDftb,
 };
 
 /// How the LAMMPS calculator talks to LAMMPS. ASE ships two interfaces, and
@@ -208,6 +237,7 @@ constexpr CalculatorFamily calculatorFamily(CalculatorKind kind)
         return CalculatorFamily::AbInitio;
     case CalculatorKind::Xtb:
     case CalculatorKind::DftbPlus:
+    case CalculatorKind::CalangoDftb:
         return CalculatorFamily::SemiEmpirical;
     case CalculatorKind::Mace:
     case CalculatorKind::DeepMd:
@@ -256,6 +286,7 @@ constexpr bool usesKpointGrid(CalculatorKind kind)
     case CalculatorKind::OpenMx:
     case CalculatorKind::Fleur:
     case CalculatorKind::DftbPlus:
+    case CalculatorKind::CalangoDftb:
         return true;
     default:
         break;
@@ -1207,6 +1238,21 @@ struct CalculatorConfig {
     /// converted to Hartree in the script because that is the unit DFTB+
     /// reads when no HSD modifier is given.
     double dftbFillingTemperatureK = 0.0;
+
+    // -- Calango's own native DFTB engine (CalculatorKind::CalangoDftb) -----
+    // Shares dftbSlakoDir/dftbScc/dftbSccTolerance/dftbMaxSccIterations/
+    // dftbFillingTemperatureK above — same physics, same "Slater-Koster
+    // directory" concept, one settings group in the wizard (see
+    // SimulationWizardBase::buildDftbGroup) rather than two near-identical
+    // ones. This field is the one thing genuinely specific to the NATIVE
+    // path: where the `calango-dftb-run` binary that ships beside this
+    // running instance of the app actually is. Resolved once by the GUI
+    // layer (QCoreApplication::applicationDirPath(), same directory the
+    // binary is installed into on every platform — see CMakeLists.txt's
+    // install() rules) and passed in as a plain string for the same reason
+    // vaspPotcarPath/espressoPseudoDir/siestaPseudoDir are: this is Qt-free
+    // code and cannot resolve it itself.
+    std::string dftbNativeBinaryPath;
 
     // -- GROMACS (classical biomolecular MM) --------------------------------
     //

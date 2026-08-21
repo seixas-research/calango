@@ -28,6 +28,7 @@
 #include "gui/PointOfViewDialog.hpp"
 #include "gui/RayTraceDialog.hpp"
 #include "gui/RdfDialog.hpp"
+#include "gui/RingPercolationDialog.hpp"
 #include "gui/BondEditorDialog.hpp"
 #include "gui/CellAxesTabs.hpp"
 #include "gui/CitationsPanel.hpp"
@@ -267,6 +268,31 @@ constexpr double kTrajectoryPlaybackFps = 15.0;
 //      by objectName, so a layout saved under 15 holds state for a dock that
 //      no longer exists — the renamed dock would come up stranded.
 constexpr int kLayoutVersion = 17;
+
+/// (dock objectName, ShortcutRegistry id) for the ten Ctrl/Cmd+0..9
+/// panel-visibility toggles (Qt::CTRL maps to Cmd on macOS on its own, no
+/// per-platform branching needed) — shared by createMenusAndDocks(), which
+/// wires them up once, and applyShortcutBindings(), which re-reads a remap.
+/// Looked up by objectName via findChild() rather than by member pointer so
+/// the same code works uniformly for docks promoted to MainWindow.hpp
+/// members and the ones that are createMenusAndDocks()-local. Digit order
+/// matches the View menu's own dock order.
+struct PanelShortcut {
+    const char* dockObjectName;
+    const char* shortcutId;
+};
+constexpr PanelShortcut kPanelShortcuts[] = {
+    {"structureDock", "panel.toggle.structure"},
+    {"volumetricDock", "panel.toggle.volumetricData"},
+    {"overlayDock", "panel.toggle.additionalOverlays"},
+    {"processDock", "panel.toggle.processes"},
+    {"representationDock", "panel.toggle.representation"},
+    {"cellAxesVectorsDock", "panel.toggle.spatialReferences"},
+    {"visualEffectsDock", "panel.toggle.visualEffects"},
+    {"orchestrationDock", "panel.toggle.orchestration"},
+    {"hpcDock", "panel.toggle.hpc"},
+    {"resultsDock", "panel.toggle.results"},
+};
 
 /// Painted icons for the frame-panel camera toolbar (icon-only buttons).
 /// Plane icons use the axes-triad colors: x red, y green, z blue.
@@ -1545,6 +1571,18 @@ void MainWindow::createMenusAndDocks()
     // Warren-Cowley (short-range order) moved to Modules → Alloys.
     analysisMenu->addAction(tr("Local &Entropy Analysis…"),
                             this, &MainWindow::showLocalEntropy);
+    // Graphene-oxide-specific, but still a real-space measurement built on
+    // the same bonds this block already reads — one level further than
+    // coordination number: rings are cycles in the bond graph, and sp2
+    // domains are the rings' own adjacency graph. Meaningless (reports zero
+    // rings) on a structure with no carbon framework, so it stays here
+    // rather than gathering its own top-level menu for one entry.
+    analysisMenu->addAction(tr("&Benzene-Ring / sp2 Percolation Analysis…"),
+                            this, &MainWindow::showRingPercolation)
+        ->setToolTip(tr("Six-membered carbon rings intact/disrupted from the "
+                        "Graphene Oxide Builder's own functional-group "
+                        "classification, grouped into connected sp2 domains, "
+                        "with a periodic percolation check per axis"));
 
     analysisMenu->addSeparator();
     // -- The same structure in reciprocal space ------------------------------
@@ -2240,6 +2278,40 @@ void MainWindow::createMenusAndDocks()
     viewMenu->addAction(orchestrationDock_->toggleViewAction());
     viewMenu->addAction(hpcDock_->toggleViewAction());
     viewMenu->addAction(jobDock_->toggleViewAction());
+
+    // Panel show/hide, Ctrl/Cmd+0..9 (Hotkeys tab, "Panels" group): the
+    // shortcut lives on toggleViewAction() itself — the SAME QAction the
+    // View menu entry above already is — so there is exactly one binding to
+    // keep in sync, and the menu displays it automatically (Qt renders a
+    // QAction's shortcut next to its text with no separate call needed).
+    // The initial setShortcut() here is redundant with the one
+    // applyShortcutBindings() makes moments later in the constructor, but
+    // harmless — kept so this block reads correctly on its own.
+    //
+    // Toggle semantics deliberately stay Qt's own plain show/hide (the
+    // dock's checked state simply flips) rather than a raise-then-hide
+    // three-state cycle for a dock buried behind another via manual
+    // tabification: that would need overriding toggleViewAction()'s own
+    // internal wiring to the dock's visibility, which is not part of Qt's
+    // public API and risky to get subtly wrong (the app never tabifies
+    // these docks with each other itself — only a user dragging one onto
+    // another produces that arrangement at all). What IS added is
+    // raise() on every transition TO visible, so the ordinary "was fully
+    // hidden, pressed the shortcut" case — the overwhelmingly common one —
+    // always brings the panel to front, not just nominally visible.
+    for (const PanelShortcut& entry : kPanelShortcuts) {
+        QDockWidget* dock = findChild<QDockWidget*>(
+            QString::fromLatin1(entry.dockObjectName));
+        if (!dock)
+            continue;
+        QAction* toggle = dock->toggleViewAction();
+        toggle->setShortcut(
+            ShortcutRegistry::binding(QString::fromLatin1(entry.shortcutId)));
+        connect(toggle, &QAction::toggled, dock, [dock](bool visible) {
+            if (visible)
+                dock->raise();
+        });
+    }
 
     // Bottom system status bar: Calango's own CPU / GPU / memory / threads,
     // plus the running job's. The runner is bound so the job group can sample
@@ -4736,6 +4808,17 @@ void MainWindow::applyShortcutBindings()
     if (deleteSelectionAction_)
         deleteSelectionAction_->setShortcut(
             ShortcutRegistry::binding(QStringLiteral("edit.deleteSelection")));
+    // Panel toggles: only the shortcut needs re-reading here (the
+    // raise-on-show connection made in createMenusAndDocks() stays valid
+    // across a remap — it's keyed to the QAction object, not the key it's
+    // bound to).
+    for (const PanelShortcut& entry : kPanelShortcuts) {
+        QDockWidget* dock = findChild<QDockWidget*>(
+            QString::fromLatin1(entry.dockObjectName));
+        if (dock)
+            dock->toggleViewAction()->setShortcut(
+                ShortcutRegistry::binding(QString::fromLatin1(entry.shortcutId)));
+    }
 }
 
 void MainWindow::cycleTab(int direction)
@@ -6998,6 +7081,27 @@ void MainWindow::showLocalEntropy()
     // panel) — same refresh path as the Bond Editor.
     connect(&dialog, &LocalEntropyDialog::fieldStored, this,
             [this] { notifyStructureChanged(false); });
+    dialog.exec();
+}
+
+void MainWindow::showRingPercolation()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()) {
+        QMessageBox::information(this, tr("Benzene-Ring / sp2 Percolation Analysis"),
+                                 tr("Open a structure first."));
+        return;
+    }
+    RingPercolationDialog dialog(doc->structure, doc->frames, viewport_, this);
+    // Cast coloring reaches every view exactly like applyFunctionalGroupCasts()
+    // does: the viewport already repainted (RingPercolationDialog called
+    // styleChanged() itself), but the Representation dock only reflects a
+    // change made outside its own controls through this explicit sync.
+    connect(&dialog, &RingPercolationDialog::castsApplied, this, [this] {
+        notifyStructureChanged(false);
+        if (representationPanel_)
+            representationPanel_->syncFromViewport();
+    });
     dialog.exec();
 }
 

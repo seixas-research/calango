@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.8.35
+    VERSION 26.8.36
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -53,6 +53,47 @@ set(CALANGO_DFT_SOURCES
     src/dft/RadialGrid.cpp
     src/dft/SCFSolver.cpp
     src/dft/XcFunctional.cpp
+)
+
+# --- Native DFTB (Slater-Koster tight-binding) engine -----------------------
+# Self-consistent-charge density-functional tight binding, in src/dftb. Reads
+# the standard .skf Slater-Koster parameter format with its own parser (see
+# src/dftb/SlaterKosterFile.hpp for the format citation and the license note
+# on parameter sets); does not link or shell out to DFTB+ or any other
+# tight-binding package. Shares the dense generalized-eigenproblem solver
+# (src/dft/LinearAlgebra.cpp) and the Brillouin-zone k-mesh builder
+# (src/dft/KPointGrid.cpp) with the native all-electron engine rather than
+# duplicating either — neither is DFT-specific, both are just dense linear
+# algebra and periodic sampling code that this engine needs exactly as much
+# of. Listed once and reused by the application and its test binaries, same
+# rule as CALANGO_DFT_SOURCES above.
+# Grown incrementally as each piece lands (see git history / FUTURE.md for
+# the current build-out order): parser -> angular transform -> Hamiltonian
+# construction -> SCC -> forces -> unfolding/optics post-processing.
+#
+# NOTE: does not itself include src/core/Element.cpp — every target below
+# already lists it explicitly alongside Structure.cpp/UnitCell.cpp (the app
+# target compiles it as part of its own much larger source list), so it stays
+# out of here to avoid a duplicated source file in any of them.
+set(CALANGO_DFTB_SOURCES
+    src/dftb/SlaterKosterFile.cpp
+    src/dftb/SlaterKosterTable.cpp
+    src/dftb/SlaterKosterTransform.cpp
+    src/dftb/DftbBasis.cpp
+    src/dftb/DftbHamiltonian.cpp
+    src/dftb/DftbGamma.cpp
+    src/dftb/DftbMulliken.cpp
+    src/dftb/DftbScf.cpp
+    src/dftb/DftbForces.cpp
+    src/dftb/DftbTaskConfig.cpp
+    src/dftb/DftbStructureIo.cpp
+    src/dftb/DftbPdos.cpp
+    src/dftb/DftbUnfolding.cpp
+    src/core/BandUnfolding.cpp
+    src/dftb/DftbOptics.cpp
+    src/dftb/DftbEngine.cpp
+    src/dft/LinearAlgebra.cpp
+    src/dft/KPointGrid.cpp
 )
 
 # LAPACK for the generalised eigenproblem: Accelerate on macOS, the system
@@ -174,6 +215,7 @@ qt_add_executable(calango
     src/core/CalculatorConfig.hpp
     src/core/AseScriptGenerator.hpp
     src/core/AseScriptGenerator.cpp
+    src/core/DftbNativeScriptGenerator.cpp
     src/core/EngineCalculatorBlocks.hpp
     src/core/EngineCalculatorBlocks.cpp
     src/core/BrillouinZone.hpp
@@ -253,6 +295,8 @@ qt_add_executable(calango
     src/core/GrapheneOxideBuilder.hpp
     src/core/GrapheneOxideBuilder.cpp
     src/core/GrapheneOxideSites.cpp
+    src/core/GrapheneOxidePercolation.hpp
+    src/core/GrapheneOxidePercolation.cpp
     src/core/WorkflowReport.cpp
     src/core/GrapheneOxideMdmcScriptGenerator.cpp
     src/core/BornChargesScriptGenerator.hpp
@@ -559,6 +603,8 @@ qt_add_executable(calango
     src/gui/WarrenCowleyDialog.cpp
     src/gui/LocalEntropyDialog.hpp
     src/gui/LocalEntropyDialog.cpp
+    src/gui/RingPercolationDialog.hpp
+    src/gui/RingPercolationDialog.cpp
     src/gui/VolumeViewWidget.hpp
     src/gui/VolumeViewWidget.cpp
     src/gui/VisualEffectsPanel.hpp
@@ -1094,9 +1140,57 @@ add_executable(calango-elph-analyze
 )
 target_include_directories(calango-elph-analyze PRIVATE src)
 
+# The native SCC-DFTB engine's own entry point (see tools/calango_dftb_run.cpp
+# and src/dftb/DftbTaskConfig.hpp). Unlike calango-elph-analyze this is NOT a
+# cluster-side post-processing tool run separately from the GUI — it is
+# launched locally, once per DFTB job, by the thin Python wrapper
+# EngineCalculatorBlocks.cpp emits for CalculatorKind::CalangoDftb, so it has
+# to ship WITH the app (see the install() rules below) rather than being
+# built and run by hand on a remote machine. Qt-free for the same reason
+# calango-elph-analyze is: CALANGO_DFTB_SOURCES is Qt-free by construction.
+add_executable(calango-dftb-run
+    tools/calango_dftb_run.cpp
+    ${CALANGO_DFTB_SOURCES}
+    src/core/Structure.cpp
+    src/core/UnitCell.cpp
+    src/core/Element.cpp
+)
+target_include_directories(calango-dftb-run PRIVATE src)
+calango_dft_link(calango-dftb-run)
+
+# The native counterpart to core::analyzeRingPercolationTrajectory() reachable
+# from outside the GUI: a test harness verifying a real MDMC trajectory
+# (tests/graphene_oxide_percolation_mdmc_test.py), or a user who already has a
+# trajectory file and wants the ring/percolation numbers for it without
+# opening the app — the same value proposition calango-elph-analyze has for
+# cluster-side post-processing. Reads via ase.io (any format ASE knows), so
+# unlike calango-dftb-run this embeds Python.
+add_executable(calango-ring-percolation-analyze
+    tools/calango_ring_percolation_analyze.cpp
+    src/core/GrapheneOxidePercolation.cpp
+    src/core/GrapheneOxideBuilder.cpp
+    src/core/GrapheneOxideSites.cpp
+    src/core/Structure.cpp
+    src/core/UnitCell.cpp
+    src/core/Element.cpp
+    src/core/KPath.cpp
+    src/python_bridge/PythonEngine.cpp
+    src/python_bridge/AseBridge.cpp
+    src/core/PdbxFile.cpp
+)
+target_include_directories(calango-ring-percolation-analyze PRIVATE src)
+target_compile_definitions(calango-ring-percolation-analyze PRIVATE
+    CALANGO_DEFAULT_PYTHON="${CALANGO_DEFAULT_PYTHON_PATH}")
+target_link_libraries(calango-ring-percolation-analyze PRIVATE pybind11::embed)
+
 option(CALANGO_BUILD_TESTS "Build the integration test executables" OFF)
 if(CALANGO_BUILD_TESTS)
     enable_testing()
+    # QSignalSpy (calango_dialog_test's viewport Tab-cycling checks) is the
+    # only reason this module is needed anywhere — scoped to the test build
+    # rather than added to the top-level find_package() so a plain app build
+    # never requires Qt Test.
+    find_package(Qt6 6.4 REQUIRED COMPONENTS Test)
     add_executable(calango_sqs_test
         tests/SqsSiGeTest.cpp
         src/core/Structure.cpp
@@ -1294,6 +1388,7 @@ if(CALANGO_BUILD_TESTS)
         src/core/WannierScriptGenerator.cpp
         src/core/JobFailureReason.cpp
         src/core/AseScriptGenerator.cpp
+        src/core/DftbNativeScriptGenerator.cpp
         src/core/EngineCalculatorBlocks.cpp
     )
     # Isosurface mesh integrity: winding must agree with the gradient
@@ -2045,6 +2140,14 @@ if(CALANGO_BUILD_TESTS)
         src/ui/IconManager.cpp
         src/gui/ThemeManager.cpp
         src/render/Camera.cpp
+        # For the viewport Tab-cycling checks (Task 1 bugfix): a real
+        # ViewportWidget is what QApplication::sendEvent() drives, exactly
+        # the class whose focusNextPrevChild() override is under test.
+        src/gui/ViewportWidget.cpp
+        src/render/StructureRenderer.cpp
+        src/core/Coordination.cpp
+        src/core/HydrogenBonds.cpp
+        src/core/StructuralPhase.cpp
         src/gui/FermiSurfaceDialog.cpp
         src/gui/TopologyDialog.cpp
         src/gui/EnginePresets.cpp
@@ -2054,6 +2157,7 @@ if(CALANGO_BUILD_TESTS)
         src/gui/SettingsManager.cpp
         src/gui/CalculatorParameters.cpp
         src/core/AseScriptGenerator.cpp
+        src/core/DftbNativeScriptGenerator.cpp
         # The Vibrational Mode Analysis module. It repopulates two combo boxes
         # from inside its own constructor (it loads a phonon run there), which
         # is the construction-order shape this test exists for. It costs only
@@ -2104,7 +2208,7 @@ if(CALANGO_BUILD_TESTS)
     # Qt6::OpenGL for StructureRenderer.hpp, which OverlayModel.hpp pulls in
     # for the OverlayRange type the geometry builders emit.
     target_link_libraries(calango_dialog_test
-        PRIVATE Qt6::Widgets Qt6::OpenGL Qt6::OpenGLWidgets Qt6::Svg
+        PRIVATE Qt6::Widgets Qt6::OpenGL Qt6::OpenGLWidgets Qt6::Svg Qt6::Test
                 pybind11::embed)
     calango_hdf5_link(calango_dialog_test)
     add_test(NAME dialog_construction COMMAND calango_dialog_test)
@@ -2221,6 +2325,7 @@ if(CALANGO_BUILD_TESTS)
         src/render/ShaderProfile.cpp
         src/core/VolumetricData.cpp
         src/core/AseScriptGenerator.cpp
+        src/core/DftbNativeScriptGenerator.cpp
         src/core/PhononScriptGenerator.cpp
         src/core/Structure.cpp
         src/core/UnitCell.cpp
@@ -2307,6 +2412,7 @@ if(CALANGO_BUILD_TESTS)
         src/render/ShaderProfile.cpp
         src/core/VolumetricData.cpp
         src/core/AseScriptGenerator.cpp
+        src/core/DftbNativeScriptGenerator.cpp
         src/core/PhononScriptGenerator.cpp
         src/core/Structure.cpp
         src/core/UnitCell.cpp
@@ -2392,6 +2498,7 @@ if(CALANGO_BUILD_TESTS)
         src/render/ShaderProfile.cpp
         src/core/VolumetricData.cpp
         src/core/AseScriptGenerator.cpp
+        src/core/DftbNativeScriptGenerator.cpp
         src/core/PhononScriptGenerator.cpp
         src/core/Structure.cpp
         src/core/UnitCell.cpp
@@ -2484,6 +2591,7 @@ if(CALANGO_BUILD_TESTS)
         src/render/ShaderProfile.cpp
         src/core/VolumetricData.cpp
         src/core/AseScriptGenerator.cpp
+        src/core/DftbNativeScriptGenerator.cpp
         src/core/PhononScriptGenerator.cpp
         src/core/Structure.cpp
         src/core/UnitCell.cpp
@@ -2809,6 +2917,7 @@ if(CALANGO_BUILD_TESTS)
         tests/HubbardLinearResponseTest.cpp
         src/core/HubbardScriptGenerator.cpp
         src/core/AseScriptGenerator.cpp
+        src/core/DftbNativeScriptGenerator.cpp
         src/core/EngineCalculatorBlocks.cpp
         src/core/Structure.cpp
         src/core/UnitCell.cpp
@@ -2908,6 +3017,24 @@ if(CALANGO_BUILD_TESTS)
     target_include_directories(calango_graphene_oxide_test PRIVATE src)
     add_test(NAME graphene_oxide COMMAND calango_graphene_oxide_test)
 
+    # Benzene-ring / sp2-percolation analysis: ring counts against Euler's
+    # formula on a torus (N/2 hexagonal faces) and against the builder's own
+    # nanoflake ring-count formula (3m(m-1)+1); percolation against a
+    # periodic sheet whose pbc flags are edited after construction into a
+    # one-direction-only ribbon, so the same atoms give a known answer for
+    # both the periodic and the ribbon case.
+    add_executable(calango_graphene_oxide_percolation_test
+        tests/GrapheneOxidePercolationTest.cpp
+        src/core/GrapheneOxidePercolation.cpp
+        src/core/GrapheneOxideBuilder.cpp
+        src/core/GrapheneOxideSites.cpp
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+    )
+    target_include_directories(calango_graphene_oxide_percolation_test PRIVATE src)
+    add_test(NAME graphene_oxide_percolation COMMAND calango_graphene_oxide_percolation_test)
+
     # Workflow report. Linked against Qt::Core ONLY — no Widgets, no Gui — so
     # the "decoupled from the GUI" claim is enforced by the build rather than
     # asserted in a comment. If someone reaches for a QWidget in here, this
@@ -2957,6 +3084,7 @@ if(CALANGO_BUILD_TESTS)
     add_executable(calango_script_test
         tests/ScriptGenerationTest.cpp
         src/core/AseScriptGenerator.cpp
+        src/core/DftbNativeScriptGenerator.cpp
         src/core/EngineCalculatorBlocks.cpp
         src/core/BornChargesScriptGenerator.cpp
         src/core/PolarizationScriptHelpers.cpp
@@ -3044,6 +3172,7 @@ if(CALANGO_BUILD_TESTS)
     add_executable(calango_dft_engine_test
         tests/DftEngineTest.cpp
         src/core/AseScriptGenerator.cpp
+        src/core/DftbNativeScriptGenerator.cpp
         src/core/EngineCalculatorBlocks.cpp
         ${CALANGO_DFT_SOURCES}
         src/core/Structure.cpp
@@ -3083,6 +3212,37 @@ if(CALANGO_BUILD_TESTS)
     # when a quick pass is what is wanted; it is not skipped by default
     # because it is the only test that runs the engine end to end.
     set_tests_properties(native_dft_si_mvp PROPERTIES TIMEOUT 1800)
+
+    # The native SCC-DFTB engine (src/dftb) — Slater-Koster parsing today,
+    # growing into the Hamiltonian/SCF/forces/unfolding/optics pieces as
+    # CALANGO_DFTB_SOURCES grows. Split from calango_native_dft_si_mvp_test
+    # (a different engine, a different source list) rather than folded in,
+    # for the same reason dft_engine and native_dft_si_mvp are already two
+    # separate binaries: unit-style checks (fast, every build) belong apart
+    # from a real end-to-end self-consistent run (slow, its own TIMEOUT).
+    add_executable(calango_dftb_test
+        tests/DftbTest.cpp
+        ${CALANGO_DFTB_SOURCES}
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+    )
+    target_include_directories(calango_dftb_test PRIVATE src)
+    calango_dft_link(calango_dftb_test)
+    add_test(NAME dftb_engine COMMAND calango_dftb_test)
+
+    # The native binary itself, end to end — manifest file, extxyz reader,
+    # subprocess CLI, real JSON on disk. Fast (a single small non-SCC bands
+    # run), so it stays in the default sweep alongside dftb_engine rather
+    # than needing the slow "dft" cost label.
+    add_test(NAME dftb_native_run
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/dftb_native_run_test.py
+                $<TARGET_FILE:calango-dftb-run>)
+    add_test(NAME dftb_unfolding_run
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/dftb_unfolding_run_test.py
+                $<TARGET_FILE:calango-dftb-run>)
 
     # Volumetric grid parsing: the value block is read with a bulk read plus
     # std::from_chars rather than through istream >> double (5x faster on a
@@ -3375,6 +3535,22 @@ if(CALANGO_BUILD_TESTS)
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/graphene_oxide_mdmc_antiposition_test.py
                 $<TARGET_FILE:calango_script_test>)
     set_tests_properties(graphene_oxide_mdmc_antiposition PROPERTIES TIMEOUT 600)
+
+    # Ring/percolation analysis against that SAME kind of real MDMC
+    # trajectory (plain Lennard-Jones, no MD burst): unlike
+    # GrapheneOxidePercolationTest.cpp's closed-form fixtures, this is a
+    # moving target — the carbon lattice topology and the total
+    # functionalized-carbon count are conserved by construction (MDMC only
+    # relocates existing groups), so ring-count == N/2 and sp2 fraction ==
+    # constant on EVERY frame are exact, closed-form checks against a
+    # trajectory this test did not hand-construct. Self-skips without an
+    # interpreter that has ase.
+    add_test(NAME graphene_oxide_percolation_mdmc
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/graphene_oxide_percolation_mdmc_test.py
+                $<TARGET_FILE:calango_script_test>
+                $<TARGET_FILE:calango-ring-percolation-analyze>)
+    set_tests_properties(graphene_oxide_percolation_mdmc PROPERTIES TIMEOUT 600)
 
     # DSIM vs. its own reference implementation (oncapintada), live: EMT-relax
     # a Cu/Pd 27-atom fcc supercell case, run it through oncapintada, check
@@ -3719,13 +3895,14 @@ if(CALANGO_BUILD_TESTS)
         cpa_solver crpa_solver crpa_vasp_validation cu_wannier_spread
         ternary_convex_hull
         dataset_split egqca
-        defect_2d_correction defect_2d_monolayer dft_engine
+        defect_2d_correction defect_2d_monolayer dft_engine dftb_engine
+        dftb_native_run dftb_unfolding_run
         dislocation_builder dos_smearing double_group dsim dsim_oncapintada elastic_tensor elf_silicon
         elph_analysis elph_io extxyz_attributes frame_streaming
         generated_ase_scripts generated_script_lint graphene_band_symmetry
         graphene_2d_bands_qe graphene_2d_bands_siesta
-        graphene_oxide graphene_oxide_mdmc_antiposition graphene_oxide_sites
-        graphene_tetrahedron
+        graphene_oxide graphene_oxide_mdmc_antiposition graphene_oxide_percolation
+        graphene_oxide_percolation_mdmc graphene_oxide_sites graphene_tetrahedron
         energy_diagram_benchmark
         gw_qp_parser gw_silicon hubbard_linear_response hydrogen_bonds
         hydrogen_completion ice_builder kpath_table lammps_environment
@@ -3827,6 +4004,20 @@ set(CALANGO_USER_GUIDE_PDF
 if(APPLE AND CALANGO_MACOS_BUNDLE)
     install(TARGETS calango BUNDLE DESTINATION .)
 
+    # calango-dftb-run has to ship WITH the app (unlike calango-elph-analyze,
+    # a cluster-side tool never bundled on macOS at all — see its own
+    # install() below) — every DFTB job launches it locally, next to
+    # whichever `calango` binary started it, via
+    # QCoreApplication::applicationDirPath(). Installed alongside the main
+    # executable inside the bundle rather than via BUNDLE DESTINATION (which
+    # is for the MACOSX_BUNDLE target itself) so applicationDirPath() finds
+    # it with no special-casing. Qt-free and LAPACK/Accelerate-only, so
+    # macdeployqt's pass below has nothing of its own to rewrite here —
+    # unlike the standalone Python payload's documented case, ordering
+    # relative to macdeployqt does not matter for this target.
+    install(TARGETS calango-dftb-run
+        RUNTIME DESTINATION "calango.app/Contents/MacOS")
+
     install(FILES "${CALANGO_USER_GUIDE_PDF}"
             DESTINATION "calango.app/Contents/Resources/doc" OPTIONAL)
 
@@ -3895,6 +4086,15 @@ elseif(UNIX AND NOT APPLE)
     install(TARGETS calango RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
     # Shipped so a cluster job script can analyse its own run in place.
     install(TARGETS calango-elph-analyze
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} OPTIONAL)
+    # NOT optional, unlike calango-elph-analyze above: every DFTB job needs
+    # this beside the app, not just an occasional cluster script.
+    install(TARGETS calango-dftb-run
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    # OPTIONAL and un-bundled on macOS, like calango-elph-analyze above: a
+    # standalone analysis convenience, not something the GUI ever launches
+    # itself the way it does calango-dftb-run.
+    install(TARGETS calango-ring-percolation-analyze
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} OPTIONAL)
 
     # Help → User Guide; see the note beside CALANGO_USER_GUIDE_PDF above.

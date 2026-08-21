@@ -152,8 +152,8 @@ private:
     // core::RemoteJobSpec's fields of the same name for what each maps to;
     // rows are hidden for PBS/SGE by updateSchedulerRows(), the same way
     // peRow_ already is for everything but SGE.
-    QLineEdit* accountEdit_ = nullptr;
-    QLineEdit* qosEdit_ = nullptr;
+    // (accountEdit_/qosEdit_ removed in Task 3 — extraDirectivesEdit_ below
+    // is the escape hatch for a cluster that requires an account/QOS.)
     QSpinBox* cpusPerTaskSpin_ = nullptr;
     QSpinBox* gpusPerNodeSpin_ = nullptr;
     QLineEdit* nodeListEdit_ = nullptr;

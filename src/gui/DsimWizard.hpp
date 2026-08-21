@@ -103,8 +103,14 @@ protected:
     QStringList calculatorElements() const override;
     /// Any ASE calculator works (energies + forces + a cell filter needs
     /// stress) — not restricted to one engine, same stance as
-    /// ElasticConfig.
-    bool calculatorAllowed(core::CalculatorKind /*kind*/) const override { return true; }
+    /// ElasticConfig — EXCEPT Calango's own native DFTB (CalangoDftb): no
+    /// stress tensor, and only finite-difference forces (see
+    /// src/dftb/DftbForces.hpp), so a relaxation-driven ensemble here is
+    /// out of scope for the same reason ElasticWizard excludes it.
+    bool calculatorAllowed(core::CalculatorKind kind) const override
+    {
+        return kind != core::CalculatorKind::CalangoDftb;
+    }
 
     /// Builds every pristine/impurity supercell (once) on the way out of
     /// Stage 1, the same "build the ensemble on goNext()" hook the base

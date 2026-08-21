@@ -49,6 +49,37 @@ QVector<ShortcutAction> defaultActions()
         {QStringLiteral("viewport.tab.previous"), QObject::tr("Previous tab"),
          QObject::tr("Viewport — Navigation"),
          QKeySequence(Qt::SHIFT | Qt::Key_Tab)},
+        // Panel show/hide, Ctrl+0..9 — Qt::CTRL is the portable modifier: it
+        // maps to Cmd on macOS and Ctrl everywhere else with no per-platform
+        // branching. Digit order matches the existing View menu's own dock
+        // order (MainWindow::createMenusAndDocks()), so the mapping reads
+        // the same way in both places.
+        {QStringLiteral("panel.toggle.structure"), QObject::tr("Toggle Structure panel"),
+         QObject::tr("Panels"), QKeySequence(Qt::CTRL | Qt::Key_0)},
+        {QStringLiteral("panel.toggle.volumetricData"),
+         QObject::tr("Toggle Volumetric Data panel"), QObject::tr("Panels"),
+         QKeySequence(Qt::CTRL | Qt::Key_1)},
+        {QStringLiteral("panel.toggle.additionalOverlays"),
+         QObject::tr("Toggle Additional Overlays panel"), QObject::tr("Panels"),
+         QKeySequence(Qt::CTRL | Qt::Key_2)},
+        {QStringLiteral("panel.toggle.processes"), QObject::tr("Toggle Processes panel"),
+         QObject::tr("Panels"), QKeySequence(Qt::CTRL | Qt::Key_3)},
+        {QStringLiteral("panel.toggle.representation"),
+         QObject::tr("Toggle Representation panel"), QObject::tr("Panels"),
+         QKeySequence(Qt::CTRL | Qt::Key_4)},
+        {QStringLiteral("panel.toggle.spatialReferences"),
+         QObject::tr("Toggle Spatial References panel"), QObject::tr("Panels"),
+         QKeySequence(Qt::CTRL | Qt::Key_5)},
+        {QStringLiteral("panel.toggle.visualEffects"),
+         QObject::tr("Toggle Visual Effects panel"), QObject::tr("Panels"),
+         QKeySequence(Qt::CTRL | Qt::Key_6)},
+        {QStringLiteral("panel.toggle.orchestration"),
+         QObject::tr("Toggle Orchestration panel"), QObject::tr("Panels"),
+         QKeySequence(Qt::CTRL | Qt::Key_7)},
+        {QStringLiteral("panel.toggle.hpc"), QObject::tr("Toggle HPC panel"),
+         QObject::tr("Panels"), QKeySequence(Qt::CTRL | Qt::Key_8)},
+        {QStringLiteral("panel.toggle.results"), QObject::tr("Toggle Results panel"),
+         QObject::tr("Panels"), QKeySequence(Qt::CTRL | Qt::Key_9)},
     };
 }
 

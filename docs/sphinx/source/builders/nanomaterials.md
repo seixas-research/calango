@@ -353,3 +353,15 @@ in cast 0 — a **fixed** key across the whole run, so a color always means
 the same chemistry in every frame, even though *which atoms* wear it
 changes. Turning the option off leaves the older, flat behavior: one Cast,
 computed from whichever frame happened to be current when it was last set.
+
+### From chemistry to conductivity
+
+The functional-group Cast above answers "where is the oxygen?" — the
+question one step further on is whether the *unoxidized* carbon still forms
+an unbroken conducting sheet. {doc}`Analysis --> Benzene-Ring / sp2
+Percolation Analysis… </analysis/percolation>` answers exactly that: it
+finds every six-membered ring, classifies each intact/disrupted from this
+same `functionalGroupLabels()` call, and reports whether the intact rings
+still percolate the periodic cell. Run against a whole MDMC trajectory, its
+intact-ring-fraction and largest-domain plots are the structural side of the
+oxidation-vs-conductivity trade-off the run traces out.

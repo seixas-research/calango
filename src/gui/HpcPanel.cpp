@@ -36,6 +36,22 @@ const QStringList kResultPatterns = {
     QStringLiteral("*.log"),    QStringLiteral("*.csv"),
 };
 
+/// Memory / node (Task 3): the field is GB-displayed but MB internally
+/// (RemoteJobSpec::memoryMbPerNode, ClusterPreset::memoryMbPerNode) — PBS's
+/// chunk memory and SGE's per-slot h_vmem division both stay exactly as
+/// they were, reading the same MB value they always did. mbToGbCeil()
+/// rounds UP: a saved MB value that is not an exact multiple of 1024 (an
+/// older profile, or one hand-edited in JSON) must never display — and
+/// later resubmit — LESS memory than was actually asked for.
+int mbToGbCeil(int mb)
+{
+    return mb <= 0 ? 0 : (mb + 1023) / 1024;
+}
+int gbToMb(int gb)
+{
+    return gb * 1024;
+}
+
 } // namespace
 
 HpcPanel::HpcPanel(const QString& pythonExe, QWidget* parent)
@@ -243,10 +259,16 @@ HpcPanel::HpcPanel(const QString& pythonExe, QWidget* parent)
     schedulerForm->addRow(tr("Nodes × tasks:"), shapeRow);
 
     memorySpin_ = new QSpinBox(schedulerPage);
-    memorySpin_->setRange(0, 4096000);
-    memorySpin_->setSingleStep(1024);
+    // GB, not MB (Task 3) — displayed and edited in GB; converted to/from
+    // the internal MB representation (RemoteJobSpec::memoryMbPerNode,
+    // ClusterPreset::memoryMbPerNode — both stay MB, unchanged, so PBS/SGE
+    // generation below is untouched) at mbToGbCeil()/gbToMb(), this file's
+    // own conversion helpers. 4000 GB matches the old 4096000 MB ceiling
+    // exactly (4096000 / 1024 = 4000).
+    memorySpin_->setRange(0, 4000);
+    memorySpin_->setSingleStep(1);
     memorySpin_->setValue(0);
-    memorySpin_->setSuffix(tr(" MB"));
+    memorySpin_->setSuffix(tr(" GB"));
     memorySpin_->setSpecialValueText(tr("cluster default"));
     memorySpin_->setToolTip(
         tr("Memory PER NODE. Zero requests the cluster's own default.\n\n"
@@ -257,7 +279,7 @@ HpcPanel::HpcPanel(const QString& pythonExe, QWidget* parent)
            "the request by the core count and the job never starts."));
     schedulerForm->addRow(tr("Memory / node:"), memorySpin_);
 
-    walltimeEdit_ = new QLineEdit(QStringLiteral("01:00:00"), schedulerPage);
+    walltimeEdit_ = new QLineEdit(QStringLiteral("48:00:00"), schedulerPage);
     walltimeEdit_->setToolTip(tr("HH:MM:SS."));
     schedulerForm->addRow(tr("Walltime:"), walltimeEdit_);
 
@@ -277,15 +299,13 @@ HpcPanel::HpcPanel(const QString& pythonExe, QWidget* parent)
     // above is hidden for everything but SGE — each maps to the
     // RemoteJobSpec field of the same name (SchedulerScript.hpp), emitted
     // only inside Scheduler::Slurm's branch of generate().
-    accountEdit_ = new QLineEdit(schedulerPage);
-    accountEdit_->setPlaceholderText(tr("billing account (empty = default)"));
-    schedulerForm->addRow(tr("Account:"), accountEdit_);
-    slurmOnlyRows_.push_back(schedulerForm->rowCount() - 1);
-
-    qosEdit_ = new QLineEdit(schedulerPage);
-    qosEdit_->setPlaceholderText(tr("QOS (empty = default)"));
-    schedulerForm->addRow(tr("QOS:"), qosEdit_);
-    slurmOnlyRows_.push_back(schedulerForm->rowCount() - 1);
+    //
+    // Account and QOS fields were removed here (Task 3): most clusters
+    // never need either, and the two dedicated rows cost space on a panel
+    // that lives at bottom-row height for the handful that do. A cluster
+    // that REQUIRES a billing account still reaches one through
+    // "Extra #SBATCH lines" below — see its own placeholder/tooltip, which
+    // now says so explicitly.
 
     auto* slurmShapeRow = new QWidget(schedulerPage);
     auto* slurmShapeLayout = new QHBoxLayout(slurmShapeRow);
@@ -326,12 +346,15 @@ HpcPanel::HpcPanel(const QString& pythonExe, QWidget* parent)
     extraDirectivesEdit_ = new QPlainTextEdit(schedulerPage);
     extraDirectivesEdit_->setPlaceholderText(
         tr("# any further #SBATCH lines, verbatim, e.g.\n"
+           "#SBATCH --account=myproject\n"
            "#SBATCH --mail-type=END\n"
            "#SBATCH --exclusive"));
     extraDirectivesEdit_->setToolTip(
         tr("Written into the #SBATCH block exactly as typed, after every "
            "field above -- the escape hatch for a directive this panel has "
-           "no dedicated control for. Include your own \"#SBATCH \" prefix "
+           "no dedicated control for, including a billing account or QOS on "
+           "a cluster that requires one (e.g. \"#SBATCH --account=myproject\" "
+           "/ \"#SBATCH --qos=high\"). Include your own \"#SBATCH \" prefix "
            "on each line (or \"##SBATCH \" for one you want present but "
            "disabled, as SLURM only ever reads a line starting with exactly "
            "\"#SBATCH\")."));
@@ -548,7 +571,7 @@ core::RemoteJobSpec HpcPanel::specFromUi(const QString& jobName) const
     spec.queue = queueEdit_->text().trimmed().toStdString();
     spec.nodes = nodesSpin_->value();
     spec.tasksPerNode = tasksSpin_->value();
-    spec.memoryMbPerNode = memorySpin_->value();
+    spec.memoryMbPerNode = gbToMb(memorySpin_->value());
     spec.parallelEnvironment = peEdit_->text().trimmed().toStdString();
     spec.walltime = walltimeEdit_->text().trimmed().toStdString();
     // The VASP POTCAR override, if set, is exported FIRST — before the
@@ -572,10 +595,6 @@ core::RemoteJobSpec HpcPanel::specFromUi(const QString& jobName) const
     // itself only ever consults them inside Scheduler::Slurm's branch, so a
     // PBS/SGE spec quietly carries values its own script never emits --
     // exactly like the parallel-environment field already does in reverse.
-    if (accountEdit_)
-        spec.account = accountEdit_->text().trimmed().toStdString();
-    if (qosEdit_)
-        spec.qos = qosEdit_->text().trimmed().toStdString();
     if (cpusPerTaskSpin_)
         spec.cpusPerTask = cpusPerTaskSpin_->value();
     if (gpusPerNodeSpin_)
@@ -961,15 +980,15 @@ void HpcPanel::saveSettings() const
     settings.setValue(QStringLiteral("queue"), queueEdit_->text());
     settings.setValue(QStringLiteral("nodes"), nodesSpin_->value());
     settings.setValue(QStringLiteral("tasks"), tasksSpin_->value());
-    settings.setValue(QStringLiteral("memoryMb"), memorySpin_->value());
+    // The stored key is still named "memoryMb" and still means MB — only
+    // the widget above it displays GB (Task 3) — so it round-trips
+    // correctly with older entries written before that change.
+    settings.setValue(QStringLiteral("memoryMb"), gbToMb(memorySpin_->value()));
     settings.setValue(QStringLiteral("parallelEnv"), peEdit_->text());
     settings.setValue(QStringLiteral("walltime"), walltimeEdit_->text());
     settings.setValue(QStringLiteral("setup"), setupEdit_->toPlainText());
     settings.setValue(QStringLiteral("vaspPotcarPath"),
                       vaspPotcarEdit_ ? vaspPotcarEdit_->text() : QString());
-    settings.setValue(QStringLiteral("account"),
-                      accountEdit_ ? accountEdit_->text() : QString());
-    settings.setValue(QStringLiteral("qos"), qosEdit_ ? qosEdit_->text() : QString());
     settings.setValue(QStringLiteral("cpusPerTask"),
                       cpusPerTaskSpin_ ? cpusPerTaskSpin_->value() : 1);
     settings.setValue(QStringLiteral("gpusPerNode"),
@@ -1005,20 +1024,19 @@ void HpcPanel::restoreSettings()
     queueEdit_->setText(settings.value(QStringLiteral("queue")).toString());
     nodesSpin_->setValue(settings.value(QStringLiteral("nodes"), 1).toInt());
     tasksSpin_->setValue(settings.value(QStringLiteral("tasks"), 1).toInt());
-    memorySpin_->setValue(settings.value(QStringLiteral("memoryMb"), 0).toInt());
+    memorySpin_->setValue(
+        mbToGbCeil(settings.value(QStringLiteral("memoryMb"), 0).toInt()));
     peEdit_->setText(settings.value(QStringLiteral("parallelEnv"),
                                     QStringLiteral("smp")).toString());
     walltimeEdit_->setText(
-        settings.value(QStringLiteral("walltime"), QStringLiteral("01:00:00"))
+        settings.value(QStringLiteral("walltime"), QStringLiteral("48:00:00"))
             .toString());
     setupEdit_->setPlainText(settings.value(QStringLiteral("setup")).toString());
     if (vaspPotcarEdit_)
         vaspPotcarEdit_->setText(
             settings.value(QStringLiteral("vaspPotcarPath")).toString());
-    if (accountEdit_)
-        accountEdit_->setText(settings.value(QStringLiteral("account")).toString());
-    if (qosEdit_)
-        qosEdit_->setText(settings.value(QStringLiteral("qos")).toString());
+    // Older-settings "account"/"qos" keys, if present, are simply never
+    // read any more (Task 3 removed both fields) -- not an error, ignored.
     if (cpusPerTaskSpin_)
         cpusPerTaskSpin_->setValue(
             settings.value(QStringLiteral("cpusPerTask"), 1).toInt());
@@ -1060,14 +1078,12 @@ ClusterPreset HpcPanel::presetFromUi(const QString& name) const
     preset.queue = queueEdit_->text().trimmed();
     preset.nodes = nodesSpin_->value();
     preset.tasksPerNode = tasksSpin_->value();
-    preset.memoryMbPerNode = memorySpin_->value();
+    preset.memoryMbPerNode = gbToMb(memorySpin_->value());
     preset.walltime = walltimeEdit_->text().trimmed();
     preset.parallelEnvironment = peEdit_->text().trimmed();
     preset.setupLines = setupEdit_->toPlainText();
     preset.vaspPotcarPath =
         vaspPotcarEdit_ ? vaspPotcarEdit_->text().trimmed() : QString();
-    preset.account = accountEdit_ ? accountEdit_->text().trimmed() : QString();
-    preset.qos = qosEdit_ ? qosEdit_->text().trimmed() : QString();
     preset.cpusPerTask = cpusPerTaskSpin_ ? cpusPerTaskSpin_->value() : 1;
     preset.gpusPerNode = gpusPerNodeSpin_ ? gpusPerNodeSpin_->value() : 0;
     preset.nodeList = nodeListEdit_ ? nodeListEdit_->text().trimmed() : QString();
@@ -1092,16 +1108,14 @@ void HpcPanel::applyPreset(const ClusterPreset& preset)
     queueEdit_->setText(preset.queue);
     nodesSpin_->setValue(preset.nodes);
     tasksSpin_->setValue(preset.tasksPerNode);
-    memorySpin_->setValue(preset.memoryMbPerNode);
+    memorySpin_->setValue(mbToGbCeil(preset.memoryMbPerNode));
     walltimeEdit_->setText(preset.walltime);
     peEdit_->setText(preset.parallelEnvironment);
     setupEdit_->setPlainText(preset.setupLines);
     if (vaspPotcarEdit_)
         vaspPotcarEdit_->setText(preset.vaspPotcarPath);
-    if (accountEdit_)
-        accountEdit_->setText(preset.account);
-    if (qosEdit_)
-        qosEdit_->setText(preset.qos);
+    // preset.account/preset.qos (an older preset's saved values, if it has
+    // any) are simply never applied any more (Task 3 removed both fields).
     if (cpusPerTaskSpin_)
         cpusPerTaskSpin_->setValue(preset.cpusPerTask > 0 ? preset.cpusPerTask : 1);
     if (gpusPerNodeSpin_)

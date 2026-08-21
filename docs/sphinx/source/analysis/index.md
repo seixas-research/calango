@@ -15,7 +15,7 @@ in the save dialog. The exceptions announce themselves: XRD waits for
 
 % TODO screenshot: the Analysis menu fully expanded over the main window
 ```{figure} /_static/img/analysis_menu.png
-:alt: The Analysis menu with its twelve entries, from Symmetry to Adsorption & Catalysis
+:alt: The Analysis menu with its thirteen entries, from Symmetry to Adsorption & Catalysis
 :width: 92%
 :figclass: screenshot
 
@@ -27,7 +27,7 @@ statistics in the middle, charge- and density-based analyses below.
 
 ## What lives where
 
-The Analysis menu holds twelve entries; a few closely related tools live on
+The Analysis menu holds thirteen entries; a few closely related tools live on
 neighbouring menus, and this section documents those too:
 
 | Tool | Opens from | Page |
@@ -40,6 +40,7 @@ neighbouring menus, and this section documents those too:
 | Bond Length / Angle Distributions | {menuselection}`Analysis --> Bond Length / Angle Distributions…` | {doc}`/analysis/structural` |
 | Coordination Numbers (CN / GCN) | {menuselection}`Analysis --> Coordination Numbers (CN / GCN)…` | {doc}`/analysis/order` |
 | Local Entropy | {menuselection}`Analysis --> Local Entropy Analysis…` | {doc}`/analysis/order` |
+| Benzene-Ring / sp2 Percolation | {menuselection}`Analysis --> Benzene-Ring / sp2 Percolation Analysis…` | {doc}`/analysis/percolation` |
 | Partial Charge Analysis | {menuselection}`Analysis --> Partial Charge Analysis…` | {doc}`/electronic/charges` |
 | Velocity Autocorrelation (VACF) | {menuselection}`Analysis --> Velocity Autocorrelation Function (VACF)…` | {doc}`/analysis/structural` |
 | Charge Density Difference (CDD) | {menuselection}`Analysis --> Charge Density Difference (CDD)…` | {doc}`/electronic/charges` |
@@ -70,6 +71,10 @@ The pages in this section split by what kind of question is being asked:
 - {doc}`/analysis/order` — *how are the sites arranged?* Coordination and
   generalized coordination numbers, Warren–Cowley short-range-order
   parameters, and the Piaggi–Parrinello local-entropy fingerprint.
+- {doc}`/analysis/percolation` — *does the sp2 network still connect?*
+  Benzene-ring formation/disruption in graphene oxide and whether the intact
+  rings still percolate the periodic cell, current structure or across an
+  MDMC trajectory.
 - {doc}`/analysis/symmetry` — *what group does the structure realize?*
   Space-group and factor-group analysis with Raman/IR activity, and the
   magnetic space group determined from coordinates plus magnetic moments.
@@ -97,6 +102,7 @@ C++ and works on any structure you can open.
 
 structural
 order
+percolation
 symmetry
 volumetric
 reciprocal

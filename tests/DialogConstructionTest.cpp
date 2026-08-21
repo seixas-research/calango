@@ -73,6 +73,7 @@
 #include "gui/HpcPanel.hpp"
 #include "gui/PreferencesDialog.hpp"
 #include "gui/ShortcutRegistry.hpp"
+#include "gui/ViewportWidget.hpp"
 #include "gui/OpticsWizard.hpp"
 #include "gui/WannierWizard.hpp"
 #include "gui/WannierRunLoader.hpp"
@@ -96,12 +97,16 @@
 #include <QFile>
 #include <QLabel>
 #include <QComboBox>
+#include <QDockWidget>
 #include <QGroupBox>
 #include <QDoubleSpinBox>
+#include <QKeyEvent>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QKeySequenceEdit>
+#include <QMainWindow>
 #include <QPlainTextEdit>
+#include <QSignalSpy>
 #include <QTabWidget>
 #include <QPushButton>
 #include <QRadioButton>
@@ -782,6 +787,29 @@ int main(int argc, char** argv)
                     check(!(*named)->isVisibleTo(&wizard),
                           "and hidden again for another engine");
                 }
+            }
+
+            // CalangoDftb (the native Slater-Koster engine): offered here
+            // specifically because SinglePointWizard's forces are the one
+            // task its finite-difference forces (DftbForces.hpp) are cheap
+            // enough for — see SinglePointWizard::calculatorAllowed()'s own
+            // doc. Shares the "DFTB settings" group with DFTB+ rather than
+            // getting its own (see SimulationWizardBase::buildDftbGroup()).
+            const int dftb = engine->findData(static_cast<int>(
+                calango::core::CalculatorKind::CalangoDftb));
+            check(dftb >= 0, "CalangoDftb is offered as an engine");
+            if (dftb >= 0) {
+                engine->setCurrentIndex(dftb);
+                const auto boxes = wizard.findChildren<QGroupBox*>();
+                const auto named = std::find_if(
+                    boxes.begin(), boxes.end(), [](const QGroupBox* box) {
+                        return box->title().contains(QStringLiteral("DFTB"));
+                    });
+                check(named != boxes.end(), "a DFTB settings group exists");
+                if (named != boxes.end())
+                    check((*named)->isVisibleTo(&wizard),
+                          "and is shown when CalangoDftb is the selected "
+                          "engine");
             }
         }
     }
@@ -2599,14 +2627,18 @@ int main(int argc, char** argv)
                                     return s->suffix().contains(suffix);
                                 });
         };
-        check(spinWithSuffix(QStringLiteral("MB")) != spins.end(),
+        // GB, not MB (Task 3) — see the dedicated GB-suffix/48:00:00-default
+        // checks further down, which also re-derive the memory spin box
+        // independently (by specialValueText(), not suffix) so the two
+        // checks do not share a false-positive failure mode.
+        check(spinWithSuffix(QStringLiteral("GB")) != spins.end(),
               "exposes a memory field");
         check(spins.size() >= 4,
               "alongside port, nodes and tasks-per-node spin boxes");
         // Memory 0 must read as "cluster default", not as a literal zero —
         // SLURM reads --mem=0 as "all the memory on the node".
-        if (spinWithSuffix(QStringLiteral("MB")) != spins.end())
-            check(!(*spinWithSuffix(QStringLiteral("MB")))
+        if (spinWithSuffix(QStringLiteral("GB")) != spins.end())
+            check(!(*spinWithSuffix(QStringLiteral("GB")))
                        ->specialValueText().isEmpty(),
                   "whose zero reads as the cluster default rather than none");
 
@@ -2717,16 +2749,28 @@ int main(int argc, char** argv)
         }
 
         // -- SLURM extensions (Task 4) ---------------------------------
+        // Account/QOS fields removed (Task 3) -- verify they are actually
+        // GONE, not just untested, and that Node list (still SLURM-only)
+        // is unaffected by their removal.
         const auto accountEdit = std::find_if(
             edits.begin(), edits.end(), [](const QLineEdit* e) {
                 return e->placeholderText().contains(QStringLiteral("billing account"));
             });
+        check(accountEdit == edits.end(),
+              "the Account field no longer exists on the Scheduler tab "
+              "(Task 3)");
+        const auto hpcLabels = panel.findChildren<QLabel*>();
+        const auto qosLabel = std::find_if(
+            hpcLabels.begin(), hpcLabels.end(), [](const QLabel* l) {
+                return l->text() == QStringLiteral("QOS:");
+            });
+        check(qosLabel == hpcLabels.end(),
+              "neither does its \"QOS:\" row label");
         const auto nodeListEdit = std::find_if(
             edits.begin(), edits.end(), [](const QLineEdit* e) {
                 return e->placeholderText().contains(QStringLiteral("scheduler picks"));
             });
-        check(accountEdit != edits.end() && nodeListEdit != edits.end(),
-              "the Account and Node list fields are present");
+        check(nodeListEdit != edits.end(), "the Node list field is present");
 
         const auto plainEdits = panel.findChildren<QPlainTextEdit*>();
         const auto commandEdit = std::find_if(
@@ -2756,24 +2800,67 @@ int main(int argc, char** argv)
                 if (tabWidget->tabText(i) == QStringLiteral("Scheduler"))
                     tabWidget->setCurrentIndex(i);
         }
-        if (schedulerCombo != combos.end() && accountEdit != edits.end()) {
+        if (schedulerCombo != combos.end() && nodeListEdit != edits.end()) {
             (*schedulerCombo)->setCurrentText(QStringLiteral("SLURM"));
-            check((*accountEdit)->isVisible(), "Account is offered for SLURM");
+            check((*nodeListEdit)->isVisible(), "Node list is offered for SLURM");
             (*schedulerCombo)->setCurrentText(QStringLiteral("PBS"));
-            check(!(*accountEdit)->isVisible(),
+            check(!(*nodeListEdit)->isVisible(),
                   "and hidden for PBS, whose script has no use for it");
             (*schedulerCombo)->setCurrentText(QStringLiteral("SLURM"));
         }
 
-        // specFromUi() actually carries these through to RemoteJobSpec.
-        if (accountEdit != edits.end() && nodeListEdit != edits.end()) {
-            (*accountEdit)->setText(QStringLiteral("phys-2026"));
+        // specFromUi() actually carries this through to RemoteJobSpec.
+        if (nodeListEdit != edits.end()) {
             (*nodeListEdit)->setText(QStringLiteral("work1"));
             const auto spec = panel.specFromUi(QStringLiteral("job"));
-            check(spec.account == "phys-2026" && spec.nodeList == "work1",
-                  "typed Account/Node list values reach RemoteJobSpec via "
+            check(spec.nodeList == "work1",
+                  "a typed Node list value reaches RemoteJobSpec via "
                   "specFromUi()");
         }
+
+        // The Account/QOS escape hatch (Task 3): a hand-typed #SBATCH
+        // --account= line in "Extra #SBATCH lines" reaches RemoteJobSpec
+        // exactly like any other extraDirectives content -- the free-form
+        // route the tab's own tooltip now points a cluster that requires
+        // a billing account or QOS at, now that neither has its own field.
+        const auto extraDirectivesEdit = std::find_if(
+            plainEdits.begin(), plainEdits.end(), [](const QPlainTextEdit* e) {
+                return e->placeholderText().contains(QStringLiteral("#SBATCH"));
+            });
+        check(extraDirectivesEdit != plainEdits.end(),
+              "the \"Extra #SBATCH lines\" escape hatch is present");
+        if (extraDirectivesEdit != plainEdits.end()) {
+            (*extraDirectivesEdit)
+                ->setPlainText(QStringLiteral("#SBATCH --account=phys-2026\n"
+                                              "#SBATCH --qos=high"));
+            const auto spec = panel.specFromUi(QStringLiteral("job"));
+            const QString extra = QString::fromStdString(spec.extraDirectives);
+            check(extra.contains(QStringLiteral("--account=phys-2026"))
+                      && extra.contains(QStringLiteral("--qos=high")),
+                  "a hand-typed account/QOS directive reaches RemoteJobSpec "
+                  "via specFromUi(), unchanged, the same way any other "
+                  "extraDirectives content does");
+        }
+
+        // Memory / node is GB now (Task 3), not MB.
+        const auto memorySpin = std::find_if(
+            spins.begin(), spins.end(), [](const QSpinBox* s) {
+                return s->specialValueText() == QStringLiteral("cluster default");
+            });
+        check(memorySpin != spins.end()
+                  && (*memorySpin)->suffix() == QStringLiteral(" GB"),
+              "the memory field's suffix reads GB, not MB");
+
+        // Walltime defaults to 48:00:00 for a brand-new panel (Task 3) --
+        // this instance was never given a saved preset/settings value, so
+        // it is still showing the freshly-constructed default.
+        const auto walltimeEdit = std::find_if(
+            edits.begin(), edits.end(), [](const QLineEdit* e) {
+                return e->toolTip() == QStringLiteral("HH:MM:SS.");
+            });
+        check(walltimeEdit != edits.end()
+                  && (*walltimeEdit)->text() == QStringLiteral("48:00:00"),
+              "a new Scheduler tab defaults its walltime to 48:00:00");
     }
 
     // Preferences -> Hotkeys (Task 2): the table PreferencesDialog builds
@@ -2886,6 +2973,191 @@ int main(int argc, char** argv)
 
         exerciseControls(&dialog);
         check(true, "survives every control being exercised");
+        ShortcutRegistry::resetAllToDefaults(); // leave no trace for later tests
+    }
+
+    // Viewport [Tab]/[Shift+Tab] cycling (Task 1 bugfix). The previous
+    // implementation had ONLY a keyPressEvent() branch, which silently did
+    // nothing: QWidget::event() special-cases a literal Tab/Backtab
+    // keypress BEFORE keyPressEvent() ever runs -- it calls
+    // focusNextPrevChild() first, and only falls through to keyPressEvent()
+    // if that returns false. Sending real QKeyEvents through
+    // QApplication::sendEvent() (rather than calling focusNextPrevChild()
+    // directly) is what actually exercises that dispatch chain -- calling
+    // the override directly would have passed even on the ORIGINAL broken
+    // build, since the bug was entirely about which method Qt calls first.
+    std::printf("Viewport Tab/Backtab cycling (Task 1 bugfix):\n");
+    {
+        ShortcutRegistry::resetAllToDefaults();
+        ViewportWidget viewport;
+        QSignalSpy spy(&viewport, &ViewportWidget::cycleTabRequested);
+
+        QKeyEvent tabPress(QEvent::KeyPress, Qt::Key_Tab, Qt::NoModifier);
+        QApplication::sendEvent(&viewport, &tabPress);
+        check(spy.count() == 1 && spy.takeFirst().at(0).toInt() == 1,
+              "a literal Tab keypress on the viewport cycles forward -- "
+              "via focusNextPrevChild(), the actual interception point");
+
+        // Shift+Tab commonly arrives as the distinct Key_Backtab code, not
+        // Key_Tab with a Shift modifier (X11 among other platforms) -- both
+        // spellings must cycle backward.
+        QKeyEvent backtabPress(QEvent::KeyPress, Qt::Key_Backtab, Qt::NoModifier);
+        QApplication::sendEvent(&viewport, &backtabPress);
+        check(spy.count() == 1 && spy.takeFirst().at(0).toInt() == -1,
+              "a literal Key_Backtab keypress cycles backward");
+
+        QKeyEvent shiftTabPress(QEvent::KeyPress, Qt::Key_Tab, Qt::ShiftModifier);
+        QApplication::sendEvent(&viewport, &shiftTabPress);
+        check(spy.count() == 1 && spy.takeFirst().at(0).toInt() == -1,
+              "Key_Tab plus a Shift modifier ALSO cycles backward (some "
+              "platforms deliver Shift+Tab this way instead of Key_Backtab)");
+
+        // Scoping: the same keypress on an ordinary line edit elsewhere in
+        // the window must NOT cycle tabs -- ordinary Tab focus traversal is
+        // completely untouched, because ViewportWidget's own
+        // focusNextPrevChild() override is only ever invoked when
+        // ViewportWidget itself is the widget Qt delivers the key press to.
+        QLineEdit sideField;
+        QKeyEvent tabOnLineEdit(QEvent::KeyPress, Qt::Key_Tab, Qt::NoModifier);
+        QApplication::sendEvent(&sideField, &tabOnLineEdit);
+        check(spy.count() == 0,
+              "the same Tab keypress delivered to a line edit elsewhere in "
+              "the window does not cycle viewport tabs");
+
+        // Remap deferral: once "viewport.tab.next" is bound to something
+        // other than Tab, a literal Tab keypress on the viewport must stop
+        // cycling (ordinary focus traversal resumes instead) -- the
+        // interception has to read the registry's CURRENT binding, not
+        // hard-code Key_Tab.
+        ShortcutRegistry::setBinding(
+            QStringLiteral("viewport.tab.next"),
+            QKeySequence(Qt::CTRL | Qt::Key_BracketRight));
+        QKeyEvent tabAfterRemap(QEvent::KeyPress, Qt::Key_Tab, Qt::NoModifier);
+        QApplication::sendEvent(&viewport, &tabAfterRemap);
+        check(spy.count() == 0,
+              "Tab no longer cycles once \"viewport.tab.next\" is remapped "
+              "away from it");
+        QKeyEvent remappedPress(QEvent::KeyPress, Qt::Key_BracketRight,
+                                Qt::ControlModifier);
+        QApplication::sendEvent(&viewport, &remappedPress);
+        check(spy.count() == 1 && spy.takeFirst().at(0).toInt() == 1,
+              "and the NEW binding cycles forward instead, through the "
+              "ordinary keyPressEvent() path (Ctrl+] is not a key Qt ever "
+              "routes through focusNextPrevChild())");
+
+        ShortcutRegistry::resetAllToDefaults(); // leave no trace for later tests
+    }
+
+    // Panel show/hide hotkeys (Task 2): Ctrl/Cmd+0..9, one per dock, ten
+    // registry entries in a "Panels" category.
+    std::printf("Panel show/hide hotkeys (Ctrl/Cmd+0..9):\n");
+    {
+        ShortcutRegistry::resetAllToDefaults();
+        static const std::pair<QString, int> kExpected[] = {
+            {QStringLiteral("panel.toggle.structure"), 0},
+            {QStringLiteral("panel.toggle.volumetricData"), 1},
+            {QStringLiteral("panel.toggle.additionalOverlays"), 2},
+            {QStringLiteral("panel.toggle.processes"), 3},
+            {QStringLiteral("panel.toggle.representation"), 4},
+            {QStringLiteral("panel.toggle.spatialReferences"), 5},
+            {QStringLiteral("panel.toggle.visualEffects"), 6},
+            {QStringLiteral("panel.toggle.orchestration"), 7},
+            {QStringLiteral("panel.toggle.hpc"), 8},
+            {QStringLiteral("panel.toggle.results"), 9},
+        };
+        bool allPresent = true;
+        bool allCorrectDigit = true;
+        bool allPanelsCategory = true;
+        for (const auto& [id, digit] : kExpected) {
+            const ShortcutAction* action = ShortcutRegistry::find(id);
+            if (!action) {
+                allPresent = false;
+                continue;
+            }
+            // Qt::CTRL is the portable modifier — Cmd on macOS, Ctrl
+            // elsewhere — with no per-platform branching in the source; on
+            // THIS build platform it compares equal to whichever native
+            // QKeySequence text the platform actually uses.
+            const QKeySequence expectedKey(
+                Qt::CTRL | static_cast<Qt::Key>(Qt::Key_0 + digit));
+            if (action->defaultKey != expectedKey)
+                allCorrectDigit = false;
+            if (action->category != QStringLiteral("Panels"))
+                allPanelsCategory = false;
+        }
+        check(allPresent, "all ten panel.toggle.* ids are registered");
+        check(allCorrectDigit,
+              "each is bound to Ctrl+<its digit> by default (Qt::CTRL, the "
+              "portable modifier — Cmd on macOS, Ctrl on Linux/Windows)");
+        check(allPanelsCategory, "all ten share the \"Panels\" category");
+
+        // No conflict among the ten themselves, or against anything else
+        // already registered — ShortcutRegistry::conflictFor() is the same
+        // check Preferences -> Hotkeys runs on every remap attempt.
+        bool noConflicts = true;
+        for (const auto& [id, digit] : kExpected) {
+            (void)digit;
+            if (!ShortcutRegistry::conflictFor(ShortcutRegistry::binding(id), id)
+                     .isEmpty())
+                noConflicts = false;
+        }
+        check(noConflicts,
+              "none of the ten collides with any other registered shortcut "
+              "(a repo-wide grep also found zero pre-existing Ctrl/Cmd+digit "
+              "bindings to conflict with in the first place)");
+
+        // The actual toggle mechanism MainWindow::createMenusAndDocks()
+        // wires per dock — findChild() by objectName, setShortcut() from
+        // the registry, raise() whenever the action becomes checked —
+        // reproduced here against a standalone QDockWidget rather than a
+        // full MainWindow (which this test binary does not build), since
+        // the pattern's correctness does not depend on which window hosts
+        // it.
+        QMainWindow host;
+        auto* dock = new QDockWidget(QStringLiteral("Structure"), &host);
+        dock->setObjectName(QStringLiteral("structureDock"));
+        host.addDockWidget(Qt::LeftDockWidgetArea, dock);
+        // A child's isVisible() reflects whether it is ACTUALLY realized on
+        // screen, which requires the whole ancestor chain (including this
+        // never-shown-by-default QMainWindow) to be shown too -- without
+        // this, every isVisible() check below reads false regardless of
+        // what setVisible()/trigger() just did.
+        host.show();
+        QAction* toggle = dock->toggleViewAction();
+        toggle->setShortcut(ShortcutRegistry::binding(kExpected[0].first));
+        int raiseCount = 0;
+        QObject::connect(toggle, &QAction::toggled, dock, [dock, &raiseCount](bool visible) {
+            if (visible) {
+                ++raiseCount;
+                dock->raise();
+            }
+        });
+
+        check(toggle->shortcut() == QKeySequence(Qt::CTRL | Qt::Key_0),
+              "the dock's toggleViewAction() carries the Ctrl+0 shortcut, "
+              "so the View menu displays it next to the entry automatically");
+
+        // Start from a KNOWN state -- addDockWidget() alone leaves it
+        // visible by default, which would make the first trigger() below a
+        // hide rather than a show if left unchecked.
+        dock->hide();
+        check(!dock->isVisible() && !toggle->isChecked(),
+              "starts hidden, with the action's own checked state agreeing");
+
+        toggle->trigger(); // exactly what Qt does when the shortcut fires
+        check(dock->isVisible() && raiseCount == 1,
+              "trigger()ing the action while hidden shows AND raises the "
+              "panel");
+        toggle->trigger();
+        check(!dock->isVisible(),
+              "trigger()ing it again while visible hides it (plain "
+              "show/hide toggle -- see the wiring comment in MainWindow.cpp "
+              "for why this stays simple rather than a raise-then-hide "
+              "three-state cycle for a manually tabified dock)");
+        toggle->trigger();
+        check(dock->isVisible() && raiseCount == 2,
+              "and a third trigger() shows it again, raising once more");
+
         ShortcutRegistry::resetAllToDefaults(); // leave no trace for later tests
     }
 

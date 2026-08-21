@@ -81,8 +81,11 @@ int main()
         checkContains(script, "#SBATCH --ntasks-per-node=16", "tasks per node");
         checkContains(script, "#SBATCH --time=12:00:00", "walltime");
         checkContains(script, "#SBATCH --partition=compute", "partition");
-        // --mem is per node, so the number goes across unchanged.
-        checkContains(script, "#SBATCH --mem=64000M", "memory, per node");
+        // --mem is per node, so the number goes across unchanged, but the
+        // UNIT does not (Task 3): SLURM's own directive is GB now, rounded
+        // UP to the next whole GB — 64000 MB / 1024 = 62.5, so 63, never 62
+        // (which would under-request memory).
+        checkContains(script, "#SBATCH --mem=63G", "memory, per node, in GB");
         checkContains(script, "#SBATCH --job-name=calango_run_01",
                       "job name with spaces sanitized");
         checkContains(script, "#SBATCH --output=calango_job.out",
@@ -166,20 +169,28 @@ int main()
                       "asking for none");
     }
 
-    std::printf("Task 4 extensions (account/QOS/cpus-per-task/GPUs/node "
-                "list/extra directives), SLURM only:\n");
+    std::printf("Task 4 extensions (cpus-per-task/GPUs/node list/extra "
+                "directives), SLURM only:\n");
     {
         RemoteJobSpec ext;
         ext.scheduler = Scheduler::Slurm;
-        ext.account = "phys-2026";
-        ext.qos = "priority";
         ext.cpusPerTask = 8;
         ext.gpusPerNode = 2;
         ext.nodeList = "gpu-node-03";
-        ext.extraDirectives = "#SBATCH --mail-type=END\n##SBATCH --exclusive";
+        // account/qos removed from RemoteJobSpec (Task 3) — extraDirectives
+        // is now how a cluster that requires either reaches the job, so
+        // this fixture puts them here rather than on their own removed
+        // fields, right alongside the other verbatim/disabled-directive
+        // cases it already covered.
+        ext.extraDirectives = "#SBATCH --account=phys-2026\n"
+                              "#SBATCH --qos=priority\n"
+                              "#SBATCH --mail-type=END\n"
+                              "##SBATCH --exclusive";
         const std::string script = SS::generate(ext);
-        checkContains(script, "#SBATCH --account=phys-2026", "account");
-        checkContains(script, "#SBATCH --qos=priority", "QOS");
+        checkContains(script, "#SBATCH --account=phys-2026",
+                      "account, via extraDirectives (Task 3's escape hatch, "
+                      "not a dedicated field any more)");
+        checkContains(script, "#SBATCH --qos=priority", "QOS, likewise");
         checkContains(script, "#SBATCH --cpus-per-task=8", "cpus per task");
         checkContains(script, "#SBATCH --gres=gpu:2", "GPUs per node");
         checkContains(script, "#SBATCH --nodelist=gpu-node-03", "node list");
@@ -194,8 +205,9 @@ int main()
         RemoteJobSpec plain;
         plain.scheduler = Scheduler::Slurm;
         const std::string plainScript = SS::generate(plain);
-        checkAbsent(plainScript, "--account=", "no account by default");
-        checkAbsent(plainScript, "--qos=", "no QOS by default");
+        checkAbsent(plainScript, "--account=",
+                    "no account by default (nothing populates extraDirectives)");
+        checkAbsent(plainScript, "--qos=", "no QOS by default, likewise");
         checkAbsent(plainScript, "--cpus-per-task=",
                     "no cpus-per-task at the default of 1 (SLURM's own "
                     "default already)");
@@ -256,9 +268,13 @@ int main()
     // in the same relative order, prologue before the launcher line) rather
     // than as a literal byte diff: `-J`/`-t`/`-p`/`-w` vs. Calango's
     // `--job-name=`/`--time=`/`--partition=`/`--nodelist=`, and `--mem 16G`
-    // vs. `--mem=16384M`, are exactly the "trivial formatting differences"
-    // this task says are fine -- SLURM accepts both spellings of each and
-    // 16G IS 16384M. The commented-out `##SBATCH --ntasks=16` is not a
+    // vs. `--mem=16G` (space vs. `=` — SLURM accepts either), are exactly
+    // the "trivial formatting differences" this task says are fine. The
+    // memory VALUE itself is now an exact match, not just an equivalent one
+    // (Task 3 switched Calango's own field to GB) — `job.memoryMbPerNode`
+    // below stays MB internally (RemoteJobSpec's own representation is
+    // unchanged), converted to GB only where the SLURM directive is
+    // written. The commented-out `##SBATCH --ntasks=16` is not a
     // functional directive at all (SLURM only ever reads a line spelled
     // EXACTLY "#SBATCH"), so it needs no dedicated field -- a user who wants
     // that exact line reproduced types it into "Extra #SBATCH lines".
@@ -282,9 +298,9 @@ int main()
         checkContains(script, "#SBATCH --ntasks-per-node=4", "--ntasks-per-node=4");
         checkContains(script, "#SBATCH --time=24:00:00", "-t 24:00:00");
         checkContains(script, "#SBATCH --partition=cpu", "-p cpu");
-        checkContains(script, "#SBATCH --mem=16384M",
-                      "--mem 16G, converted to Calango's MB convention "
-                      "(16 * 1024 = 16384)");
+        checkContains(script, "#SBATCH --mem=16G",
+                      "--mem 16G -- an EXACT match now (Task 3), not just "
+                      "an equivalent one in a different unit");
         checkContains(script, "#SBATCH --nodelist=work1", "-w work1");
         checkContains(script, "module purge", "module purge, verbatim");
         checkContains(script, "source ~/.bashrc", "source ~/.bashrc, verbatim");

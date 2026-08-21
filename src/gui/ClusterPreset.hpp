@@ -37,8 +37,10 @@ struct ClusterPreset {
     QString queue;
     int nodes = 1;
     int tasksPerNode = 1;
-    int memoryMbPerNode = 0; ///< 0 = cluster default
-    QString walltime = QStringLiteral("01:00:00");
+    int memoryMbPerNode = 0; ///< 0 = cluster default; MB internally — the
+                             ///< Scheduler tab's own field displays this as
+                             ///< GB (Task 3), converting at the UI boundary
+    QString walltime = QStringLiteral("48:00:00");
     QString parallelEnvironment = QStringLiteral("smp"); ///< SGE only
     QString setupLines; ///< module load / conda activate prologue
     /// This cluster's VASP POTCAR library — a per-installation path, so it
@@ -55,8 +57,9 @@ struct ClusterPreset {
     // -- SLURM-only extensions (Task 4) -------------------------------
     // Mirror core::RemoteJobSpec's own fields of the same name exactly —
     // see SchedulerScript.hpp for what each means and why it is SLURM-only.
-    QString account;
-    QString qos;
+    // (account/qos removed in Task 3 — see RemoteJobSpec's own comment;
+    // fromJson() below no longer reads those two keys, so an OLDER preset
+    // JSON that still has them just has them ignored, not rejected.)
     int cpusPerTask = 1;
     int gpusPerNode = 0;
     QString nodeList;

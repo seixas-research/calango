@@ -33,7 +33,7 @@ struct RemoteJobSpec {
     ///          DIVIDED by the slots on that node, or a 64 GB request on a
     ///          16-core node silently asks for 1 TB and the job never starts.
     int memoryMbPerNode = 0;
-    std::string walltime = "01:00:00"; ///< HH:MM:SS
+    std::string walltime = "48:00:00"; ///< HH:MM:SS
     /// SGE parallel environment (`-pe <name> <slots>`). Site-specific: "smp"
     /// is single-node shared memory almost everywhere, and a multi-node job
     /// needs whatever that site called its MPI environment. Ignored by SLURM
@@ -47,8 +47,15 @@ struct RemoteJobSpec {
     // "" / 0 = omit, the same convention `queue`/`memoryMbPerNode` already
     // use, so a spec built before these existed (or one for PBS/SGE) still
     // produces byte-identical output.
-    std::string account;  ///< #SBATCH --account=
-    std::string qos;      ///< #SBATCH --qos=
+    //
+    // account/qos (#SBATCH --account=, --qos=) were removed here (Task 3):
+    // the Scheduler tab no longer has dedicated fields for either — a
+    // cluster that requires a billing account still reaches one through
+    // `extraDirectives` below (e.g. a literal "#SBATCH --account=myproj"
+    // line), which is the documented escape hatch for exactly this. A
+    // ClusterPreset saved before this change may still have "account"/"qos"
+    // keys in its JSON; ClusterPreset::fromJson() simply never reads them
+    // any more (no error, no crash — see that file).
     /// OpenMP threads (or plain cores) per MPI rank — #SBATCH
     /// --cpus-per-task=. Distinct from tasksPerNode: that is how many RANKS
     /// share a node, this is how many CORES each rank itself gets.

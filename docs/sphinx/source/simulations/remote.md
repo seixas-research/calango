@@ -100,10 +100,15 @@ The {guilabel}`Scheduler` tab describes the batch job:
 - {guilabel}`Nodes × tasks` — whole machines requested, and ranks (or
   cores) on each of them. The total (nodes × tasks) is what SGE is given
   directly, since it requests slots rather than machines.
-- {guilabel}`Memory / node` — per node; zero requests the cluster's own
-  default. SLURM's `--mem` and PBS's chunk memory take this unchanged; SGE's
-  `h_vmem` is per **slot**, so it is divided by the tasks per node first.
-- {guilabel}`Walltime` — `HH:MM:SS`, default **01:00:00**.
+- {guilabel}`Memory / node` — in **GB**; zero requests the cluster's own
+  default. Internally still tracked in MB (SLURM's `--mem` is emitted in GB,
+  rounded *up* to the next whole GB — never down, which would silently
+  under-request); PBS's chunk memory and SGE's `h_vmem` (per **slot**,
+  divided by the tasks per node first) are unaffected, both still reading
+  the same MB value they always did.
+- {guilabel}`Walltime` — `HH:MM:SS`, default **48:00:00** for a new profile.
+  A profile saved before this default changed keeps whatever walltime it
+  was saved with — the default only applies to a profile that never set one.
 - {guilabel}`Parallel env` — SGE only: the site's parallel-environment name
   (`-pe`). `smp` is single-node shared memory almost everywhere, so a
   multi-node SGE job needs whatever that cluster called its MPI PE.
@@ -119,12 +124,10 @@ The {guilabel}`Scheduler` tab describes the batch job:
   GPAW's own `gpaw python run.py`. A second line runs *after* it, for
   cleanup that has to happen once the job finishes, e.g. `conda deactivate`.
 
-The following six are **SLURM only** — PBS and SGE describe resources
+The following four are **SLURM only** — PBS and SGE describe resources
 differently and have no equivalent, so these rows are hidden unless
 {guilabel}`Scheduler` is set to SLURM:
 
-- {guilabel}`Account` — billing/allocation account (`--account`).
-- {guilabel}`QOS` — quality-of-service name (`--qos`).
 - {guilabel}`CPUs/task` — cores per MPI rank (`--cpus-per-task`), for a
   hybrid MPI+OpenMP job. Distinct from the ranks-per-node above: that is how
   many ranks share a node, this is how many cores each rank itself gets.
@@ -135,10 +138,20 @@ differently and have no equivalent, so these rows are hidden unless
   specifically requires it.
 - {guilabel}`Extra #SBATCH lines` — free-form, inserted into the `#SBATCH`
   block verbatim, after every field above — the escape hatch for a
-  directive none of these controls covers. Include your own `#SBATCH `
+  directive none of these controls covers, **including a billing account or
+  a QOS**, both of which used to have their own dedicated fields here.
+  A cluster that requires one types e.g. `#SBATCH --account=myproject` or
+  `#SBATCH --qos=high` directly into this box. Include your own `#SBATCH `
   prefix on each line (or `##SBATCH ` for one you want present but
   deliberately disabled, which SLURM itself already ignores, since it only
   ever reads a line spelled exactly `#SBATCH`).
+
+:::{note}
+A profile saved before Account/QOS were removed from this tab still loads
+correctly — the two stored values are simply no longer read from anywhere.
+Add them to {guilabel}`Extra #SBATCH lines` instead if the cluster still
+needs one.
+:::
 
 ```bash
 module load python

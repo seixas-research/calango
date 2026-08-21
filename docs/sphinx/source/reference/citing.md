@@ -17,7 +17,7 @@ article number, the year in parentheses), grouped under four headers:
 |---|---|
 | **Core** | ASE — the library every generated script builds its structure and runs its calculator through — and Calango itself |
 | **Databases** | Whichever of Materials Project, C2DB and PubChem the Database Browser actually queried |
-| **Calculators** | The DFT/MD engines the wizards generate scripts for — GPAW, Quantum ESPRESSO, VASP, SIESTA, LAMMPS, MACE, xTB — cite the ones a given result actually ran on, not the whole list |
+| **Calculators** | The DFT/MD engines the wizards generate scripts for — GPAW, Quantum ESPRESSO, VASP, SIESTA, LAMMPS, MACE, xTB, DFTB+ and Calango's own native DFTB engine (CalangoDftb, sharing DFTB+'s SCC-DFTB method citation) — cite the ones a given result actually ran on, not the whole list |
 | **Libraries** | Python packages customary to cite where a venue expects it: spglib, NumPy, phonopy, icet, dftd4 |
 
 Some entries carry a short note under them — "cite together with ASE,
