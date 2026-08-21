@@ -41,6 +41,32 @@ struct ClusterPreset {
     QString walltime = QStringLiteral("01:00:00");
     QString parallelEnvironment = QStringLiteral("smp"); ///< SGE only
     QString setupLines; ///< module load / conda activate prologue
+    /// This cluster's VASP POTCAR library — a per-installation path, so it
+    /// belongs to the profile rather than to global Preferences. Exported as
+    /// CALANGO_VASP_PP_PATH ahead of `setupLines` in the generated job
+    /// wrapper (SchedulerScript.cpp) when non-empty; the generated VASP
+    /// script prefers it over whatever was baked in at generation time on
+    /// the LOCAL machine (AseScriptGenerator.cpp, emitVasp()) — the one
+    /// value guaranteed to describe the machine the job actually runs on.
+    /// Empty leaves the run.py-baked path (or the environment's own
+    /// VASP_PP_PATH) in charge, exactly as before this field existed.
+    QString vaspPotcarPath;
+
+    // -- SLURM-only extensions (Task 4) -------------------------------
+    // Mirror core::RemoteJobSpec's own fields of the same name exactly —
+    // see SchedulerScript.hpp for what each means and why it is SLURM-only.
+    QString account;
+    QString qos;
+    int cpusPerTask = 1;
+    int gpusPerNode = 0;
+    QString nodeList;
+    QString extraDirectives; ///< raw #SBATCH lines, verbatim
+    /// The payload command — may span multiple lines (a launcher line, then
+    /// post-run cleanup like "conda deactivate"). Falls back to
+    /// RemoteJobSpec's own "python3 run.py" default when empty, exactly
+    /// like every other per-cluster field defaults to "use the built-in
+    /// default" rather than persisting the default itself.
+    QString command;
 
     QJsonObject toJson() const;
     /// Tolerant: a preset written by an older build simply keeps the defaults

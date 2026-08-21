@@ -6,6 +6,21 @@
 
 namespace calango::core {
 
+/// Which engine samples the plane, and how it gets there. Mirrors
+/// core::ElectronicBackend's naming — the "ordinary" 1D band structure's own
+/// backend enum — deliberately: this reuses that module's established
+/// per-engine chaining pattern (see ElectronicScriptGenerator.cpp) rather
+/// than inventing a second one. Every engine samples the SAME explicit
+/// fractional k-point grid (`_kpts`, computed once, engine-agnostically);
+/// only how each one is HANDED that grid and how the resulting eigenvalues
+/// come back differs — see generateTwoDBandsScript()'s per-engine sections.
+enum class TwoDBandsBackend {
+    Gpaw,
+    Espresso,
+    Siesta,
+    Vasp,
+};
+
 /// Parameters for a 2D band-surface calculation: E_n(k_x, k_y) sampled over a
 /// grid covering the two-dimensional Brillouin zone.
 ///
@@ -13,19 +28,47 @@ namespace calango::core {
 /// there is no k-path. A 2D material's dispersion IS a surface over the
 /// k_x-k_y plane, and a path through it is a set of cuts through that surface —
 /// useful, but not the object. Everything else (restart from a converged
-/// baseline density, evaluate non-self-consistently, inherit cutoff/XC/mode)
-/// is deliberately the same workflow.
-///
+/// baseline density where the engine supports one, evaluate non-self-
+/// consistently, inherit cutoff/XC/mode) is deliberately the same workflow
+/// as the 1D case, per engine.
+
 /// UI-free so the script can also be generated headlessly.
 struct TwoDBandsConfig {
-    /// Engine + backend knobs. Only the GPAW fields are read: the whole method
-    /// rests on `calc.fixed_density()`, which no other backend in this
-    /// application exposes.
+    TwoDBandsBackend backend = TwoDBandsBackend::Gpaw;
+
+    /// Engine + backend knobs. Only read by the Gpaw backend: the whole
+    /// method rests on `calc.fixed_density()`, which no other backend in
+    /// this application exposes the same way.
     CalculatorConfig gpaw;
 
-    /// Absolute path to the converged `.gpw` this run restarts from. Required —
-    /// the wizard refuses to open without a completed single point, for the
-    /// same reason the Electronic Structure wizard does.
+    /// Plane-wave cutoff (eV), Espresso/Vasp self-contained-SCF path only —
+    /// converted to Ry for Espresso. Vasp's baseline-restart path also reads
+    /// this, since ICHARG=11 still needs ENCUT set for the NSCF pass.
+    double ecutEv = 500.0;
+    /// Monkhorst-Pack SCF k-grid (n x n x n), Espresso/Siesta/Vasp
+    /// self-contained-SCF path only.
+    int scfKpts = 7;
+
+    /// Pseudopotential directory (Preferences → External Files), Espresso
+    /// only. Empty leaves the generated script's own placeholder in place —
+    /// see SimulationWizardBase::espressoPseudoDirectory() and
+    /// AseScriptGenerator.cpp's own emitEspresso(), which this mirrors.
+    std::string espressoPseudoDir;
+    /// Same, for Siesta — but via `SIESTA_PP_PATH`, not a constructor
+    /// keyword, and with a real runtime check when unset rather than a
+    /// silent placeholder; see AseScriptGenerator.cpp's own emitSiesta(),
+    /// which this mirrors exactly.
+    std::string siestaPseudoDir;
+
+    /// Restart point, meaning depends on the engine — see the class docs for
+    /// which engines require one and which run self-contained instead:
+    ///   Gpaw:  a converged `.gpw`         (REQUIRED)
+    ///   Vasp:  a converged `CHGCAR`       (REQUIRED)
+    ///   Espresso, Siesta: not used — always self-contained, since neither
+    ///     engine's ASE calculator (as this application drives it — see
+    ///     ElectronicScriptGenerator's own Espresso/Siesta branches, which
+    ///     this mirrors) exposes a single portable restart artifact the way
+    ///     a `.gpw` or a `CHGCAR` is one.
     std::string baselineDensityPath;
 
     /// Samples along each reciprocal-lattice direction: the grid is N×N.
@@ -42,23 +85,35 @@ struct TwoDBandsConfig {
     int bandsBelow = 4;
     int bandsAbove = 4;
 
-    /// Total bands the fixed-density run diagonalizes. 0 ⇒ leave GPAW's own
-    /// choice, which is the occupied set plus a few; raise it when the
-    /// conduction bands of interest are not converged.
+    /// Total bands the fixed-density run diagonalizes. 0 ⇒ leave the engine's
+    /// own choice, which is the occupied set plus a few; raise it when the
+    /// conduction bands of interest are not converged. Read by Gpaw
+    /// (`nbands`), Vasp (`NBANDS`) and Espresso (`nbnd`) — the three engines
+    /// with a direct plane-wave/PAW band count to set. Not read by Siesta:
+    /// its finite atomic-orbital basis sets the band count implicitly (one
+    /// state per basis orbital), with no separate "how many bands" dial the
+    /// 1D Electronic Structure module's own Siesta branch sets either.
     int totalBands = 0;
 
-    /// Re-diagonalize in the spinor basis (gpaw.spinorbit). The reason a 2D
-    /// surface plot is often wanted in the first place: Rashba splitting and
-    /// spin-orbit-induced gaps at band touchings are invisible in a scalar
-    /// relativistic calculation.
+    /// Re-diagonalize in the spinor basis (gpaw.spinorbit). GPAW ONLY — the
+    /// reason a 2D surface plot is often wanted in the first place, since
+    /// Rashba splitting and spin-orbit-induced gaps at band touchings are
+    /// invisible in a scalar relativistic calculation, but no other engine
+    /// this application drives exposes a comparable non-perturbative SOC
+    /// re-diagonalization of an already-converged NSCF state. Ignored (no
+    /// effect, no error) on the other three backends.
     bool spinOrbit = false;
 
     /// Also evaluate every band on a Monkhorst-Pack mesh spanning the
     /// primitive 2D reciprocal cell and export it as the JSON's "bz_map"
     /// object — the input of the results window's flat first-Brillouin-zone
-    /// map view. Off by default, and off is a compatibility contract: without
-    /// it the generated script is byte-identical to what this generator has
-    /// always produced, so old runs and new ones stay interchangeable.
+    /// map view. GPAW ONLY, for the same reason as `spinOrbit`: it costs a
+    /// second full N×N fixed-density pass, which only GPAW's baseline-restart
+    /// route makes cheap enough to default sensibly; ignored on the other
+    /// three backends. Off by default, and off is a compatibility contract:
+    /// without it the generated GPAW script is byte-identical to what this
+    /// generator has always produced, so old runs and new ones stay
+    /// interchangeable.
     bool bzMap = false;
 
     /// Samples per direction of that map mesh (N×N). Quadratic cost, same as

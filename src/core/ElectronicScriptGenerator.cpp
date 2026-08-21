@@ -512,7 +512,21 @@ std::string generateElectronicScript(const ElectronicConfig& c)
             << c.ecutEv / 13.605693122994 << "}},\n"
                "                 kpts=bandpath)\n"
                "atoms.calc = bands\n"
-               "atoms.get_potential_energy()\n"
+               // A "bands" calculation runs pw.x and populates every
+               // eigenvalue, but never reports a total energy — verified by
+               // actually running this against real pw.x: QE has nothing
+               // self-consistent left to converge, so get_potential_energy()
+               // raises PropertyNotImplementedError even though the run
+               // itself succeeded. It is still what TRIGGERS pw.x, so it is
+               // called for that reason alone, with the one exception it is
+               // known to raise afterward caught by name — not masked with
+               // a bare except, which would also swallow a genuine failure.
+               "from ase.calculators.calculator import "
+               "PropertyNotImplementedError as _pni\n"
+               "try:\n"
+               "    atoms.get_potential_energy()\n"
+               "except _pni:\n"
+               "    pass\n"
                "bs = atoms.calc.band_structure()\n"
                "bs._reference = efermi\n"
                "_calango_progress(3, 4)\n";
@@ -534,8 +548,17 @@ std::string generateElectronicScript(const ElectronicConfig& c)
                "_calango_progress(2, 4)\n"
                "\n"
                "# Non-self-consistent band run along the path.\n"
+               "#\n"
+               "# `bandpath=`, not `kpts=` — ASE's Siesta.kpts is the SCF\n"
+               "# Monkhorst-Pack grid dimensions ONLY (it indexes into\n"
+               "# whatever is passed as kpts[0..2]); an explicit k-point set,\n"
+               "# band path or otherwise, is a SEPARATE keyword that writes\n"
+               "# %block BandPoints from path.kpts. Passing the BandPath as\n"
+               "# kpts= crashes at write-input time (TypeError: len() of\n"
+               "# unsized object) rather than at the queue, since Siesta's\n"
+               "# kpts writer expects to index it like a 3-tuple.\n"
                "bands = Siesta(xc=\"PBE\", mesh_cutoff=200 * Ry,\n"
-               "               energy_shift=0.01 * Ry, kpts=bandpath)\n"
+               "               energy_shift=0.01 * Ry, bandpath=bandpath)\n"
                "atoms.calc = bands\n"
                "atoms.get_potential_energy()\n"
                "bs = atoms.calc.band_structure()\n"
@@ -591,7 +614,15 @@ std::string generateElectronicScript(const ElectronicConfig& c)
                 << "bands = Vasp(xc=\"PBE\", encut=" << c.ecutEv
                 << ", icharg=11,\n"
                    "             ismear=0, sigma=0.05,\n"
-                   "             directory=\".\", kpts=bandpath)\n"
+                   // bandpath.kpts, not bandpath itself, and reciprocal=True:
+                   // ASE's Vasp writer needs a plain array (a BandPath object
+                   // has no __format__, so passing it raw crashes at
+                   // write-input time with "unsupported format string passed
+                   // to BandPath.__format__"), and without reciprocal=True
+                   // the fractional coordinates it DOES accept would be
+                   // written as if they were already Cartesian 1/A.
+                   "             directory=\".\", kpts=bandpath.kpts,\n"
+                   "             reciprocal=True)\n"
                    "atoms.calc = bands\n"
                    "atoms.get_potential_energy()\n"
                    "efermi = float(atoms.calc.get_fermi_level())\n"
@@ -613,7 +644,8 @@ std::string generateElectronicScript(const ElectronicConfig& c)
                 << "bands = Vasp(xc=\"PBE\", encut=" << c.ecutEv
                 << ", icharg=11,\n"
                    "             ismear=0, sigma=0.05,\n"
-                   "             directory=\".\", kpts=bandpath)\n"
+                   "             directory=\".\", kpts=bandpath.kpts,\n"
+                   "             reciprocal=True)\n"
                    "atoms.calc = bands\n"
                    "atoms.get_potential_energy()\n"
                    "bs = atoms.calc.band_structure()\n"

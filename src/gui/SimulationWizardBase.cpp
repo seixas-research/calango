@@ -11,6 +11,7 @@
 #include "gui/PythonHighlighter.hpp"
 #include "gui/RunCommands.hpp"
 #include "gui/ScriptStaging.hpp"
+#include "gui/VaspPotcarPreflight.hpp"
 #include "python_bridge/PythonEngine.hpp"
 
 #include <QCheckBox>
@@ -134,6 +135,8 @@ void SimulationWizardBase::buildUi()
     connect(exportButton_, &QPushButton::clicked, this,
             &SimulationWizardBase::exportScript);
     connect(runLocalButton_, &QPushButton::clicked, this, [this] {
+        if (!preflightVaspPotcar() || !preflightSecondary())
+            return;
         // Calango's own engine has no script to launch — it runs in this
         // process. Distinguished here rather than at the host so a wizard
         // whose host installed no runner still cannot silently stage a
@@ -143,6 +146,8 @@ void SimulationWizardBase::buildUi()
         accept();
     });
     connect(runRemoteButton_, &QPushButton::clicked, this, [this] {
+        if (!preflightVaspPotcar() || !preflightSecondary())
+            return;
         action_ = Action::RunRemote;
         accept();
     });
@@ -935,6 +940,26 @@ void SimulationWizardBase::updateVaspRows()
                 : tr("<tt>%1</tt><br/><i>From Preferences → External "
                      "Files.</i>").arg(path.toHtmlEscaped()));
     }
+}
+
+bool SimulationWizardBase::preflightVaspPotcar()
+{
+    if (selectedCalculator() != core::CalculatorKind::Vasp)
+        return true;
+    const core::CalculatorConfig cfg = baseCalculatorConfig();
+    const auto result = checkVaspPotcar(
+        QString::fromStdString(cfg.vaspPotcarPath), suggestionElements());
+    if (result.ok)
+        return true;
+    QMessageBox::warning(
+        this, tr("VASP POTCAR directory"),
+        tr("%1\n\nNothing was launched. This is a LOCAL check — a remote "
+           "job's cluster profile may configure its own POTCAR directory "
+           "(HPC panel → Scheduler → VASP POTCAR directory) that lives on "
+           "a machine this check cannot see; that path is validated when "
+           "the job actually runs, the same way this one was checked here.")
+            .arg(result.errorMessage));
+    return false;
 }
 
 QWidget* SimulationWizardBase::buildLammpsGroup(QWidget* parent)

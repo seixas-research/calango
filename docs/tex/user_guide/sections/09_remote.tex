@@ -33,7 +33,6 @@ The \ui{Connection} tab holds the cluster credentials:
 \begin{description}
   \item[\ui{Host}, \ui{Port}] Hostname and port (default 22).
   \item[\ui{User}] Your account name on the cluster.
-  \item[\ui{Auth}] \ui{SSH key} or \ui{Password}.
   \item[\ui{Key file}] Path to a private key, e.g.\
     \file{\textasciitilde/.ssh/id\_rsa}. Leave empty to let your SSH agent
     or default keys authenticate.
@@ -48,6 +47,18 @@ The \ui{Connection} tab holds the cluster credentials:
   \item[\ui{Disconnect}] Closes the session. A job already submitted keeps
     running on the cluster.
 \end{description}
+
+\begin{calnote}
+There is no separate \ui{Auth} picker: which method is used is
+\emph{inferred} from \ui{Key file} and \ui{Password}, freshly, on every
+connection attempt. A key file present selects key authentication (with
+\ui{Password}, if also filled, used as that key's passphrase, the same
+precedence plain SSH uses); a password with no key selects password
+authentication; both left empty still attempts the connection, with no
+explicit credential of its own, so the SSH agent and the default key files
+(\file{\textasciitilde/.ssh/id\_ed25519}, \file{id\_ecdsa},
+\file{id\_rsa}) get their usual chance.
+\end{calnote}
 
 \subsection*{Two-factor authentication}
 
@@ -78,27 +89,128 @@ The \ui{Scheduler} tab describes the batch job:
 \begin{description}
   \item[\ui{Scheduler}] \ui{SLURM}, \ui{PBS} or \ui{SGE}.
   \item[\ui{Queue}] Partition or queue name; empty uses the cluster default.
-  \item[\ui{Tasks / cores}] Requested cores.
+  \item[\ui{Nodes $\times$ tasks}] Whole machines requested, and ranks (or
+    cores) on each of them. The total (nodes $\times$ tasks) is what SGE is
+    given directly, since it requests slots rather than machines.
+  \item[\ui{Memory / node}] Per node; zero requests the cluster's own
+    default. SLURM's \texttt{--mem} and PBS's chunk memory take this
+    unchanged; SGE's \texttt{h\_vmem} is per \emph{slot}, so it is divided
+    by the tasks per node first.
   \item[\ui{Walltime}] \texttt{HH:MM:SS}, default \texttt{01:00:00}.
+  \item[\ui{Parallel env}] SGE only: the site's parallel-environment name
+    (\texttt{-pe}). \texttt{smp} is single-node shared memory almost
+    everywhere, so a multi-node SGE job needs whatever that cluster called
+    its MPI PE.
   \item[\ui{Setup}] Shell lines executed before the payload --- module
     loads, \texttt{conda activate}, anything your site needs:
     \begin{lstlisting}
 module load python
 source ~/venvs/ase/bin/activate
     \end{lstlisting}
-  \item[\ui{Submit Calculation\ldots}] Opens the usual calculator dialog,
-    then submits the result.
+  \item[\ui{VASP POTCAR dir}] This cluster's PAW pseudopotential library;
+    see \S\ref{sec:potcar-resolution} below. Only matters for VASP jobs,
+    and only needs setting when this cluster's library lives somewhere
+    other than wherever your own machine's copy does.
+  \item[\ui{Command}] The payload itself, run after Setup. Defaults to
+    running the staged script directly; type a launcher line here for
+    anything else --- \texttt{mpirun -n 4 python3 run.py}, or a
+    site-specific one like GPAW's own \texttt{gpaw python run.py}. A second
+    line runs \emph{after} it, for cleanup that has to happen once the job
+    finishes, e.g.\ \texttt{conda deactivate}.
+\end{description}
+
+The following six rows are \textbf{SLURM only} --- PBS and SGE describe
+resources differently and have no equivalent, so the \ui{Scheduler} tab
+hides them unless \ui{Scheduler} is set to SLURM:
+
+\begin{description}
+  \item[\ui{Account}] Billing/allocation account (\texttt{--account}).
+  \item[\ui{QOS}] Quality-of-service name (\texttt{--qos}).
+  \item[\ui{CPUs/task}] Cores per MPI rank (\texttt{--cpus-per-task}), for a
+    hybrid MPI+OpenMP job. Distinct from the ranks-per-node above: that is
+    how many ranks share a node, this is how many cores each rank itself
+    gets.
+  \item[\ui{GPUs/node}] Requested as \texttt{--gres=gpu:N}, the gres
+    spelling that works on essentially every SLURM cluster with GPU nodes.
+  \item[\ui{Node list}] Pin the job to specific node(s) by name
+    (\texttt{--nodelist}). Rarely needed; leave empty unless the cluster or
+    the job specifically requires it.
+  \item[\ui{Extra \#SBATCH lines}] Free-form, inserted into the
+    \texttt{\#SBATCH} block verbatim, after every field above --- the
+    escape hatch for a directive none of these controls covers. Include
+    your own \texttt{\#SBATCH } prefix on each line (or \texttt{\#\#SBATCH
+    } for one you want present but deliberately disabled, which SLURM
+    itself already ignores, since it only ever reads a line spelled
+    exactly \texttt{\#SBATCH}).
 \end{description}
 
 The generated wrapper carries the right directives for your scheduler ---
 \texttt{\#SBATCH}, \texttt{\#PBS} or \texttt{\#\$} --- and always redirects
-output to fixed file names so the monitor knows what to tail.
+output to fixed file names (\file{calango\_job.out}, \file{calango\_job.err})
+so the monitor knows what to tail regardless of how the site templates its
+jobs. Every field above is saved with the cluster profile (\ui{Connection}
+tab), the same as the host and credentials, so a second cluster with
+different modules, a different account, or a different POTCAR library needs
+entering only once.
+
+\section{POTCAR resolution}
+\label{sec:potcar-resolution}
+
+VASP's PAW datasets (POTCARs) are licensed material: Calango never bundles,
+generates, or transfers one. Every generated VASP script assembles its own
+\file{POTCAR} locally, through ASE, from a library that has to already
+exist on whichever machine the script actually runs on --- and for a
+remote job, that is \textbf{the cluster}, not the machine that built the
+script.
+
+The generated script resolves the library in this order:
+
+\begin{enumerate}
+  \item \texttt{CALANGO\_VASP\_PP\_PATH}, if the environment already has
+    it --- this is what the \ui{VASP POTCAR dir} field above exports,
+    ahead of your own \ui{Setup} lines, in the job wrapper submitted to
+    \emph{this} cluster. Set it once per cluster preset and every VASP job
+    submitted there uses it, with no per-job typing.
+  \item Otherwise, the path configured in \menu{Preferences}\menusep
+    \menu{External Files}\menusep\menu{VASP (VASP\_PP\_PATH)} --- baked
+    into the script at generation time, on the machine that built it.
+    Correct for a local run; for a remote one it only happens to work if
+    that path also exists, unchanged, on the cluster --- which is exactly
+    what case 1 exists to avoid relying on.
+  \item Otherwise, whatever \texttt{VASP\_PP\_PATH} the shell environment
+    already carries wherever the script runs --- the same fallback ASE
+    itself would use.
+\end{enumerate}
+
+Either a flat library (\file{<dir>/<Element>/POTCAR}) or the nested
+\texttt{potpaw\_PBE}/\texttt{potpaw}/\texttt{potpaw\_LDA} layout is
+recognized automatically; a flat one is transparently shimmed with symlinks
+so ASE's own lookup finds it. Before ever calling into the VASP calculator,
+the script also checks that \textbf{every element the structure actually
+needs} has a \file{POTCAR} under the resolved library --- not just that
+the directory exists --- and fails immediately, naming the missing
+element(s) and the exact path searched, instead of a deep ASE traceback
+minutes into the queue. Calango does not auto-select PAW variants
+(\texttt{\_sv}/\texttt{\_pv}/\texttt{\_d} suffixes) or switch between the
+PBE and LDA libraries --- point the configured directory at a library that
+already has the variant you want for every element.
+
+\begin{calnote}
+The same check runs, as a local approximation, \emph{before} a VASP job is
+staged at all: clicking \ui{Run (Local)} or \ui{Run (Remote)} in the
+calculator wizard validates the path configured in Preferences and warns
+immediately if it is missing or incomplete. This is necessarily a LOCAL
+check --- it cannot inspect a cluster's filesystem over SSH, so a
+per-cluster \ui{VASP POTCAR dir} override is validated only when the job
+actually runs, by the same in-script check described above.
+\end{calnote}
 
 \section{Submitting and monitoring}
 
-\menu{Simulation}\menusep\menu{New Remote Calculation}
-(\kbd{Ctrl}+\kbd{Shift}+\kbd{R}) --- or \ui{Submit Calculation\ldots} in
-the panel --- runs the full sequence:
+Every calculator wizard offers \ui{Run (Remote)} alongside \ui{Run
+(Local)} on its last stage --- there is no separate ``remote'' dialog.
+Configure the calculation as usual and click \ui{Run (Remote)} instead of
+\ui{Run (Local)}; Calango then runs the full sequence:
 
 \begin{enumerate}
   \item Stage \file{run.py} and \file{structure.extxyz} into a local job
@@ -110,9 +222,13 @@ the panel --- runs the full sequence:
 \end{enumerate}
 
 The \ui{Queue \& Logs} tab then shows the job ID and remote directory, the
-live queue state polled with \texttt{squeue} or \texttt{qstat}, and the
-remote standard output and error streamed incrementally into the console
-(errors in red). \ui{Cancel Job} issues \texttt{scancel} or \texttt{qdel}.
+live queue state polled with \texttt{squeue} or \texttt{qstat} (every
+\textbf{10 s} by default), and the remote standard output and error
+streamed incrementally into the console (errors in red). PBS and SGE short
+codes are normalized to readable states (\texttt{R} $\to$ RUNNING,
+\texttt{qw} $\to$ PENDING, \texttt{H}/\texttt{hqw} $\to$ HELD), so the
+display reads the same whatever the cluster runs. \ui{Cancel Job} issues
+\texttt{scancel} or \texttt{qdel}.
 
 \section{Retrieving results}
 

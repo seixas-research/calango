@@ -24,8 +24,19 @@
 #      and the compiled objects, so --skip-build on a later run is only
 #      useful if the run before it was given --keep-cache.
 #
+# This script is meant to be run unattended, start to finish, with no one
+# watching the log and interpreting it: missing build tools (Qt, create-dmg)
+# are installed via Homebrew rather than reported as an error; the embedded
+# Python payload is refreshed whenever what it needs to contain changes
+# (fingerprinted below) rather than only when it is entirely absent; a cache
+# that is merely stale gets an upgrade pass instead of a fresh 500 MB
+# re-download; and the two genuinely long, silent steps (the standalone-
+# Python download and the pip install) print a heartbeat and give up on a
+# bounded timeout instead of running (or hanging) with no visible sign of
+# whether they are working or stuck.
+#
 # Usage:  packaging/macos/create_dmg.sh [--manual] [--skip-build] [--no-python]
-#                                       [--keep-cache]
+#                                       [--keep-cache] [--no-brew]
 #
 # Overridable via environment:
 #   BUILD_DIR                 build/output directory (default build-macos-bundle)
@@ -76,12 +87,14 @@ MANUAL=0
 SKIP_BUILD=0
 WITH_PYTHON=1
 KEEP_CACHE=0
+NO_BREW=0
 for arg in "$@"; do
     case "$arg" in
         --manual)     MANUAL=1 ;;
         --skip-build) SKIP_BUILD=1 ;;
         --no-python)  WITH_PYTHON=0 ;;
         --keep-cache) KEEP_CACHE=1 ;;
+        --no-brew)    NO_BREW=1 ;;
         *) echo "unknown option: $arg" >&2; exit 2 ;;
     esac
 done
@@ -231,10 +244,83 @@ fi
 [[ -x "$PYTHON_BIN" ]] || {
     echo "error: no usable Python interpreter (set PYTHON_BIN)" >&2; exit 1; }
 
+# --- Run a command with a heartbeat and a hard timeout ---------------------
+#
+# The two genuinely slow steps below (downloading the standalone-Python
+# tarball, pip installing the embedded package set) are otherwise silent for
+# minutes at a time — indistinguishable, from the log, between "working" and
+# "hung". That ambiguity is exactly what turns a one-shot script into
+# something that needs a person (or an LLM) watching it and deciding whether
+# to keep waiting or kill it. Printing progress and enforcing a ceiling here
+# means the script makes that call itself, every time, unattended.
+#
+# No dependency on GNU coreutils' `timeout` (not on a stock macOS PATH):
+# backgrounds the command, polls it, and escalates TERM -> KILL if it is
+# still alive past max_seconds.
+run_with_watchdog() {
+    local desc="$1" max_seconds="$2"; shift 2
+    "$@" &
+    local pid=$!
+    local elapsed=0
+    while kill -0 "$pid" 2>/dev/null; do
+        sleep 15
+        elapsed=$((elapsed + 15))
+        if [[ "$elapsed" -ge "$max_seconds" ]]; then
+            echo "error: $desc exceeded ${max_seconds}s — giving up" >&2
+            kill -TERM "$pid" 2>/dev/null || true
+            sleep 2
+            kill -KILL "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            return 124
+        fi
+        echo "    ... still $desc (${elapsed}s elapsed)"
+    done
+    wait "$pid"
+}
+
+# --- Auto-bootstrap missing build tooling -----------------------------------
+#
+# Unattended means a machine that has Homebrew but has never built Calango
+# before does not stop here and wait for someone to go run `brew install` —
+# it installs the one or two formulas this script actually needs and keeps
+# going. Never a blanket `brew upgrade` (that touches everything Homebrew
+# manages on the machine, not just this script's dependencies) — only ever
+# the named formula, and only when it is missing outright; an already-
+# installed-but-outdated formula is reported, not silently upgraded out from
+# under whatever else on the machine depends on that exact version.
+# --no-brew (or no `brew` on PATH at all) skips this and falls through to the
+# existing hard failures below, for a sandboxed/offline runner that
+# provisions its own tools ahead of time.
+ensure_brew_formula() {
+    local formula="$1" probe_path="$2"
+    [[ "$NO_BREW" -eq 1 ]] && return 0
+    command -v brew >/dev/null 2>&1 || return 0
+
+    if [[ -n "$probe_path" && -e "$probe_path" ]] \
+       || brew list --formula "$formula" >/dev/null 2>&1; then
+        if brew outdated --formula 2>/dev/null | grep -qx "$formula"; then
+            echo "note: Homebrew formula '$formula' has an update available — 'brew upgrade $formula' to take it"
+        fi
+        return 0
+    fi
+
+    echo "==> '$formula' not found — installing via Homebrew"
+    brew install "$formula" \
+        || echo "warning: 'brew install $formula' failed; continuing without it" >&2
+}
+
+ensure_brew_formula cmake "$(command -v cmake || true)"
 command -v cmake >/dev/null || { echo "error: cmake not found" >&2; exit 1; }
+
+ensure_brew_formula qt "$QT_PREFIX"
 MACDEPLOYQT="$QT_PREFIX/bin/macdeployqt"
 [[ -x "$MACDEPLOYQT" ]] || MACDEPLOYQT="$(command -v macdeployqt || true)"
 [[ -n "$MACDEPLOYQT" ]] || echo "warning: macdeployqt not found — the .app may not be self-contained" >&2
+
+# create-dmg is only used by the --manual fallback assembly, and that fallback
+# already degrades to hdiutil when it is absent — so this is a nicety, not a
+# requirement, and its failure is never fatal.
+ensure_brew_formula create-dmg "$(command -v create-dmg || true)"
 
 # --- 0. Standalone Python payload (ASE preinstalled) -----------------------
 # python-build-standalone's "install_only" trees are relocatable, unlike a
@@ -243,7 +329,7 @@ MACDEPLOYQT="$QT_PREFIX/bin/macdeployqt"
 PBS_REPO="astral-sh/python-build-standalone"
 
 provision_embedded_python() {
-    local want_xyz want_xy arch_tag cache url tgz
+    local want_xyz want_xy arch_tag cache url tgz manifest manifest_hash
     want_xyz="$("$PYTHON_BIN" -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])')"
     want_xy="${want_xyz%.*}"
     case "$(uname -m)" in
@@ -254,13 +340,36 @@ provision_embedded_python() {
 
     # BUILD_DIR is absolute by now — see the normalisation above.
     cache="$BUILD_DIR/embedded-python"
-    # Reuse only a cache that matches this interpreter's X.Y and still imports
-    # ASE — a stale tree from a different Python would fail at runtime.
+    # What the cache is FOR: the interpreter X.Y plus exactly the package set
+    # this run asked for. Hashed and stamped alongside the tree so a later
+    # run can tell "still what I need" apart from "was built for something
+    # else" without re-deriving it — the whole point being that a change to
+    # EMBED_PKGS (a dependency added in packaging/dependencies.txt, one
+    # dropped, a caller overriding CALANGO_EMBEDDED_PACKAGES) is itself a
+    # "necessary update" and must invalidate a cache that predates it, not
+    # silently ship the old set forever.
+    manifest="$want_xy|$EMBED_PKGS"
+    manifest_hash="$(printf '%s' "$manifest" | shasum -a 256 | cut -d' ' -f1)"
+
     if [[ -x "$cache/python/bin/python3" ]] \
-       && "$cache/python/bin/python3" -c "import sys, ase; assert '%d.%d' % sys.version_info[:2] == '$want_xy'" 2>/dev/null; then
-        echo "==> Reusing cached embedded Python ($cache/python)"
-        EMBED_PY="$cache/python"
-        return 0
+       && "$cache/python/bin/python3" -c "import sys, ase; assert '%d.%d' % sys.version_info[:2] == '$want_xy'" 2>/dev/null \
+       && [[ "$(cat "$cache/.calango-manifest" 2>/dev/null)" == "$manifest_hash" ]]; then
+        echo "==> Reusing cached embedded Python ($cache/python) — checking for package updates"
+        # A cache that is still the right Python and the right package SET can
+        # still hold OLD VERSIONS of those packages: without this, the first
+        # provision on a machine would freeze ASE/NumPy/etc. at whatever was
+        # latest that day and never move again, silently, run after run.
+        if run_with_watchdog "checking embedded packages for updates" 900 \
+                "$cache/python/bin/python3" -m pip install --no-input \
+                --disable-pip-version-check -q --upgrade $EMBED_PKGS; then
+            "$cache/python/bin/python3" -c \
+                "import ase, numpy; print('    ASE', ase.__version__, '/ NumPy', numpy.__version__)"
+            EMBED_PY="$cache/python"
+            return 0
+        fi
+        echo "warning: update check failed — re-provisioning the embedded tree from scratch" >&2
+        # Fall through to a full re-provision rather than shipping a payload
+        # an interrupted upgrade may have left half-updated.
     fi
 
     echo "==> Provisioning standalone CPython $want_xyz ($arch_tag) with: $EMBED_PKGS"
@@ -273,10 +382,22 @@ provision_embedded_python() {
 
     # Release assets encode the '+' of the version tag as %2B, so match both
     # spellings. Prefer PYTHON_BIN's exact X.Y.Z; any X.Y build is ABI-compatible.
+    #
+    # `|| true` on both lookups below is load-bearing, not cosmetic: under
+    # `set -o pipefail`, `grep -o ... | head -1` exits NON-ZERO whenever grep
+    # matches nothing — even though head still runs and correctly produces an
+    # empty string — so with `set -e` and no guard, the very first release
+    # that lacks an exact X.Y.Z build (e.g. python-build-standalone has
+    # cut 3.14.7 but PYTHON_BIN is 3.14.6) killed the whole script right here,
+    # silently, before the X.Y fallback two lines down ever ran. No error, no
+    # partial output — exactly the "just sits there, no .dmg" failure this was
+    # reported as. An empty match is an expected, already-handled outcome
+    # (that's what the `[[ -z "$url" ]]` fallback below is FOR), not a real
+    # failure, so it must not be allowed to trip errexit.
     local plus='\(+\|%2B\)'
-    url="$(grep -o "https://[^\"]*cpython-${want_xyz}${plus}[0-9]*-${arch_tag}-apple-darwin-install_only\.tar\.gz" <<<"$index" | head -1)"
+    url="$(grep -o "https://[^\"]*cpython-${want_xyz}${plus}[0-9]*-${arch_tag}-apple-darwin-install_only\.tar\.gz" <<<"$index" | head -1)" || true
     if [[ -z "$url" ]]; then
-        url="$(grep -o "https://[^\"]*cpython-${want_xy}\.[0-9]*${plus}[0-9]*-${arch_tag}-apple-darwin-install_only\.tar\.gz" <<<"$index" | sort -V | tail -1)"
+        url="$(grep -o "https://[^\"]*cpython-${want_xy}\.[0-9]*${plus}[0-9]*-${arch_tag}-apple-darwin-install_only\.tar\.gz" <<<"$index" | sort -V | tail -1)" || true
         if [[ -n "$url" ]]; then
             echo "note: no exact $want_xyz build; using $(basename "$url")"
         fi
@@ -289,7 +410,8 @@ provision_embedded_python() {
     rm -rf "$cache"; mkdir -p "$cache"
     tgz="$cache/cpython.tar.gz"
     echo "==> Downloading $(basename "$url")"
-    curl -fsSL --max-time 900 -o "$tgz" "$url" || {
+    run_with_watchdog "downloading $(basename "$url")" 900 \
+        curl -fsSL -o "$tgz" "$url" || {
         echo "error: download failed" >&2; return 1; }
     tar -xzf "$tgz" -C "$cache" || { echo "error: extract failed" >&2; return 1; }
     rm -f "$tgz"
@@ -298,7 +420,8 @@ provision_embedded_python() {
 
     echo "==> Installing $EMBED_PKGS into the standalone tree"
     # shellcheck disable=SC2086 -- EMBED_PKGS is an intentional word list.
-    "$cache/python/bin/python3" -m pip install --no-input --disable-pip-version-check \
+    run_with_watchdog "installing embedded packages" 1200 \
+        "$cache/python/bin/python3" -m pip install --no-input --disable-pip-version-check \
         -q $EMBED_PKGS || { echo "error: pip install failed" >&2; return 1; }
 
     # Trim build-machine noise; __pycache__ is regenerated on demand.
@@ -307,6 +430,7 @@ provision_embedded_python() {
     "$cache/python/bin/python3" -c "import ase, numpy; print('    ASE', ase.__version__, '/ NumPy', numpy.__version__)" || {
         echo "error: ASE is not importable in the provisioned tree" >&2; return 1; }
 
+    printf '%s' "$manifest_hash" > "$cache/.calango-manifest"
     EMBED_PY="$cache/python"
 }
 
@@ -377,12 +501,21 @@ make_dmg_manual() {
 echo "==> Packaging Calango $VERSION ($ARCH)"
 DMG=""
 if [[ "$MANUAL" -eq 0 ]] && command -v cpack >/dev/null; then
-    ( cd "$BUILD_DIR" && cpack -G DragNDrop ${ICNS:+-D CPACK_DMG_VOLUME_ICON="$ICNS"} )
+    # `|| true`: cpack failing outright (not just "produced no .dmg") must
+    # still reach the `-z "$DMG"` check below and fall through to manual
+    # assembly, which is the documented behavior of this whole if/if pair —
+    # an unguarded failure here would instead kill the script via errexit
+    # before the fallback it exists to enable ever ran.
+    ( cd "$BUILD_DIR" && cpack -G DragNDrop ${ICNS:+-D CPACK_DMG_VOLUME_ICON="$ICNS"} ) \
+        || echo "note: cpack failed — falling back to manual assembly" >&2
     DMG="$(ls -t "$BUILD_DIR"/*.dmg 2>/dev/null | head -1 || true)"
 fi
 if [[ -z "$DMG" ]]; then
     echo "==> Falling back to manual DMG assembly"
-    DMG="$(make_dmg_manual | tail -1)"
+    # Same reasoning as the `|| true` above: a failure inside
+    # make_dmg_manual must reach the "no .dmg was produced" check right
+    # below rather than kill the script mid-pipeline with no such message.
+    DMG="$(make_dmg_manual | tail -1)" || true
 fi
 
 # --- Finalize: place the artifact at dist/Calango-<version>-macOS.dmg -------

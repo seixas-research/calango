@@ -34,10 +34,19 @@ The {guilabel}`Connection` tab holds the cluster credentials:
 |---|---|
 | {guilabel}`Host`, {guilabel}`Port` | Hostname and port, default **22** |
 | {guilabel}`User` | Your account name on the cluster |
-| {guilabel}`Auth` | {guilabel}`SSH key` or {guilabel}`Password` |
 | {guilabel}`Key file` | Path to a private key, e.g. `~/.ssh/id_rsa`. Leave empty to let your SSH agent or default keys authenticate |
 | {guilabel}`Password` | The password — or, in key mode, the passphrase for an encrypted key |
 | {guilabel}`Remote dir` | Working directory on the cluster, relative to `$HOME`, default `calango_jobs` |
+
+There is no separate {guilabel}`Auth` picker: which method is used is
+**inferred** from these two fields, freshly, on every connection attempt —
+a {guilabel}`Key file` present selects key authentication (with
+{guilabel}`Password`, if also filled, used as that key's passphrase, the
+same precedence plain SSH uses); a {guilabel}`Password` with no key selects
+password authentication; both left empty still attempts the connection,
+with no explicit credential of its own, so the SSH agent and the default
+key files (`~/.ssh/id_ed25519`, `id_ecdsa`, `id_rsa`) get their usual
+chance.
 
 {guilabel}`Connect` opens the session, reports your remote `$HOME`, and
 **auto-detects the scheduler** by probing for `sbatch`, then `qsub`, on the
@@ -88,10 +97,48 @@ The {guilabel}`Scheduler` tab describes the batch job:
   {guilabel}`SGE`.
 - {guilabel}`Queue` — partition or queue name; empty uses the cluster
   default.
-- {guilabel}`Tasks / cores` — requested cores.
+- {guilabel}`Nodes × tasks` — whole machines requested, and ranks (or
+  cores) on each of them. The total (nodes × tasks) is what SGE is given
+  directly, since it requests slots rather than machines.
+- {guilabel}`Memory / node` — per node; zero requests the cluster's own
+  default. SLURM's `--mem` and PBS's chunk memory take this unchanged; SGE's
+  `h_vmem` is per **slot**, so it is divided by the tasks per node first.
 - {guilabel}`Walltime` — `HH:MM:SS`, default **01:00:00**.
+- {guilabel}`Parallel env` — SGE only: the site's parallel-environment name
+  (`-pe`). `smp` is single-node shared memory almost everywhere, so a
+  multi-node SGE job needs whatever that cluster called its MPI PE.
 - {guilabel}`Setup` — shell lines executed before the payload: module
   loads, `conda activate`, anything your site needs.
+- {guilabel}`VASP POTCAR dir` — this cluster's PAW pseudopotential library;
+  see **POTCAR resolution** below. Only matters for VASP jobs, and only
+  needs setting when this cluster's library lives somewhere other than
+  wherever your own machine's copy does.
+- {guilabel}`Command` — the payload itself, run after Setup. Defaults to
+  running the staged script directly; type a launcher line here for
+  anything else — `mpirun -n 4 python3 run.py`, or a site-specific one like
+  GPAW's own `gpaw python run.py`. A second line runs *after* it, for
+  cleanup that has to happen once the job finishes, e.g. `conda deactivate`.
+
+The following six are **SLURM only** — PBS and SGE describe resources
+differently and have no equivalent, so these rows are hidden unless
+{guilabel}`Scheduler` is set to SLURM:
+
+- {guilabel}`Account` — billing/allocation account (`--account`).
+- {guilabel}`QOS` — quality-of-service name (`--qos`).
+- {guilabel}`CPUs/task` — cores per MPI rank (`--cpus-per-task`), for a
+  hybrid MPI+OpenMP job. Distinct from the ranks-per-node above: that is how
+  many ranks share a node, this is how many cores each rank itself gets.
+- {guilabel}`GPUs/node` — requested as `--gres=gpu:N`, the gres spelling
+  that works on essentially every SLURM cluster with GPU nodes.
+- {guilabel}`Node list` — pin the job to specific node(s) by name
+  (`--nodelist`). Rarely needed; leave empty unless the cluster or the job
+  specifically requires it.
+- {guilabel}`Extra #SBATCH lines` — free-form, inserted into the `#SBATCH`
+  block verbatim, after every field above — the escape hatch for a
+  directive none of these controls covers. Include your own `#SBATCH `
+  prefix on each line (or `##SBATCH ` for one you want present but
+  deliberately disabled, which SLURM itself already ignores, since it only
+  ever reads a line spelled exactly `#SBATCH`).
 
 ```bash
 module load python
@@ -101,15 +148,66 @@ source ~/venvs/ase/bin/activate
 The generated wrapper carries the right directives for your scheduler —
 `#SBATCH`, `#PBS` or `#$` — and **always redirects output to fixed file
 names** (`calango_job.out`, `calango_job.err`), so the monitor knows what to
-tail regardless of how the site templates its jobs.
+tail regardless of how the site templates its jobs. Every field above is
+saved with the cluster profile ({guilabel}`Connection` tab), the same as the
+host and credentials, so a second cluster with different modules, a
+different account, or a different POTCAR library needs entering only once.
+
+---
+
+## POTCAR resolution
+
+VASP's PAW datasets (POTCARs) are licensed material: Calango never bundles,
+generates, or transfers one. Every generated VASP script assembles its own
+`POTCAR` locally, through ASE, from a library that has to already exist on
+whichever machine the script actually runs on — and for a remote job, that
+is **the cluster**, not the machine that built the script.
+
+The generated script resolves the library in this order:
+
+1. **`CALANGO_VASP_PP_PATH`**, if the environment already has it — this is
+   what the {guilabel}`VASP POTCAR dir` field above exports, ahead of your
+   own {guilabel}`Setup` lines, in the job wrapper submitted to *this*
+   cluster. Set it once per cluster preset and every VASP job submitted
+   there uses it, with no per-job typing.
+2. Otherwise, the path configured in {menuselection}`Preferences -->
+   External Files --> VASP (VASP_PP_PATH)` — baked into the script at
+   generation time, on the machine that built it. Correct for a local run;
+   for a remote one it only happens to work if that path also exists,
+   unchanged, on the cluster — which is exactly the case (1) exists to
+   avoid relying on.
+3. Otherwise, whatever `VASP_PP_PATH` the shell environment already carries
+   wherever the script runs — the same fallback ASE itself would use.
+
+Either a flat library (`<dir>/<Element>/POTCAR`) or the nested
+`potpaw_PBE`/`potpaw`/`potpaw_LDA` layout is recognized automatically; a flat
+one is transparently shimmed with symlinks so ASE's own lookup finds it.
+Before ever calling into the VASP calculator, the script also checks that
+**every element the structure actually needs** has a `POTCAR` under the
+resolved library — not just that the directory exists — and fails
+immediately, naming the missing element(s) and the exact path searched,
+instead of a deep ASE traceback minutes into the queue. Calango does not
+auto-select PAW variants (`_sv`/`_pv`/`_d` suffixes) or switch between the
+PBE and LDA libraries — point the configured directory at a library that
+already has the variant you want for every element.
+
+The same check runs, as a local approximation, *before* a VASP job is
+staged at all — clicking {guilabel}`Run (Local)` or {guilabel}`Run
+(Remote)` in the calculator wizard validates the path configured in
+Preferences and warns immediately if it is missing or incomplete. This is
+necessarily a LOCAL check: it cannot inspect a cluster's filesystem over
+SSH, so a per-cluster {guilabel}`VASP POTCAR dir` override is validated only
+when the job actually runs, by the same in-script check described above.
 
 ---
 
 ## Submitting and monitoring
 
-{menuselection}`Simulation --> New Remote Calculation`
-({kbd}`Ctrl+Shift+R`) — or {guilabel}`Submit Calculation…` in the panel —
-opens the usual calculator dialog, then runs the full sequence:
+There is no separate "remote" dialog: every calculator wizard offers
+{guilabel}`Run (Remote)` alongside {guilabel}`Run (Local)` on its last
+stage. Configure the calculation as usual and click {guilabel}`Run
+(Remote)` instead of {guilabel}`Run (Local)`; Calango then runs the full
+sequence:
 
 1. Stage `run.py` and `structure.extxyz` into a local job directory,
    exactly as a local run would ({doc}`/simulations/jobs`).

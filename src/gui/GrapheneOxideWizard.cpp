@@ -297,9 +297,25 @@ GrapheneOxideWizard::GrapheneOxideWizard(QWidget* parent)
            "consuming TWO basal carbons, both rehybridized to sp3. 1.0 gives "
            "only hydroxyls — one −OH on a single sp3 carbon (C–O 1.48 Å), "
            "standing above or below the plane. The Lerf–Klinowski picture has "
-           "both in comparable amounts, so the middle of the range is the "
-           "ordinary case."),
-        0.5, 1.0);
+           "somewhat more hydroxyl than epoxide, so the default sits at 2/3 — "
+           "epoxide : hydroxyl = 1:2."),
+        2.0 / 3.0, 1.0);
+    hydroxylAntipositionCheck_ = new QCheckBox(
+        tr("Hydroxyls antiposition (adjacent pairs, opposite faces)"),
+        basalBox);
+    hydroxylAntipositionCheck_->setToolTip(
+        tr("Force every hydroxyl onto a NEIGHBOURING pair of basal carbons — "
+           "the same bonded pair an epoxide may bridge — with one −OH "
+           "standing above the plane and the other below it: a trans-diol, "
+           "not two independently sited −OH groups.\n\n"
+           "Off (default): each hydroxyl sits on its own, independently "
+           "chosen basal carbon.\n\n"
+           "The pair is always split across both faces regardless of "
+           "'Decorate both faces' below — that opposition is what makes it "
+           "antiposition rather than a same-face pair. 'Decorate both "
+           "faces' still governs epoxides, and any hydroxyl placed while "
+           "this is off."));
+    basalForm->addRow(QString(), hydroxylAntipositionCheck_);
     stage2Layout->addWidget(basalBox);
 
     // -- The rim, if there is one -------------------------------------------
@@ -468,6 +484,8 @@ GrapheneOxideWizard::GrapheneOxideWizard(QWidget* parent)
     // does not quietly go stale the first time the summary grows a line.
     connect(bothFacesCheck_, &QCheckBox::toggled, this,
             &GrapheneOxideWizard::refreshSummary);
+    connect(hydroxylAntipositionCheck_, &QCheckBox::toggled, this,
+            &GrapheneOxideWizard::refreshSummary);
     connect(seedSpin_, &QSpinBox::valueChanged, this,
             &GrapheneOxideWizard::refreshSummary);
     // The ratio controls wire themselves in addRatioRow(), where the slider
@@ -526,6 +544,7 @@ core::GrapheneOxideBuilder::Config GrapheneOxideWizard::config() const
 
     config.basalOxygenToCarbon = basalOxidation_.value();
     config.basalHydroxylShare = basalHydrogen_.value();
+    config.hydroxylAntiposition = hydroxylAntipositionCheck_->isChecked();
 
     // Edge chemistry on an edgeless substrate is not "requested and unmet":
     // a periodic sheet has no rim, so the dial is not merely hidden, it is
@@ -638,6 +657,10 @@ void GrapheneOxideWizard::refreshSummary()
                         "At most %1 fit, one per basal carbon.")
                          .arg(basal);
         }
+        if (hydroxylAntipositionCheck_->isChecked()) {
+            lines << tr("<i>Hydroxyls antiposition: every −OH is paired with "
+                        "a neighbour on the opposite face.</i>");
+        }
     }
 
     // Rim.
@@ -727,6 +750,11 @@ void GrapheneOxideWizard::showStage(int index)
 bool GrapheneOxideWizard::mdmcRequested() const
 {
     return mdmcCheck_ && mdmcCheck_->isChecked();
+}
+
+bool GrapheneOxideWizard::hydroxylAntiposition() const
+{
+    return hydroxylAntipositionCheck_ && hydroxylAntipositionCheck_->isChecked();
 }
 
 } // namespace calango::gui

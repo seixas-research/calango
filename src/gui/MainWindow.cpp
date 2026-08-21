@@ -128,6 +128,7 @@
 #include "gui/ProcessManagerPanel.hpp"
 #include "gui/ScriptViewerDialog.hpp"
 #include "gui/SettingsManager.hpp"
+#include "gui/ShortcutRegistry.hpp"
 #include "gui/MaceTrainerDialog.hpp"
 #include "gui/SystemStatusBar.hpp"
 #include "gui/ThemeManager.hpp"
@@ -433,8 +434,9 @@ MainWindow::MainWindow(QWidget* parent)
     // misreport the state and need two clicks to reach perspective.
     orthoAction_->setChecked(viewport_->camera().projectionMode()
                              == render::CameraProjection::Orthographic);
-    orthoAction_->setShortcut(QKeySequence(Qt::Key_O));
-    orthoAction_->setToolTip(tr("Toggle perspective / orthographic projection  [O]"));
+    toolbarShortcutActions_.push_back(
+        {orthoAction_, QStringLiteral("viewport.toggleProjection"),
+         tr("Toggle perspective / orthographic projection")});
     connect(orthoAction_, &QAction::toggled,
             viewport_, &ViewportWidget::setOrthographic);
 
@@ -448,19 +450,23 @@ MainWindow::MainWindow(QWidget* parent)
     // --- Mouse interaction modes (exclusive, single-letter hotkeys) --------
     // Plain-letter shortcuts are safe: Qt's ShortcutOverride lets text
     // widgets keep the keys while typing (same as the View menu's "F").
+    // Bindings themselves come from ShortcutRegistry rather than a literal
+    // QKeySequence, so Preferences → Hotkeys can remap any of them; the
+    // toolbar text carries no bracketed key of its own any more (icon-only
+    // buttons never showed it — only the tooltip does, kept in sync by
+    // applyShortcutBindings() via toolbarShortcutActions_).
     auto* modeGroup = new QActionGroup(this);
     modeGroup->setExclusive(true);
     // `iconName` is a RemixIcon file stem, tinted to the theme by IconManager.
     const auto addModeAction =
         [this, frameToolbar, modeGroup](const QString& iconName, const QString& text,
                                         ViewportWidget::InteractionMode mode,
-                                        const QKeySequence& key) {
-            QAction* action = frameToolbar->addAction(
-                tr("%1  [%2]").arg(text, key.toString(QKeySequence::NativeText)));
+                                        const QString& shortcutId) {
+            QAction* action = frameToolbar->addAction(text);
             ui::IconManager::bind(action, iconName);
             action->setCheckable(true);
-            action->setShortcut(key);
             modeGroup->addAction(action);
+            toolbarShortcutActions_.push_back({action, shortcutId, text});
             connect(action, &QAction::triggered, this,
                     [this, mode] { viewport_->setInteractionMode(mode); });
             return action;
@@ -468,21 +474,23 @@ MainWindow::MainWindow(QWidget* parent)
     QAction* rotateMode = addModeAction(
         QStringLiteral("anticlockwise-2-line"),
         tr("Rotation mode — drag orbits the camera around the structure"),
-        ViewportWidget::InteractionMode::Rotate, QKeySequence(Qt::Key_R));
+        ViewportWidget::InteractionMode::Rotate,
+        QStringLiteral("viewport.mode.rotate"));
     addModeAction(QStringLiteral("drag-move-2-line"),
                   tr("Translation mode — drag pans the scene"),
-                  ViewportWidget::InteractionMode::Pan, QKeySequence(Qt::Key_T));
+                  ViewportWidget::InteractionMode::Pan,
+                  QStringLiteral("viewport.mode.pan"));
     addModeAction(QStringLiteral("cursor-line"),
                   tr("Selection mode — drag a box to select multiple atoms "
                      "(and their bonds); Delete/Backspace removes them"),
                   ViewportWidget::InteractionMode::Select,
-                  QKeySequence(Qt::Key_S));
+                  QStringLiteral("viewport.mode.select"));
     addModeAction(QStringLiteral("edit-fill"),
                   tr("Insertion mode — click empty space to add an atom of "
                      "the active element;\ndrag from one atom to another to "
                      "bond them"),
                   ViewportWidget::InteractionMode::Insert,
-                  QKeySequence(Qt::Key_I));
+                  QStringLiteral("viewport.mode.insert"));
 
     // Chemical Element Selector, placed directly after the Insert toggle:
     // opens the periodic table and shows the active element symbol over that
@@ -549,25 +557,26 @@ MainWindow::MainWindow(QWidget* parent)
                   tr("Distance measurement — click two atoms to read their "
                      "separation in Å\n(click empty space to reset)"),
                   ViewportWidget::InteractionMode::MeasureDistance,
-                  QKeySequence(Qt::Key_D));
+                  QStringLiteral("viewport.mode.distance"));
     addModeAction(QStringLiteral("triangle-fill"),
                   tr("Angle measurement — click three atoms (vertex second) "
                      "to read the angle in degrees\n(click empty space to "
                      "reset)"),
                   ViewportWidget::InteractionMode::MeasureAngle,
-                  QKeySequence(Qt::Key_A));
+                  QStringLiteral("viewport.mode.angle"));
     rotateMode->setChecked(true);
     frameToolbar->addSeparator();
 
-    QAction* resetAction = frameToolbar->addAction(
-        tr("Reset camera  [F]"));
+    QAction* resetAction = frameToolbar->addAction(tr("Reset camera"));
     ui::IconManager::bind(resetAction, QStringLiteral("focus-3-line"));
-    resetAction->setToolTip(
-        tr("Reset camera — restore the default point-of-view saved in "
-           "~/.calango/settings.json, or, when none has been set, center and "
-           "frame the structure.  [F]"));
-    // The 'F' shortcut lives here now that the View → Alignment submenu is gone.
-    resetAction->setShortcut(QKeySequence(Qt::Key_F));
+    // The shortcut lives here now that the View → Alignment submenu is gone;
+    // its binding comes from ShortcutRegistry (default F) like every other
+    // toolbar mode key, tooltip kept in sync by applyShortcutBindings().
+    toolbarShortcutActions_.push_back(
+        {resetAction, QStringLiteral("viewport.resetCamera"),
+         tr("Reset camera — restore the default point-of-view saved in "
+            "~/.calango/settings.json, or, when none has been set, center "
+            "and frame the structure.")});
     connect(resetAction, &QAction::triggered, this, &MainWindow::resetCamera);
     frameToolbar->addAction(orthoAction_);
     // --- Perspective (field of view) --------------------------------------
@@ -877,6 +886,10 @@ MainWindow::MainWindow(QWidget* parent)
             &MainWindow::showFilmTime);
 
     createMenusAndDocks();
+    // Every remappable action (toolbar + menu) now exists; push whatever
+    // Preferences → Hotkeys already has saved onto them before the window is
+    // ever shown, exactly as showPreferences() re-does after a later remap.
+    applyShortcutBindings();
 
     // The log widget shows the running job directly (it always clears on
     // start); its output/error/progress are routed through MainWindow so they
@@ -946,6 +959,8 @@ MainWindow::MainWindow(QWidget* parent)
             [this](const QString& text) { statusBar()->showMessage(text); });
     connect(viewport_, &ViewportWidget::deleteSelectionRequested,
             this, &MainWindow::deleteSelectedAtoms);
+    connect(viewport_, &ViewportWidget::cycleTabRequested,
+            this, &MainWindow::cycleTab);
     connect(viewport_, &ViewportWidget::bondInsertRequested, this,
             [this](int i, int j) {
                 Document* doc = currentDocument();
@@ -1072,9 +1087,14 @@ void MainWindow::createMenusAndDocks()
 
     // ----- Edit: Selection | Deletion | Bonds | Cell | Preferences ---------
     QMenu* editMenu = menuBar()->addMenu(tr("&Edit"));
-    undoAction_ = editMenu->addAction(tr("&Undo"), QKeySequence::Undo,
+    // Shortcuts sourced from ShortcutRegistry (defaults match the
+    // QKeySequence::Undo/Redo/Delete standard keys these used to be
+    // literally) rather than passed here, since QMenu::addAction's shortcut
+    // parameter is fixed at construction — applyShortcutBindings() re-reads
+    // and re-applies it afterward, on every remap.
+    undoAction_ = editMenu->addAction(tr("&Undo"), QKeySequence(),
                                       this, &MainWindow::undo);
-    redoAction_ = editMenu->addAction(tr("&Redo"), QKeySequence::Redo,
+    redoAction_ = editMenu->addAction(tr("&Redo"), QKeySequence(),
                                       this, &MainWindow::redo);
     editMenu->addSeparator();
     editMenu->addAction(tr("&Add Atom…"), QKeySequence(tr("Ctrl+Shift+A")),
@@ -1084,8 +1104,9 @@ void MainWindow::createMenusAndDocks()
                              this, &MainWindow::changeElementOfSelection);
     selectionMenu->addAction(tr("&Translate Selection…"),
                              this, &MainWindow::translateSelection);
-    editMenu->addAction(tr("&Delete Selected Atoms"), QKeySequence::Delete,
-                        this, &MainWindow::deleteSelectedAtoms);
+    deleteSelectionAction_ = editMenu->addAction(
+        tr("&Delete Selected Atoms"), QKeySequence(), this,
+        &MainWindow::deleteSelectedAtoms);
     editMenu->addSeparator();
     editMenu->addAction(tr("&Bond Editor…"), QKeySequence(tr("Ctrl+B")),
                         this, &MainWindow::showBondEditor);
@@ -4684,6 +4705,46 @@ void MainWindow::showPreferences()
     // Preferences no longer edits the shader profiles — the "Rendering" page
     // is gone — so the Representation panel's "Shading" row is now the only
     // control on them and has nothing to re-read.
+    // A Hotkeys remap needs the exact same "re-read and reapply" treatment.
+    applyShortcutBindings();
+}
+
+void MainWindow::applyShortcutBindings()
+{
+    for (const ToolbarShortcutAction& entry : toolbarShortcutActions_) {
+        if (!entry.action)
+            continue;
+        const QKeySequence key = ShortcutRegistry::binding(entry.shortcutId);
+        entry.action->setShortcut(key);
+        // Icon-only toolbar buttons show no text of their own — this
+        // tooltip is the ONLY place the current binding is ever visible for
+        // these, so it has to be rebuilt on every call, not just the first.
+        entry.action->setToolTip(
+            key.isEmpty()
+                ? entry.description
+                : tr("%1  [%2]").arg(entry.description,
+                                     key.toString(QKeySequence::NativeText)));
+    }
+    // Menu actions display their own QAction::shortcut() automatically —
+    // nothing else here needs a matching text/tooltip rewrite.
+    if (undoAction_)
+        undoAction_->setShortcut(
+            ShortcutRegistry::binding(QStringLiteral("edit.undo")));
+    if (redoAction_)
+        redoAction_->setShortcut(
+            ShortcutRegistry::binding(QStringLiteral("edit.redo")));
+    if (deleteSelectionAction_)
+        deleteSelectionAction_->setShortcut(
+            ShortcutRegistry::binding(QStringLiteral("edit.deleteSelection")));
+}
+
+void MainWindow::cycleTab(int direction)
+{
+    if (!tabBar_ || tabBar_->count() < 2)
+        return; // nothing to cycle with zero or one tab open
+    const int count = tabBar_->count();
+    const int next = ((tabBar_->currentIndex() + direction) % count + count) % count;
+    tabBar_->setCurrentIndex(next);
 }
 
 // ---------------------------------------------------------------------------
@@ -5461,19 +5522,24 @@ void MainWindow::show2DBands()
     if (!ensureAseAvailable())
         return;
 
-    // GPAW only, and a saved .gpw specifically: the method is
-    // calc.fixed_density() on the stored wavefunctions. A VASP CHGCAR — which
-    // the 1D Electronic Structure wizard accepts, since VASP can restart from
-    // one with ICHARG = 11 — cannot serve here.
-    const QList<QPair<QString, QString>> baselines = gpawDensityFiles();
+    // GPAW and VASP restart a completed baseline (the same two engines the
+    // 1D Electronic Structure module accepts, and for the same reason: a
+    // band surface is non-self-consistent either way, the file it reads
+    // back is simply named differently). Quantum ESPRESSO and SIESTA run
+    // self-contained instead, so this list has nothing to do with whether
+    // either of THOSE two is available — only whether GPAW/VASP are.
+    QList<QPair<QString, QString>> baselines = gpawDensityFiles();
+    baselines += vaspChargeDensityFiles();
     if (baselines.isEmpty()) {
         QMessageBox::critical(
             this, tr("2D Bands"),
-            tr("2D band surfaces are evaluated non-self-consistently on a "
-               "converged density, so a completed GPAW Single-Point "
-               "Calculation is required first.\n\n"
-               "Run one with wavefunction export enabled — it writes "
-               "single_point.gpw, which is what this restarts from."));
+            tr("2D band surfaces need a completed baseline SCF process with "
+               "a saved charge density to restart from — for GPAW or VASP, "
+               "the two engines that run non-self-consistently on one here. "
+               "Quantum ESPRESSO and SIESTA do not need this: they run "
+               "self-contained, and the wizard opens for them either way.\n\n"
+               "GPAW writes single_point.gpw; VASP writes CHGCAR (leave "
+               "\"CHGCAR\" ticked under Write in the VASP settings)."));
         return;
     }
 
@@ -8099,11 +8165,12 @@ void MainWindow::openGrapheneOxideBuilder()
     statusBar()->showMessage(message);
 
     if (wizard.mdmcRequested())
-        openGrapheneOxideMdmc(report);
+        openGrapheneOxideMdmc(report, wizard.hydroxylAntiposition());
 }
 
 void MainWindow::openGrapheneOxideMdmc(
-    const core::GrapheneOxideBuilder::Report& report)
+    const core::GrapheneOxideBuilder::Report& report,
+    bool hydroxylAntiposition)
 {
     // Reached only from the builder, on the structure it just opened as the
     // current document — which is what makes this short: stageJob() already
@@ -8116,7 +8183,8 @@ void MainWindow::openGrapheneOxideMdmc(
 
     GrapheneOxideMdmcWizard wizard(this);
     wizard.setSubstrate(groups, report.basalCarbonCount,
-                        report.edgeCarbonCount, report.edgeCarbonCount == 0);
+                        report.edgeCarbonCount, report.edgeCarbonCount == 0,
+                        hydroxylAntiposition);
     if (wizard.exec() != QDialog::Accepted)
         return;
 

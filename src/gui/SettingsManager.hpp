@@ -88,6 +88,14 @@ public:
     static constexpr auto kMlPotentialsDir = "mlPotentials/directory";
     static constexpr auto kEnvFilePath = "config/envFilePath";
     static constexpr auto kMaterialsProjectApiKey = "materialsProject/apiKey";
+    /// User-remapped keyboard shortcuts (Preferences → "Hotkeys"): a
+    /// JSON-object string mapping a ShortcutRegistry action id to its
+    /// override, e.g. {"viewport.mode.rotate": "R"}. Only OVERRIDDEN actions
+    /// are present — an action absent from the map uses its own factory
+    /// default, which is what keeps a settings.json written before a new
+    /// remappable action existed compatible with it. See
+    /// gui/ShortcutRegistry.hpp, the single owner of this key's format.
+    static constexpr auto kHotkeys = "hotkeys/bindings";
 
     /// `~/.calango`
     static QString directory();

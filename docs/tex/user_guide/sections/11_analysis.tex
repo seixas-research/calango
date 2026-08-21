@@ -435,6 +435,74 @@ plausible number of the right magnitude and the wrong value, applied silently
 to every point of the diagram.
 \end{calwarn}
 
+\section{Elastic properties}
+\label{sec:elastic}
+
+\menu{Electronics}\menusep\menu{Elastic Properties\ldots} computes the
+elastic stiffness tensor $C_{ij}$ ($i,j = 1..6$ Voigt) by the finite-strain
+method: apply a small homogeneous strain to a relaxed reference cell and
+read off either the \textbf{stress} or the \textbf{energy} at each strained
+point, then fit. It reuses exactly the strain-generation core the
+Piezoelectric Tensor wizard uses to differentiate polarization over the
+same Calango-precomputed deformation gradients --- here the same strained
+structures feed a stress or energy readout instead, so the strain stencil,
+the 2D vacuum-axis handling, and the point-group symmetrization are shared
+code. Unlike Piezoelectric Tensor, a ground-state baseline is
+\textbf{optional}: the Berry phase needs GPAW specifically, but stress and
+energy are available from any ASE calculator (EMT, MACE, VASP, Quantum
+ESPRESSO, \ldots) --- pick ``(none)'' in the baseline combo to strain the
+current structure with the ordinary calculator settings page instead.
+
+\textbf{Stress-strain vs.\ energy-strain.} Stress-strain (primary) reads
+$\sigma_i = C_{ij}\varepsilon_j$ directly off the stress tensor at each
+strained point: one component sweep already fills a whole matrix column at
+once, and a single strain magnitude ($\pm\delta$, the central difference)
+suffices. Energy-strain (fallback, for a calculator with no
+\texttt{get\_stress()}) fits the diagonal term from the energy curvature,
+$C_{jj} = V_0^{-1}\,d^2E/d\varepsilon_j^2$, a quadratic fit needing at
+least 3 points; the off-diagonal $C_{jk}$ additionally needs a combined
+two-component strain (Ravindran \emph{et al.}, \emph{J. Appl. Phys.}
+\textbf{84}, 4891 (1998)) --- 4 extra evaluations per off-diagonal pair, 60
+extra points for the full 6-component bulk case, shown in the wizard's cost
+estimate before launching. \ui{Method} offers \ui{Auto} (probe the
+reference point's \texttt{get\_stress()}; fall back to energy-strain for
+the \emph{whole} run if it raises, rather than mixing methods across
+components, which would not be physically consistent), or either method
+explicitly.
+
+\textbf{Clamped-ion vs.\ relaxed-ion} follows the same terminology and
+trade-off as Piezoelectric Tensor below.
+
+A monolayer is detected the same way as in the Piezoelectric Tensor wizard
+and restricts the strain set to the in-plane Voigt components. As with
+$e_{ij}$, raw $C_{ij}$ (GPa) is vacuum-thickness-dependent for a slab, so a
+2D structure additionally reports the in-plane block in \textbf{N/m}
+(area-normalized), $C_{ij}^\text{2D} = C_{ij}^\text{3D} \times L_\text{vacuum}$,
+plus the derived 2D layer modulus, in-plane Young's modulus and Poisson's
+ratio, and the 2D restriction of the Born stability criterion,
+$C_{11}C_{22}-C_{12}^2 > 0$ and $C_{66} > 0$.
+
+\textbf{Born stability} runs two independent checks: the general criterion
+(every eigenvalue of $C$ positive, always computed) and, when the point
+group falls in one of five Laue classes (cubic, hexagonal, tetragonal,
+trigonal, orthorhombic), the crystal-class closed form of Mouhat \&
+Coudert, \emph{Phys. Rev. B} \textbf{90}, 224104 (2014). Unlike the
+piezoelectric tensor, $C_{ij}$ is never forced to zero by inversion
+symmetry, so there is no centrosymmetric refusal here.
+
+\textbf{Moduli.} Voigt (uniform-strain, upper bound), Reuss
+(uniform-stress, lower bound, via $S = C^{-1}$) and Hill (arithmetic mean
+--- the standard practical isotropic estimate) bulk and shear moduli;
+isotropic Young's modulus and Poisson's ratio follow from the Hill
+averages. Reuss and Hill are left unavailable, rather than silently
+reported as zero, when the tensor does not invert cleanly.
+
+The viewer shows the 6$\times$6 $C_{ij}$ tensor (raw or symmetrized, GPa),
+both stability criteria with pass/fail per inequality, the moduli (or, for
+a 2D result, the layer modulus and in-plane Young's/Poisson's ratio), and
+--- per requested component --- the stress-or-energy-vs-strain points
+behind that column.
+
 \section{Piezoelectric tensor}
 \label{sec:piezoelectric}
 

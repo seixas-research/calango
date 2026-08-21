@@ -607,35 +607,74 @@ void emitVasp(std::ostringstream& out, const CalculatorConfig& c)
            "from ase.calculators.vasp import Vasp\n"
            "\n";
 
-    if (!c.vaspPotcarPath.empty()) {
-        out << "# PAW datasets. ASE looks for $VASP_PP_PATH/potpaw_PBE/<El>/POTCAR;\n"
-               "# an installation that keeps the element folders directly under\n"
-               "# the POTCAR directory gets a symlink shim so it resolves anyway.\n"
-            << "_potcar_root = r\"" << c.vaspPotcarPath
-            << "\"\n"
-               "if not os.path.isdir(_potcar_root):\n"
-               "    raise RuntimeError(\n"
-               "        f'POTCAR directory not found: {_potcar_root}\\n'\n"
-               "        'Set it in the calculator settings (VASP -> POTCAR "
-               "directory).')\n"
-               "if not any(os.path.isdir(os.path.join(_potcar_root, _d))\n"
-               "           for _d in ('potpaw_PBE', 'potpaw', 'potpaw_LDA')):\n"
-               "    _shim = os.path.abspath('_potcar_shim')\n"
-               "    os.makedirs(_shim, exist_ok=True)\n"
-               "    for _name in ('potpaw_PBE', 'potpaw_LDA', 'potpaw'):\n"
-               "        _link = os.path.join(_shim, _name)\n"
-               "        if not os.path.exists(_link):\n"
-               "            os.symlink(_potcar_root, _link)\n"
-               "    print(f'CALANGO_INFO flat POTCAR layout — shimmed via "
-               "{_shim}',\n"
-               "          flush=True)\n"
-               "    _potcar_root = _shim\n"
-               "os.environ['VASP_PP_PATH'] = _potcar_root\n"
-               "\n";
-    } else {
-        out << "# No POTCAR directory configured — ASE falls back to whatever\n"
-               "# VASP_PP_PATH the environment already carries.\n\n";
-    }
+    // PAW dataset resolution. The SAME script runs unmodified whether it is
+    // launched locally or uploaded and run on a remote HPC cluster (see
+    // docs/sphinx/source/simulations/remote.md, "POTCAR resolution") — so a path
+    // baked in here at GENERATION time (from Preferences on whatever machine
+    // built this script) is only ever a fallback. CALANGO_VASP_PP_PATH, if
+    // already present in the environment, is a per-cluster override the HPC
+    // panel exports ahead of this script in the remote job's setup lines
+    // (HPC panel -> Scheduler -> VASP POTCAR directory) and always wins —
+    // it is the one value guaranteed to describe the machine this script is
+    // ACTUALLY executing on. Neither set: ASE falls back to whatever
+    // VASP_PP_PATH the environment already carries, exactly as before this
+    // mechanism existed.
+    out << "_cluster_override = os.environ.get('CALANGO_VASP_PP_PATH', '').strip()\n";
+    if (!c.vaspPotcarPath.empty())
+        out << "_potcar_root = _cluster_override or r\"" << c.vaspPotcarPath << "\"\n";
+    else
+        out << "_potcar_root = _cluster_override\n";
+    out << "if _potcar_root:\n"
+           "    if _cluster_override:\n"
+           "        print(f'CALANGO_INFO POTCAR directory from the "
+           "per-cluster override: {_potcar_root}', flush=True)\n"
+           "    if not os.path.isdir(_potcar_root):\n"
+           "        raise RuntimeError(\n"
+           "            f'POTCAR directory not found: {_potcar_root}\\n'\n"
+           "            'Set it in the calculator settings (VASP -> POTCAR "
+           "directory),\\n'\n"
+           "            'or per-cluster in the HPC panel (Scheduler -> VASP "
+           "POTCAR directory).')\n"
+           // ASE looks for $VASP_PP_PATH/potpaw_PBE/<El>/POTCAR; an
+           // installation that keeps the element folders directly under the
+           // POTCAR directory gets a symlink shim so it resolves anyway.
+           "    _variant_dir = next(\n"
+           "        (_d for _d in ('potpaw_PBE', 'potpaw', 'potpaw_LDA')\n"
+           "         if os.path.isdir(os.path.join(_potcar_root, _d))), "
+           "None)\n"
+           "    if _variant_dir is None:\n"
+           "        _shim = os.path.abspath('_potcar_shim')\n"
+           "        os.makedirs(_shim, exist_ok=True)\n"
+           "        for _name in ('potpaw_PBE', 'potpaw_LDA', 'potpaw'):\n"
+           "            _link = os.path.join(_shim, _name)\n"
+           "            if not os.path.exists(_link):\n"
+           "                os.symlink(_potcar_root, _link)\n"
+           "        print(f'CALANGO_INFO flat POTCAR layout — shimmed via "
+           "{_shim}',\n"
+           "              flush=True)\n"
+           "        _potcar_root = _shim\n"
+           "        _variant_dir = 'potpaw_PBE'\n"
+           "    os.environ['VASP_PP_PATH'] = _potcar_root\n"
+           // Fail before VASP does, and name exactly which elements are
+           // missing, rather than a deep ASE traceback minutes into the
+           // queue — the directory existing is necessary but not sufficient,
+           // a library can easily be missing just one element's POTCAR.
+           "    _missing = [_el for _el in "
+           "dict.fromkeys(atoms.get_chemical_symbols())\n"
+           "                if not os.path.isfile(os.path.join(\n"
+           "                    _potcar_root, _variant_dir, _el, "
+           "'POTCAR'))]\n"
+           "    if _missing:\n"
+           "        raise RuntimeError(\n"
+           "            f'No POTCAR for {\", \".join(_missing)} under '\n"
+           "            f'{os.path.join(_potcar_root, _variant_dir)}\\n'\n"
+           "            'PAW variants (_sv/_pv/_d) and the LDA/PBE library "
+           "choice are not\\n'\n"
+           "            'auto-selected -- point the POTCAR directory at the "
+           "library that\\n'\n"
+           "            'already has the right variant for every "
+           "element.')\n"
+           "\n";
 
     out << "atoms.calc = Vasp(\n"
         << "    directory=\".\",\n"

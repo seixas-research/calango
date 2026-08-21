@@ -146,8 +146,11 @@ private Q_SLOTS:
     /// graphene at target coverages, opened as a new workspace tab.
     void openGrapheneOxideBuilder();
     /// The builder's optional MDMC refinement, on the structure just built.
+    /// `hydroxylAntiposition` carries forward the builder's own option so
+    /// the sampler moves each antipositioned pair as one unit.
     void openGrapheneOxideMdmc(
-        const core::GrapheneOxideBuilder::Report& report);
+        const core::GrapheneOxideBuilder::Report& report,
+        bool hydroxylAntiposition);
     void cleaveSurface();
     void addAtom();
     void changeElementOfSelection();
@@ -1131,11 +1134,38 @@ private:
     QTimer* metricsTimer_ = nullptr;
     QAction* undoAction_ = nullptr;
     QAction* redoAction_ = nullptr;
+    /// Edit → Delete Selected Atoms — captured (unlike most menu actions,
+    /// built inline and never stored) so applyShortcutBindings() can re-read
+    /// its binding from the registry after a remap.
+    QAction* deleteSelectionAction_ = nullptr;
     /// Element placed by the viewport's Insertion mode (toolbar selector).
     int activeElementZ_ = 6;
     QToolButton* elementButton_ = nullptr;
     /// Shared between View → Orthographic and the frame-panel toolbar.
     QAction* orthoAction_ = nullptr;
+
+    /// One icon-only toolbar action whose hover tooltip embeds its CURRENT
+    /// binding as "description  [key]" — the six mouse modes, Reset camera,
+    /// and the projection toggle. `description` excludes the suffix; it is
+    /// appended fresh by applyShortcutBindings() every time a binding may
+    /// have changed, so the tooltip never goes stale after a remap.
+    struct ToolbarShortcutAction {
+        QAction* action = nullptr;
+        QString shortcutId;   ///< ShortcutRegistry::actions() id
+        QString description;
+    };
+    QList<ToolbarShortcutAction> toolbarShortcutActions_;
+    /// Push every QAction::shortcut() (and, for toolbarShortcutActions_,
+    /// tooltip) to what ShortcutRegistry currently says. Called once at
+    /// startup, right after every remappable action is constructed, and
+    /// again from showPreferences() after the Hotkeys tab may have changed
+    /// something — the same "re-read and reapply" shape
+    /// applyAppearanceTheme() already uses for the theme.
+    void applyShortcutBindings();
+    /// Move `tabBar_`'s current index by `direction` (+1/-1), wrapping at
+    /// the ends; a no-op with zero or one tab open. The viewport's
+    /// [Tab]/[Shift+Tab] handler calls this via cycleTabRequested().
+    void cycleTab(int direction);
 };
 
 } // namespace calango::gui

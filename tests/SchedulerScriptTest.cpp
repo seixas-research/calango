@@ -166,6 +166,155 @@ int main()
                       "asking for none");
     }
 
+    std::printf("Task 4 extensions (account/QOS/cpus-per-task/GPUs/node "
+                "list/extra directives), SLURM only:\n");
+    {
+        RemoteJobSpec ext;
+        ext.scheduler = Scheduler::Slurm;
+        ext.account = "phys-2026";
+        ext.qos = "priority";
+        ext.cpusPerTask = 8;
+        ext.gpusPerNode = 2;
+        ext.nodeList = "gpu-node-03";
+        ext.extraDirectives = "#SBATCH --mail-type=END\n##SBATCH --exclusive";
+        const std::string script = SS::generate(ext);
+        checkContains(script, "#SBATCH --account=phys-2026", "account");
+        checkContains(script, "#SBATCH --qos=priority", "QOS");
+        checkContains(script, "#SBATCH --cpus-per-task=8", "cpus per task");
+        checkContains(script, "#SBATCH --gres=gpu:2", "GPUs per node");
+        checkContains(script, "#SBATCH --nodelist=gpu-node-03", "node list");
+        checkContains(script, "#SBATCH --mail-type=END",
+                      "a real extra directive, verbatim");
+        checkContains(script, "##SBATCH --exclusive",
+                      "and a deliberately-disabled one, verbatim -- "
+                      "SLURM itself ignores anything not spelled exactly "
+                      "\"#SBATCH\", so this is intentionally inert");
+
+        // Defaults omit every one of them.
+        RemoteJobSpec plain;
+        plain.scheduler = Scheduler::Slurm;
+        const std::string plainScript = SS::generate(plain);
+        checkAbsent(plainScript, "--account=", "no account by default");
+        checkAbsent(plainScript, "--qos=", "no QOS by default");
+        checkAbsent(plainScript, "--cpus-per-task=",
+                    "no cpus-per-task at the default of 1 (SLURM's own "
+                    "default already)");
+        checkAbsent(plainScript, "--gres=", "no GPU request by default");
+        checkAbsent(plainScript, "--nodelist=", "no node list by default");
+
+        // PBS/SGE generation is untouched: the SAME populated spec, submitted
+        // to a different scheduler, must not leak any SLURM-only directive.
+        RemoteJobSpec extPbs = ext;
+        extPbs.scheduler = Scheduler::Pbs;
+        const std::string pbsScript = SS::generate(extPbs);
+        checkAbsent(pbsScript, "account", "PBS carries none of the SLURM-only fields");
+        checkAbsent(pbsScript, "gres", "not even by accidental substring overlap");
+        RemoteJobSpec extSge = ext;
+        extSge.scheduler = Scheduler::Sge;
+        checkAbsent(SS::generate(extSge), "nodelist", "nor does SGE");
+    }
+
+    std::printf("A multi-line command (launcher line + post-run cleanup):\n");
+    {
+        RemoteJobSpec multi;
+        multi.scheduler = Scheduler::Slurm;
+        multi.command = "mpirun -n 4 gpaw python run_gpaw.py\n\nconda deactivate";
+        const std::string script = SS::generate(multi);
+        checkContains(script, "mpirun -n 4 gpaw python run_gpaw.py",
+                      "the launcher line");
+        checkContains(script, "conda deactivate",
+                      "and cleanup running AFTER it, both from one Command "
+                      "field");
+        check(script.find("mpirun") < script.find("conda deactivate"),
+              "in that order");
+    }
+
+    // --- job_heisenberg.sh: the real script this task was scoped from -----
+    //
+    // #!/bin/bash
+    // #SBATCH -J sc4x4x4
+    // ##SBATCH --ntasks=16
+    // #SBATCH --nodes=1
+    // #SBATCH --ntasks-per-node=4
+    // #SBATCH -t 24:00:00
+    // #SBATCH -p cpu
+    // #SBATCH --mem 16G
+    // #SBATCH -w work1
+    //
+    // module purge
+    // source ~/.bashrc
+    //
+    // conda activate gpaw_env
+    //
+    // mpirun -n 4 gpaw python run_gpaw.py
+    //
+    // conda deactivate
+    //
+    // Reproduced here as the RemoteJobSpec the HPC panel's widgets would
+    // build from those exact values (specFromUi() in HpcPanel.cpp) --
+    // checked functionally (every directive present with the right value,
+    // in the same relative order, prologue before the launcher line) rather
+    // than as a literal byte diff: `-J`/`-t`/`-p`/`-w` vs. Calango's
+    // `--job-name=`/`--time=`/`--partition=`/`--nodelist=`, and `--mem 16G`
+    // vs. `--mem=16384M`, are exactly the "trivial formatting differences"
+    // this task says are fine -- SLURM accepts both spellings of each and
+    // 16G IS 16384M. The commented-out `##SBATCH --ntasks=16` is not a
+    // functional directive at all (SLURM only ever reads a line spelled
+    // EXACTLY "#SBATCH"), so it needs no dedicated field -- a user who wants
+    // that exact line reproduced types it into "Extra #SBATCH lines".
+    std::printf("job_heisenberg.sh fixture:\n");
+    {
+        RemoteJobSpec job;
+        job.scheduler = Scheduler::Slurm;
+        job.jobName = "sc4x4x4";
+        job.nodes = 1;
+        job.tasksPerNode = 4;
+        job.walltime = "24:00:00";
+        job.queue = "cpu";
+        job.memoryMbPerNode = 16 * 1024; // 16G
+        job.nodeList = "work1";
+        job.setupLines = "module purge\nsource ~/.bashrc\n\nconda activate gpaw_env";
+        job.command = "mpirun -n 4 gpaw python run_gpaw.py\n\nconda deactivate";
+        const std::string script = SS::generate(job);
+
+        checkContains(script, "#SBATCH --job-name=sc4x4x4", "-J sc4x4x4");
+        checkContains(script, "#SBATCH --nodes=1", "--nodes=1");
+        checkContains(script, "#SBATCH --ntasks-per-node=4", "--ntasks-per-node=4");
+        checkContains(script, "#SBATCH --time=24:00:00", "-t 24:00:00");
+        checkContains(script, "#SBATCH --partition=cpu", "-p cpu");
+        checkContains(script, "#SBATCH --mem=16384M",
+                      "--mem 16G, converted to Calango's MB convention "
+                      "(16 * 1024 = 16384)");
+        checkContains(script, "#SBATCH --nodelist=work1", "-w work1");
+        checkContains(script, "module purge", "module purge, verbatim");
+        checkContains(script, "source ~/.bashrc", "source ~/.bashrc, verbatim");
+        checkContains(script, "conda activate gpaw_env", "conda activate gpaw_env");
+        checkContains(script, "mpirun -n 4 gpaw python run_gpaw.py",
+                      "the exact launcher line");
+        checkContains(script, "conda deactivate", "and the trailing cleanup");
+
+        // Order: every #SBATCH directive before the blank line that starts
+        // the prologue, the prologue before the launcher, the launcher
+        // before the cleanup that has to run after it -- the same shape
+        // job_heisenberg.sh itself has, not just the same ingredients.
+        const auto pos = [&script](const char* needle) {
+            return script.find(needle);
+        };
+        check(pos("--job-name=sc4x4x4") < pos("--nodelist=work1"),
+              "job name precedes the node list, matching the script's own "
+              "directive order");
+        check(pos("--nodelist=work1") < pos("module purge"),
+              "every #SBATCH directive precedes the prologue");
+        check(pos("module purge") < pos("source ~/.bashrc"),
+              "module purge precedes sourcing .bashrc");
+        check(pos("source ~/.bashrc") < pos("conda activate gpaw_env"),
+              "which precedes activating the environment");
+        check(pos("conda activate gpaw_env") < pos("mpirun -n 4 gpaw python"),
+              "which precedes the launcher line");
+        check(pos("mpirun -n 4 gpaw python") < pos("conda deactivate"),
+              "which precedes deactivating it again");
+    }
+
     std::printf("Commands:\n");
     {
         check(SS::submitCommand(Scheduler::Slurm) == "sbatch job.sh",

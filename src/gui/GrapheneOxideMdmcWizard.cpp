@@ -26,12 +26,14 @@ QString GrapheneOxideMdmcWizard::wizardTitle() const
 
 void GrapheneOxideMdmcWizard::setSubstrate(int functionalGroups,
                                            int basalCarbons, int edgeCarbons,
-                                           bool periodic)
+                                           bool periodic,
+                                           bool hydroxylAntiposition)
 {
     groupCount_ = functionalGroups;
     basalCarbons_ = basalCarbons;
     edgeCarbons_ = edgeCarbons;
     periodic_ = periodic;
+    hydroxylAntiposition_ = hydroxylAntiposition;
     setStructurePeriodic(periodic);
     setStructureElements(edgeCarbons > 0
                              ? QStringList{QStringLiteral("C"),
@@ -51,12 +53,23 @@ void GrapheneOxideMdmcWizard::setSubstrate(int functionalGroups,
         substrateLabel_->setToolTip(
             tr("Go back and raise the oxidation level."));
     } else {
-        substrateLabel_->setText(
+        QString text =
             tr("%n functional group(s) on %1 basal and %2 edge carbons. Each "
                "cycle moves one group to a free site.",
                nullptr, groupCount_)
                 .arg(basalCarbons_)
-                .arg(edgeCarbons_));
+                .arg(edgeCarbons_);
+        // Read-only: this reflects how the structure was BUILT, not a choice
+        // offered on this page — a checkbox here could disagree with what
+        // the geometry actually is, which is exactly the failure mode a
+        // separately-tracked pairing invariant cannot survive.
+        if (hydroxylAntiposition_) {
+            text += tr(
+                " <b>Hydroxyls antiposition</b> is on: each bonded, "
+                "opposite-face hydroxyl pair moves as one unit and is "
+                "never split.");
+        }
+        substrateLabel_->setText(text);
     }
     // NPT needs a cell; a flake does not have one.
     if (ensemble_) {
@@ -324,6 +337,7 @@ core::GrapheneOxideMdmcConfig GrapheneOxideMdmcWizard::collectConfig() const
         config.pressureGpa = pressure_->value();
     if (bothFaces_)
         config.bothFaces = bothFaces_->isChecked();
+    config.hydroxylAntiposition = hydroxylAntiposition_;
     if (seed_)
         config.seed = static_cast<std::uint32_t>(seed_->value());
     if (snapshotInterval_)

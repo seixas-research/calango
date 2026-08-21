@@ -39,8 +39,44 @@ struct RemoteJobSpec {
     /// needs whatever that site called its MPI environment. Ignored by SLURM
     /// and PBS, which describe the layout directly.
     std::string parallelEnvironment = "smp";
+
+    // -- SLURM-only extensions (Task 4) --------------------------------
+    //
+    // Every field below is emitted ONLY inside Scheduler::Slurm's branch of
+    // generate() — PBS and SGE generation is untouched, per design. Each is
+    // "" / 0 = omit, the same convention `queue`/`memoryMbPerNode` already
+    // use, so a spec built before these existed (or one for PBS/SGE) still
+    // produces byte-identical output.
+    std::string account;  ///< #SBATCH --account=
+    std::string qos;      ///< #SBATCH --qos=
+    /// OpenMP threads (or plain cores) per MPI rank — #SBATCH
+    /// --cpus-per-task=. Distinct from tasksPerNode: that is how many RANKS
+    /// share a node, this is how many CORES each rank itself gets.
+    /// <= 1 omits the directive (SLURM's own default is 1 anyway).
+    int cpusPerTask = 1;
+    /// GPUs per node, emitted as --gres=gpu:N — the one gres spelling that
+    /// works on essentially every SLURM cluster with GPU nodes, unlike the
+    /// newer --gpus-per-node= (SLURM 20.02+ only). 0 omits the directive.
+    int gpusPerNode = 0;
+    /// Specific node(s) to run on — #SBATCH --nodelist=. Empty (the common
+    /// case) lets the scheduler place the job anywhere that fits.
+    std::string nodeList;
+    /// Raw, verbatim lines inserted into the #SBATCH block after every
+    /// structured directive above — the "never block the user" escape
+    /// hatch for a directive this struct has no field for. Written EXACTLY
+    /// as given, one line per line: a caller wanting a real directive
+    /// includes its own "#SBATCH " prefix (or "##SBATCH " for one
+    /// deliberately disabled, as a real cluster script often has).
+    std::string extraDirectives;
+
     std::string setupLines; ///< verbatim shell prologue (module load, conda activate, ...)
-    std::string command = "python3 run.py"; ///< the actual payload
+    /// The actual payload — everything after the environment setup. Plain
+    /// text, so it may itself launch under srun/mpirun with whatever flags
+    /// the cluster needs ("mpirun -n 4 gpaw python run_gpaw.py"), and may
+    /// span multiple lines for cleanup that has to run AFTER it (e.g. a
+    /// trailing "conda deactivate") — written to the wrapper verbatim,
+    /// exactly like setupLines.
+    std::string command = "python3 run.py";
 
     /// Total ranks across every node.
     int totalTasks() const

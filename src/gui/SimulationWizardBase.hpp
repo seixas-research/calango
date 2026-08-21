@@ -386,6 +386,26 @@ private:
     QWidget* buildVaspGroup(QWidget* parent);
     /// Show the ionic-relaxation row only for the tasks that have ionic steps.
     void updateVaspRows();
+    /// Local approximation of the check the generated script performs at
+    /// runtime (AseScriptGenerator.cpp, emitVasp()) — catches "no POTCAR
+    /// library configured" and "the configured library is missing one of
+    /// this structure's elements" BEFORE anything is staged, for both
+    /// Run (Local) and Run (Remote). A no-op (returns true without a
+    /// dialog) for every calculator other than VASP. See
+    /// gui/VaspPotcarPreflight.hpp for what it can and cannot see.
+    bool preflightVaspPotcar();
+    /// A second, independent preflight check run alongside
+    /// preflightVaspPotcar(), for anything the concrete wizard wants
+    /// checked before Run (Local)/Run (Remote) that is not the VASP POTCAR
+    /// case above. A no-op (returns true) by default — most wizards need
+    /// nothing here. The 2D Bands wizard overrides it to warn, before
+    /// staging anything, when Quantum ESPRESSO or SIESTA is selected and no
+    /// pseudopotential directory is configured: a weaker check than
+    /// preflightVaspPotcar()'s (a directory existing, not a per-element
+    /// file existing inside it), because unlike VASP, neither engine has an
+    /// established per-element preflight anywhere else in this application
+    /// to reuse — see FUTURE.md for that as a follow-up.
+    virtual bool preflightSecondary() { return true; }
     /// The "Quantum ESPRESSO settings" group — the dual cutoff (ecutwfc /
     /// ecutrho), input_dft, occupations + smearing, conv_thr.
     QWidget* buildEspressoGroup(QWidget* parent);

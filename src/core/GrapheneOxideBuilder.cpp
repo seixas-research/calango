@@ -648,6 +648,13 @@ Structure GrapheneOxideBuilder::build(const Config& config, Report* report)
             advanceBonds();
             return bondCursor < fw.basalBonds.size();
         case Group::Hydroxyl:
+            // Antiposition draws from the bonded-PAIR pool, same as an
+            // epoxide — a free single carbon is not enough, it needs a free
+            // NEIGHBOUR too.
+            if (config.hydroxylAntiposition) {
+                advanceBonds();
+                return bondCursor < fw.basalBonds.size();
+            }
             advance(basalOrder, basalCursor);
             return basalCursor < basalOrder.size();
         default:
@@ -774,7 +781,13 @@ Structure GrapheneOxideBuilder::build(const Config& config, Report* report)
     // --- The one place a group is ever attached -----------------------------
     // Every dosing mode funnels through here, so the reservation check, the
     // steric check and the geometry live together and cannot drift apart.
-    const auto place = [&](Group group) -> bool {
+    //
+    // Returns the number of `group` instances actually placed: 0 on failure,
+    // 1 for an ordinary single-site (or single-bond) group, and 2 for an
+    // antiposition hydroxyl pair — the one case where a single call delivers
+    // more than one group. Every call site adds this count rather than
+    // assuming 1, precisely so that case is accounted for correctly.
+    const auto place = [&](Group group) -> int {
         if (group == Group::Epoxide) {
             advanceBonds();
             int tried = 0;
@@ -809,10 +822,65 @@ Structure GrapheneOxideBuilder::build(const Config& config, Report* report)
                     if (collides(pending, {i, j}))
                         continue;
                     commit(pending, {i, j}, group);
-                    return true;
+                    return 1;
                 }
             }
-            return false;
+            return 0;
+        }
+
+        if (group == Group::Hydroxyl && config.hydroxylAntiposition) {
+            // Same bonded-pair pool an epoxide draws from — a "neighbouring
+            // carbon pair" is exactly what fw.basalBonds already is — but
+            // unlike an epoxide's single bridging oxygen, this commits TWO
+            // independent hydroxyls, one per carbon, with their faces forced
+            // to opposite signs: that opposition IS the antiposition motif,
+            // so it draws a fresh sign here rather than going through
+            // faceSign() (which would collapse to the same face on both
+            // carbons whenever `bothFaces` is off).
+            advanceBonds();
+            int tried = 0;
+            for (std::size_t k = bondCursor;
+                 k < fw.basalBonds.size() && tried < kStericTries; ++k) {
+                const auto [i, j] = fw.basalBonds[k];
+                if (owner[static_cast<std::size_t>(i)] >= 0
+                    || owner[static_cast<std::size_t>(j)] >= 0)
+                    continue;
+                ++tried;
+                const double sign = coinFlip(rng) ? 1.0 : -1.0;
+                // A few azimuth draws per pair, same idea as the ordinary
+                // hydroxyl site loop below trying several orientations before
+                // moving on to the next carbon: a crowded pair should not be
+                // abandoned on the first unlucky -OH swing.
+                for (int variant = 0; variant < 3; ++variant) {
+                    const std::vector<Atom> pendingI =
+                        basalGeometry(i, sign, azimuth(rng));
+                    const std::vector<Atom> pendingJ =
+                        basalGeometry(j, -sign, azimuth(rng));
+                    if (collides(pendingI, {i}) || collides(pendingJ, {j}))
+                        continue;
+                    // `collides` only checks against attachments already
+                    // COMMITTED, so the pair's own two brand-new hydroxyls —
+                    // one bond apart — must be cross-checked against each
+                    // other separately.
+                    bool crossClash = false;
+                    for (const Atom& a : pendingI) {
+                        for (const Atom& b : pendingJ) {
+                            if (gap(a.position, b.position) < kMinContact) {
+                                crossClash = true;
+                                break;
+                            }
+                        }
+                        if (crossClash)
+                            break;
+                    }
+                    if (crossClash)
+                        continue;
+                    commit(pendingI, {i}, group);
+                    commit(pendingJ, {j}, group);
+                    return 2;
+                }
+            }
+            return 0;
         }
 
         const bool basal = region(group) == Region::Basal;
@@ -843,10 +911,10 @@ Structure GrapheneOxideBuilder::build(const Config& config, Report* report)
                 if (collides(pending, {carbon}))
                     continue;
                 commit(pending, {carbon}, group);
-                return true;
+                return 1;
             }
         }
-        return false;
+        return 0;
     };
 
     // --- Dosing --------------------------------------------------------------
@@ -944,9 +1012,13 @@ Structure GrapheneOxideBuilder::build(const Config& config, Report* report)
             int stalled = 0;
             while (placedOxygen < basalTarget && stalled < 2) {
                 const Group group = basalGroups[pickBasal(rng)];
-                if (place(group)) {
-                    ++local.placed[static_cast<std::size_t>(group)];
-                    ++placedOxygen;
+                // `n` rather than an assumed 1: an antiposition hydroxyl
+                // placement delivers 2 at once, each carrying one oxygen, so
+                // both the group tally and the oxygen budget must move by the
+                // same amount the call actually placed.
+                if (const int n = place(group); n > 0) {
+                    local.placed[static_cast<std::size_t>(group)] += n;
+                    placedOxygen += n;
                     stalled = 0;
                     continue;
                 }
@@ -959,11 +1031,13 @@ Structure GrapheneOxideBuilder::build(const Config& config, Report* report)
                                                             : Group::Epoxide;
                 const double otherWeight =
                     other == Group::Epoxide ? basalWeights[0] : basalWeights[1];
-                if (otherWeight > 0.0 && place(other)) {
-                    ++local.placed[static_cast<std::size_t>(other)];
-                    ++placedOxygen;
-                    stalled = 0;
-                    continue;
+                if (otherWeight > 0.0) {
+                    if (const int n = place(other); n > 0) {
+                        local.placed[static_cast<std::size_t>(other)] += n;
+                        placedOxygen += n;
+                        stalled = 0;
+                        continue;
+                    }
                 }
                 ++stalled;
             }
@@ -987,8 +1061,15 @@ Structure GrapheneOxideBuilder::build(const Config& config, Report* report)
         for (Group group : order) {
             const auto slot = static_cast<std::size_t>(group);
             local.requested[slot] = targetCount(group);
-            while (local.placed[slot] < local.requested[slot] && place(group))
-                ++local.placed[slot];
+            // An antiposition hydroxyl call places 2 at once, so a requested
+            // count of exactly N is met with N (even) or overshot by one
+            // (odd) rather than ever landing on a lone, unpaired hydroxyl.
+            while (local.placed[slot] < local.requested[slot]) {
+                const int n = place(group);
+                if (n <= 0)
+                    break;
+                local.placed[slot] += n;
+            }
         }
     } else {
         // Place groups one at a time until the WHOLE structure reaches the
@@ -1081,15 +1162,23 @@ Structure GrapheneOxideBuilder::build(const Config& config, Report* report)
                                                       weights.end());
             const Group group = pool[static_cast<std::size_t>(pickGroup(rng))];
 
-            if (!place(group)) {
+            // `ratioAfter` above predicted the effect of ONE group; an
+            // antiposition hydroxyl call can deliver 2, in which case the
+            // actual step past the target is twice what was predicted — the
+            // same "closest reachable, not exact" approximation this search
+            // already makes for a carboxyl's extra carbon, just from a
+            // different group.
+            const int n = place(group);
+            if (n <= 0) {
                 exhausted[static_cast<std::size_t>(group)] = 1;
                 continue;
             }
-            ++local.placed[static_cast<std::size_t>(group)];
-            oxygens += oxygensPerGroup(group);
+            local.placed[static_cast<std::size_t>(group)] += n;
+            oxygens += oxygensPerGroup(group) * n;
             if (group == Group::Carboxyl)
-                ++extraCarbons;
-            delivered[pick == Region::Basal ? 0 : 1] += oxygensPerGroup(group);
+                ++extraCarbons; // carboxyl never places more than one at a time
+            delivered[pick == Region::Basal ? 0 : 1] +=
+                oxygensPerGroup(group) * n;
         }
     }
 

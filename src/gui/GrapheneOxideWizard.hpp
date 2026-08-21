@@ -30,7 +30,7 @@ namespace calango::gui {
 ///     oxidation as O/C, the basal chemistry as H/O, and — on a flake only —
 ///     how much of the oxygen goes to the rim and what it turns into there.
 ///
-/// Stage 2 drives Dosing::TargetRatio and nothing else. The builder also
+/// Stage 2 drives Dosing::DecoupledRegions and nothing else. The builder also
 /// supports Dosing::ExplicitCoverage, a per-group coverage table, and this
 /// dialog used to offer it as a second mode; it no longer does. A composition
 /// is what graphene oxide is characterized by and what a paper quotes, whereas
@@ -60,6 +60,12 @@ public:
     /// builds and opens the structure either way, then offers the follow-on
     /// wizard where a calculator is chosen.
     bool mdmcRequested() const;
+    /// Whether the structure just built has hydroxyls placed as bonded,
+    /// opposite-face pairs (the "Hydroxyls antiposition" option) — read by
+    /// the host so the follow-on MDMC wizard can move each pair as one
+    /// compound unit instead of two independently sited hydroxyls. Valid
+    /// after exec() returns Accepted, same as result()/report().
+    bool hydroxylAntiposition() const;
 
 private Q_SLOTS:
     void goNext();
@@ -135,8 +141,13 @@ private:
     /// in; O/C is what the UI shows because it is linear in oxygen content and
     /// has a meaningful zero, neither of which C/O has.
     RatioControl basalOxidation_;
-    /// Basal chemistry as H/O: 0 = epoxide only, 1 = hydroxyl only.
+    /// Basal chemistry as H/O: 0 = epoxide only, 1 = hydroxyl only. Defaults
+    /// to 2/3 -- epoxide:hydroxyl = 1:2.
     RatioControl basalHydrogen_;
+    /// Force every hydroxyl onto a bonded pair of basal carbons, one -OH per
+    /// carbon on opposite faces (a trans-diol), instead of each hydroxyl
+    /// sitting on its own independently chosen carbon.
+    QCheckBox* hydroxylAntipositionCheck_ = nullptr;
     /// Share of the oxygen budget delivered at the EDGES rather than on the
     /// basal plane — the edge oxidation density. Flake only.
     RatioControl edgeOxidation_;

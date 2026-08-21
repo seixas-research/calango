@@ -52,6 +52,23 @@ namespace calango::core {
 /// rules between single and pair sites. The two exist separately because the
 /// builder runs in process and the sampler runs in the job; they are small,
 /// and the invariant they share is asserted on both sides.
+///
+/// HYDROXYL ANTIPOSITION. GrapheneOxideBuilder::Config::hydroxylAntiposition
+/// places hydroxyls as bonded, opposite-face PAIRS rather than independent
+/// singles — see `hydroxylAntiposition` below. Moving the two halves of a
+/// pair independently, the way a plain hydroxyl move set would, breaks that
+/// arrangement the first time either half hops: nothing then re-forms the
+/// pair, and the run silently drifts away from the material it was asked to
+/// refine. When the flag is set, the emitted script instead recovers each
+/// pair from the STARTING geometry once (the only point pairing is ever
+/// derived rather than tracked) and carries it from then on as a single
+/// compound "hydroxyl_pair" entry in the move list — occupying and drawing a
+/// bonded PAIR site exactly like an epoxide, so it inherits the same
+/// proposal-symmetry argument the existing epoxide pair-move already relies
+/// on: a move always releases exactly what it goes on to occupy, so the
+/// count of free sites of that region is the same before and after, and the
+/// reverse move is exactly as likely to be proposed as the forward one. No
+/// separate Hastings correction is introduced or needed.
 struct GrapheneOxideMdmcConfig {
     /// Structure staged next to run.py — the builder's output.
     std::string inputStructure = "structure.extxyz";
@@ -100,6 +117,22 @@ struct GrapheneOxideMdmcConfig {
     /// Attach basal groups to either face. Off restricts every move to the
     /// face the group already sat on, which is what a single-sided model wants.
     bool bothFaces = true;
+
+    /// Was the input structure built with GrapheneOxideBuilder::Config::
+    /// hydroxylAntiposition? When true, the sampler recovers each bonded,
+    /// opposite-face hydroxyl pair from the STARTING geometry once, up
+    /// front, and moves every such pair as one compound unit for the rest
+    /// of the run — drawing a fresh bonded-pair site, the same pool an
+    /// epoxide draws from, and rebuilding both -OH groups with a freshly
+    /// drawn opposite-face split — so a swap can never separate a pair
+    /// onto two independently sited carbons.
+    ///
+    /// This is inherited state about the INPUT, not a sampling choice: the
+    /// caller (MainWindow, from the builder's own config) sets it, and the
+    /// wizard does not expose it as a toggle a user could mismatch against
+    /// the structure actually being refined. Off leaves every hydroxyl
+    /// moved individually, exactly as before this option existed.
+    bool hydroxylAntiposition = false;
 
     /// Deterministic seed for the move sequence and the thermostat.
     std::uint32_t seed = 0;

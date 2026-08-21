@@ -2,9 +2,11 @@
 
 #include "gui/CondaEnvs.hpp"
 #include "gui/EnginePresets.hpp"
+#include "gui/GuiUtils.hpp"
 #include "gui/RunCommands.hpp"
 #include "gui/EnvFile.hpp"
 #include "gui/SettingsManager.hpp"
+#include "gui/ShortcutRegistry.hpp"
 #include "gui/ThemeManager.hpp"
 
 #include <QAbstractItemView>
@@ -17,9 +19,12 @@
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QKeySequenceEdit>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QSettings>
+#include <QSignalBlocker>
 #include <QSpinBox>
 #include <QTableWidget>
 
@@ -241,6 +246,7 @@ PreferencesDialog::PreferencesDialog(QWidget* parent)
     // interpreter, one for the data files.
     tabs->addTab(buildExternalFilesTab(), tr("External Files"));
     tabs->addTab(buildRunTab(), tr("Run"));
+    tabs->addTab(buildHotkeysTab(), tr("Hotkeys"));
 
     auto* layout = new QVBoxLayout(this);
     layout->addWidget(tabs, 1);
@@ -589,6 +595,11 @@ QWidget* PreferencesDialog::buildRunTab()
         0, QHeaderView::ResizeToContents);
     runCommandTable_->horizontalHeader()->setSectionResizeMode(
         1, QHeaderView::Stretch);
+    // A dead key on an item view recurses through type-to-edit until the
+    // stack dies; enforced by the dialog-construction test. Column 1's cells
+    // are QLineEdit widgets (safe on their own), but column 0's plain,
+    // read-only items are not, and either can be the view's current index.
+    disableTypeToEdit(runCommandTable_);
 
     for (int row = 0; row < engines.size(); ++row) {
         const core::CalculatorKind kind = engines.at(row);
@@ -634,6 +645,148 @@ QWidget* PreferencesDialog::buildRunTab()
     layout->addLayout(restoreRow);
 
     return page;
+}
+
+QWidget* PreferencesDialog::buildHotkeysTab()
+{
+    auto* page = new QWidget(this);
+    auto* layout = new QVBoxLayout(page);
+
+    auto* note = new QLabel(
+        tr("Click a row's shortcut field, then press the new key or "
+           "combination. A key already used elsewhere — including by a "
+           "fixed, non-remappable shortcut — is refused rather than "
+           "silently duplicated."),
+        page);
+    note->setWordWrap(true);
+    layout->addWidget(note);
+
+    const QVector<ShortcutAction>& actions = ShortcutRegistry::actions();
+    hotkeyTable_ = new QTableWidget(actions.size(), 3, page);
+    hotkeyTable_->setHorizontalHeaderLabels(
+        {tr("Action"), tr("Shortcut"), QString()});
+    hotkeyTable_->verticalHeader()->setVisible(false);
+    hotkeyTable_->setSelectionMode(QAbstractItemView::NoSelection);
+    hotkeyTable_->horizontalHeader()->setSectionResizeMode(
+        0, QHeaderView::ResizeToContents);
+    hotkeyTable_->horizontalHeader()->setSectionResizeMode(
+        1, QHeaderView::Stretch);
+    hotkeyTable_->horizontalHeader()->setSectionResizeMode(
+        2, QHeaderView::ResizeToContents);
+    // A dead key on an item view recurses through type-to-edit until the
+    // stack dies; enforced by the dialog-construction test.
+    disableTypeToEdit(hotkeyTable_);
+
+    hotkeyEdits_.clear();
+    hotkeyEdits_.reserve(actions.size());
+    for (int row = 0; row < actions.size(); ++row) {
+        const ShortcutAction& action = actions.at(row);
+
+        auto* nameItem = new QTableWidgetItem(action.label);
+        nameItem->setFlags(Qt::ItemIsEnabled);
+        nameItem->setToolTip(action.category);
+        hotkeyTable_->setItem(row, 0, nameItem);
+
+        auto* edit = new QKeySequenceEdit(ShortcutRegistry::binding(action.id),
+                                          hotkeyTable_);
+        // These are all single-press actions (a mouse mode, undo, next tab,
+        // ...) — capping the recorder at one key/chord keeps a stray second
+        // keystroke from being silently folded into a two-chord sequence
+        // nothing here would ever match against.
+        edit->setMaximumSequenceLength(1);
+        edit->setToolTip(action.category);
+        hotkeyTable_->setCellWidget(row, 1, edit);
+        hotkeyEdits_.push_back(edit);
+
+        const QString id = action.id;
+        connect(edit, &QKeySequenceEdit::editingFinished, this,
+                [this, edit, id] {
+                    const QKeySequence proposed = edit->keySequence();
+                    const QString clash =
+                        ShortcutRegistry::conflictFor(proposed, id);
+                    if (!clash.isEmpty()) {
+                        QMessageBox::warning(
+                            this, tr("Shortcut already in use"),
+                            tr("%1 is already bound to \"%2\". Choose a "
+                               "different key, or clear this one first.")
+                                .arg(proposed.toString(QKeySequence::NativeText),
+                                     clash));
+                        // Refuse the silent duplicate: revert to whatever is
+                        // actually bound rather than accept the collision.
+                        const QSignalBlocker blocker(edit);
+                        edit->setKeySequence(ShortcutRegistry::binding(id));
+                        return;
+                    }
+                    ShortcutRegistry::setBinding(id, proposed);
+                    refreshHotkeyConflicts();
+                });
+
+        auto* reset = new QPushButton(tr("Reset"), hotkeyTable_);
+        reset->setToolTip(
+            tr("Restore \"%1\" to %2.")
+                .arg(action.label,
+                     action.defaultKey.isEmpty()
+                         ? tr("no shortcut")
+                         : action.defaultKey.toString(QKeySequence::NativeText)));
+        const QKeySequence defaultKey = action.defaultKey;
+        connect(reset, &QPushButton::clicked, this,
+                [this, edit, id, defaultKey] {
+                    ShortcutRegistry::resetToDefault(id);
+                    const QSignalBlocker blocker(edit);
+                    edit->setKeySequence(defaultKey);
+                    refreshHotkeyConflicts();
+                });
+        hotkeyTable_->setCellWidget(row, 2, reset);
+    }
+    layout->addWidget(hotkeyTable_, 1);
+
+    hotkeyConflictLabel_ = new QLabel(page);
+    hotkeyConflictLabel_->setWordWrap(true);
+    hotkeyConflictLabel_->setStyleSheet(QStringLiteral("color: #d9534f;"));
+    layout->addWidget(hotkeyConflictLabel_);
+
+    auto* restoreAll = new QPushButton(tr("Reset All to Defaults"), page);
+    connect(restoreAll, &QPushButton::clicked, this, [this]() {
+        ShortcutRegistry::resetAllToDefaults();
+        const QVector<ShortcutAction>& current = ShortcutRegistry::actions();
+        for (int row = 0; row < current.size() && row < hotkeyEdits_.size();
+             ++row) {
+            const QSignalBlocker blocker(hotkeyEdits_.at(row));
+            hotkeyEdits_.at(row)->setKeySequence(current.at(row).defaultKey);
+        }
+        refreshHotkeyConflicts();
+    });
+    auto* restoreAllRow = new QHBoxLayout;
+    restoreAllRow->addStretch(1);
+    restoreAllRow->addWidget(restoreAll);
+    layout->addLayout(restoreAllRow);
+
+    refreshHotkeyConflicts();
+    return page;
+}
+
+void PreferencesDialog::refreshHotkeyConflicts()
+{
+    if (!hotkeyConflictLabel_)
+        return;
+    const QVector<ShortcutAction>& actions = ShortcutRegistry::actions();
+    QStringList problems;
+    for (int i = 0; i < actions.size(); ++i) {
+        const QKeySequence key = ShortcutRegistry::binding(actions.at(i).id);
+        if (key.isEmpty())
+            continue;
+        for (int j = i + 1; j < actions.size(); ++j) {
+            if (ShortcutRegistry::binding(actions.at(j).id) == key) {
+                problems << tr("\"%1\" and \"%2\" are both bound to %3 — a "
+                              "hand-edited settings file, most likely; fix "
+                              "one of them above.")
+                                .arg(actions.at(i).label, actions.at(j).label,
+                                     key.toString(QKeySequence::NativeText));
+            }
+        }
+    }
+    hotkeyConflictLabel_->setText(problems.join(QStringLiteral("\n")));
+    hotkeyConflictLabel_->setVisible(!problems.isEmpty());
 }
 
 } // namespace calango::gui

@@ -607,3 +607,96 @@ $w \sim (\prod x)^{7/8}$, which at $x = 0.5$ is completely invisible --- every
 tuple picks up the same factor and normalisation hides it --- and wrong
 everywhere else. The four-sublattice version of the same identity runs at
 $x = 0.25$ and measures $2.2\times10^{-16}\,k_\mathrm{B}$.
+
+\section{EGQCA}
+\label{sec:egqca}
+
+\menu{Modules}\menusep\menu{Alloys}\menusep\menu{EGQCA (Alloy
+Thermodynamics)\ldots} is a third route to a binary alloy's mixing free
+energy, alongside ECI-Fit$\to$CVM above: it solves the Gibbs mixing free
+energy directly from a small, explicit ensemble of non-equivalent cluster
+configurations, with no effective model fitted in between.
+
+Working theory: P.N. Ferreira \emph{et al.}, \emph{Ab initio modeling of
+superconducting alloys}, Materials Today Physics \textbf{48}, 101547
+(2024). A homogeneous solid solution A$_{1-x}$B$_x$ is represented as an
+ensemble of $M$ small, independent supercells falling into $J$
+non-equivalent classes by symmetry, each with its own energy $E_j$,
+degeneracy $g_j$ and composition $n_j$. Minimizing
+$\Delta G = \Delta H - T\Delta S + \Delta A$ over the cluster occurrence
+probabilities $p_j$, subject to $\sum_j p_j = 1$ and $\sum_j n_j p_j = nx$,
+gives a closed-form solution: every $p_j$ is a Boltzmann-weighted power of
+one Lagrange multiplier $\eta$, and $\eta$ is the unique positive root of
+one polynomial --- solved by bisection, so the whole $(x, T)$ grid is
+milliseconds even when wide.
+
+\textbf{``Extended''} over the original GQCA: each cluster may carry a
+phonon density of states, whose harmonic vibrational free energy enters as
+$\Delta A$ --- a genuinely temperature-dependent correction beyond the
+enthalpy and configurational entropy of plain GQCA. Omitting the DOS on
+every cluster reduces exactly to ordinary GQCA; mixing a vibrational and a
+non-vibrational cluster in one sum is refused outright, since it is not
+thermodynamically consistent.
+
+EGQCA is an \textbf{analysis layer over a finished Cluster Expansion
+Calculation}, not a job of its own: it reads that run's
+\file{cluster\_expansion.json}, requires a degeneracy $g_j$ on every
+configuration and both pure end-members, and is a strictly \textbf{binary}
+theory --- an ensemble with more than two species opens with a note
+explaining why rather than silently projecting onto two of them. Once
+loaded it exposes editable reference enthalpies $H_A$, $H_B$ (defaulted to
+the ensemble's own end-member energies), a composition range and step
+count, and a temperature range and step count. Output is two native plots
+--- $\Delta G/M$ against composition, one curve per temperature, and the
+cluster occurrence probabilities $p_j$ against temperature at the
+composition nearest $x = 0.5$ --- both exportable to CSV, alongside the
+Kullback-Leibler divergence against the ideal cluster distribution: the
+paper's own diagnostic for how far the alloy has departed from complete
+randomness, vanishing exactly when interactions vanish.
+
+\section{DSIM}
+\label{sec:dsim}
+
+\menu{Modules}\menusep\menu{Alloys}\menusep\menu{DSIM (Dilute Solution
+Interpolation)\ldots} computes a binary A-B solid solution's mixing
+enthalpy $\Delta H_\text{mix}(x)$, interpolated between its two
+dilute-solution limits, from exactly \textbf{four} calculations --- none at
+any intermediate composition.
+
+Working theory: L. Seixas \emph{et al.}, \emph{Enthalpies of mixing from
+dilute solutions to high-entropy alloys} (2026). The subregular-solution
+model lets the pairwise interaction parameter depend on composition; for a
+binary this reduces to
+$\Delta H_\text{mix}^\sigma(x) = M_{2[1]}\,x(1-x)^2 + M_{1[2]}\,x^2(1-x)$,
+where $M_{i[j]}$ --- the differential mixing enthalpy of solute $i$ diluted
+in host $j$ --- is the \emph{slope} of $\Delta H_\text{mix}$ at the dilute
+limit where $i$ is the minority species. Each slope needs exactly
+\textbf{one} calculation: a single substitutional impurity of $i$ in a
+supercell of pure $j$, read off at the one composition that single
+substitution actually realizes, $x = 1/N_\text{atoms}$. The whole binary
+curve therefore comes from four numbers --- the two pristine-supercell
+energies and the two single-impurity supercell energies --- and an
+$N$-component alloy needs $N^2$ calculations total ($N$ pristine plus
+$N(N-1)$ dilute impurities), the paper's own headline result against the
+exponential cost of Special Quasirandom Structures.
+
+\begin{calnote}
+Every energy DSIM consumes is a raw \textbf{total} supercell energy, never
+divided by atom count. An earlier version of this module divided first,
+reasoning that an intensive-looking $\Delta H_\text{mix}(x)$ needed an
+intensive input; it shipped, was caught by a real MACE Au-Pt run landing
+$\sim 27\times$ below the working paper's own Fig.~2a, and was fixed. The
+composition-weighted subtraction inside $M_{i[j]}$ is itself what makes the
+slope an intensive, size-converged quantity --- dividing again on top of
+that is the bug.
+\end{calnote}
+
+Validity follows the paper: single-phase substitutional solid solutions
+sharing one crystal structure between end members, in a supercell large
+enough that one impurity does not interact with its own periodic images
+(the paper's own 3$\times$3$\times$3 fcc cell, 27 atoms, is Calango's
+default). Unlike EGQCA and CVM above, which analyze a batch a \emph{prior}
+job already computed, DSIM needs new calculations of its own: one wizard,
+one generated script looping over every calculation class internally, one
+result file --- a list of $N \geq 2$ pristine reference structures in, a
+$\Delta H_\text{mix}(x)$ curve (with every $M_{i[j]}$ tabulated) out.

@@ -176,6 +176,64 @@ int main(int argc, char** argv)
                  GrapheneOxideMdmcScriptGenerator::generate(mdmc));
         }
 
+        // Hydroxyl antiposition, on a plain Lennard-Jones calculator: ships
+        // with ASE itself, so graphene_oxide_mdmc_antiposition_test.py can
+        // RUN this one for real (no MACE/GPAW/xTB needed) and check, on
+        // every frame of an actual trajectory, that no antiposition pair
+        // was ever split. mdStepsPerCycle=0 turns off the MD burst entirely
+        // — generic Lennard-Jones (its short-range repulsive wall sits at
+        // ~sigma=1 A) has no notion of a covalent bond, and a burst of
+        // Langevin dynamics on the O-H bond's real 0.98 A length explodes
+        // within a handful of steps regardless of temperature. A moderate
+        // (not maximal) temperature keeps this a real, if generic, physical
+        // acceptance criterion rather than an "always accept" knob.
+        //
+        // Its OFF twin is identical in every other setting, so the two
+        // differ ONLY in hydroxyl_antiposition — the one variable
+        // graphene_oxide_mdmc_antiposition_test.py's ON/OFF contrast run
+        // needs isolated.
+        {
+            GrapheneOxideMdmcConfig antipos;
+            antipos.calculator.calculator = CalculatorKind::LennardJones;
+            antipos.hydroxylAntiposition = true;
+            antipos.mdStepsPerCycle = 0;
+            antipos.temperatureK = 2000.0;
+            antipos.cycles = 300;
+            antipos.snapshotInterval = 1;
+            antipos.viewportEveryCycles = 0;
+            dumpText("graphene_oxide_mdmc_antiposition.py",
+                 GrapheneOxideMdmcScriptGenerator::generate(antipos));
+            antipos.hydroxylAntiposition = false;
+            dumpText("graphene_oxide_mdmc_off.py",
+                 GrapheneOxideMdmcScriptGenerator::generate(antipos));
+        }
+
+        // 2D Bands, one dump per engine — the whole point of Task 3's
+        // multi-calculator extension is per-engine Python that actually
+        // compiles and, for VASP/SIESTA, does not repeat the two crashing
+        // kpts=<BandPath> mistakes found (and fixed) in the 1D Electronic
+        // Structure module while this was being built.
+        {
+            TwoDBandsConfig gpaw2d;
+            gpaw2d.backend = TwoDBandsBackend::Gpaw;
+            gpaw2d.gpaw.calculator = CalculatorKind::Gpaw;
+            gpaw2d.baselineDensityPath = "/jobs/proc_1/single_point.gpw";
+            dumpText("bands_2d_gpaw.py", generateTwoDBandsScript(gpaw2d));
+
+            TwoDBandsConfig vasp2d;
+            vasp2d.backend = TwoDBandsBackend::Vasp;
+            vasp2d.baselineDensityPath = "/jobs/proc_1/CHGCAR";
+            dumpText("bands_2d_vasp.py", generateTwoDBandsScript(vasp2d));
+
+            TwoDBandsConfig qe2d;
+            qe2d.backend = TwoDBandsBackend::Espresso;
+            dumpText("bands_2d_qe.py", generateTwoDBandsScript(qe2d));
+
+            TwoDBandsConfig siesta2d;
+            siesta2d.backend = TwoDBandsBackend::Siesta;
+            dumpText("bands_2d_siesta.py", generateTwoDBandsScript(siesta2d));
+        }
+
         // Electron-phonon coupling: the three-stage gpaw.elph workflow. Worth
         // byte-compiling because its body is generated Python doing real array
         // work — the k+q map, the ordering guard and the manifest — rather
@@ -2361,12 +2419,59 @@ int main(int argc, char** argv)
         checkContains(relaxed, "isif=3",
                       "and a variable-cell run is raised to ISIF = 3");
 
+        // The mechanism itself (the CALANGO_VASP_PP_PATH-override check, the
+        // dir-exists guard, the flat-layout shim, the per-element check) is
+        // emitted UNCONDITIONALLY now — it has to run wherever the script
+        // executes, local or remote, since only there can the real
+        // environment be inspected. What varies with vaspPotcarPath is only
+        // the baked-in FALLBACK the mechanism falls back to; verified here
+        // at the text level, and verified as ACTUAL RUNTIME BEHAVIOUR
+        // (nothing raised, VASP_PP_PATH left untouched) by
+        // VaspPotcarPreflightTest's sibling runtime check in this session's
+        // own manual verification — see AseScriptGenerator.cpp's comment
+        // above this block for the reasoning.
         CalculatorConfig unset = vasp;
         unset.vaspPotcarPath.clear();
-        check(!contains(AseScriptGenerator::generate(unset, "s.extxyz"),
-                        "VASP_PP_PATH'] ="),
-              "with no directory configured the environment's own is left "
-              "alone");
+        const std::string noPathConfigured =
+            AseScriptGenerator::generate(unset, "s.extxyz");
+        checkContains(noPathConfigured,
+                      "_potcar_root = _cluster_override\n",
+                      "with no directory configured, no local fallback is "
+                      "baked in — _potcar_root is exactly the cluster "
+                      "override, empty or not");
+        check(!contains(noPathConfigured,
+                        "_potcar_root = _cluster_override or r\""),
+              "and NOT the 'or r\"...\"' form a configured path would use");
+
+        // The per-cluster override (CALANGO_VASP_PP_PATH, exported by the
+        // HPC panel's job wrapper — see HpcPanel::specFromUi()) must take
+        // precedence over the path baked in at generation time, since that
+        // baked-in path was resolved on a possibly-different machine.
+        checkContains(script,
+                      "_cluster_override = os.environ.get("
+                      "'CALANGO_VASP_PP_PATH', '').strip()",
+                      "the per-cluster override is read from the "
+                      "environment first");
+        checkContains(script,
+                      "_potcar_root = _cluster_override or r\"/opt/vasp/POTCARs\"",
+                      "and takes precedence over the path baked in at "
+                      "generation time");
+
+        // The directory existing is necessary but not sufficient — a
+        // library can be missing just one element's POTCAR, and that must
+        // fail with a specific message before VASP ever runs, not a deep
+        // ASE traceback minutes into the queue.
+        checkContains(script,
+                      "dict.fromkeys(atoms.get_chemical_symbols())",
+                      "every element the STRUCTURE actually needs is "
+                      "checked, not a fixed list");
+        checkContains(script, "No POTCAR for {",
+                      "and a missing one is named specifically");
+        checkContains(script,
+                      "PAW variants (_sv/_pv/_d) and the LDA/PBE library "
+                      "choice are not",
+                      "with an honest note that variant selection is not "
+                      "automatic");
     }
 
     std::printf("Unfolding commensurability guard:\n");
@@ -2644,6 +2749,80 @@ int main(int argc, char** argv)
               "fresh-SCF leaves ISPIN to ASE's own magmom auto-detection");
         check(!contains(reused, "ispin="),
               "baseline-reuse leaves ISPIN to ASE's own magmom auto-detection");
+
+        // Real bug, found by actually constructing the Vasp() calculator and
+        // calling format_kpoints() the way the generated script does: a raw
+        // BandPath object has no __format__, so `kpts=bandpath` crashes at
+        // write-input time with "unsupported format string passed to
+        // BandPath.__format__" — never reaching the queue. The fix is
+        // `kpts=bandpath.kpts` (the plain fractional array `format_kpoints`
+        // actually knows how to write) plus `reciprocal=True`, since without
+        // it those fractional coordinates are written as though they were
+        // already Cartesian 1/A.
+        check(!contains(fresh, "kpts=bandpath)")
+                  && !contains(reused, "kpts=bandpath)"),
+              "the band pass never hands VASP a raw BandPath — verified by "
+              "constructing ase.calculators.vasp.create_input.format_kpoints "
+              "against one, which raises exactly this way");
+        checkContains(fresh, "kpts=bandpath.kpts,",
+                      "the fresh-SCF band pass uses the plain array instead");
+        checkContains(reused, "kpts=bandpath.kpts,",
+                      "as does the baseline-reuse band pass");
+        checkContains(fresh, "reciprocal=True",
+                      "and both mark it fractional, not Cartesian");
+        checkContains(reused, "reciprocal=True",
+                      "in both the fresh-SCF and baseline-reuse band passes");
+    }
+
+    std::printf("SIESTA and Quantum ESPRESSO electronic structure "
+               "(previously untested):\n");
+    {
+        // Neither backend had ANY coverage here before this block — which is
+        // exactly how the SIESTA bug above's twin went unnoticed. Both are
+        // self-contained (SCF then a non-self-consistent band pass), unlike
+        // VASP/GPAW, which optionally restart from an external baseline.
+        ElectronicConfig siesta;
+        siesta.backend = ElectronicBackend::Siesta;
+        siesta.kpath = "GXWKG";
+        const std::string siestaScript = generateElectronicScript(siesta);
+        checkContains(siestaScript, "from ase.calculators.siesta import Siesta",
+                      "SIESTA workflow");
+        checkContains(siestaScript, "kpts=[kgrid, kgrid, kgrid]",
+                      "the SCF pass uses a Monkhorst-Pack grid");
+        // Real bug, found by actually constructing Siesta(kpts=<BandPath>)
+        // and calling write_input() the way the generated script would:
+        // ase.calculators.siesta.siesta.SiestaInput.generate_kpts() indexes
+        // kpts[0..2] expecting a 3-tuple of grid DIMENSIONS — a raw BandPath
+        // has no __len__, so this raised "TypeError: len() of unsized
+        // object" at write-input time, before the job ever reached SIESTA.
+        // The fix is the separate `bandpath=` keyword, which SIESTA's own
+        // calculator writes as an explicit %block BandPoints instead.
+        check(!contains(siestaScript, "kpts=bandpath"),
+              "the band pass never hands SIESTA a BandPath through kpts= — "
+              "verified by constructing Siesta(kpts=<BandPath>).write_input(), "
+              "which raises exactly this way");
+        checkContains(siestaScript, "bandpath=bandpath",
+                      "it uses the bandpath= keyword instead");
+        checkContains(siestaScript, "bs = atoms.calc.band_structure()",
+                      "and reads the result back the same generic way as "
+                      "every other backend");
+
+        ElectronicConfig qe;
+        qe.backend = ElectronicBackend::Espresso;
+        qe.kpath = "GXWKG";
+        const std::string qeScript = generateElectronicScript(qe);
+        checkContains(qeScript, "from ase.calculators.espresso import Espresso",
+                      "Quantum ESPRESSO workflow");
+        checkContains(qeScript, "\"calculation\": \"scf\"",
+                      "an SCF pass runs first");
+        checkContains(qeScript, "\"calculation\": \"bands\"",
+                      "then a non-self-consistent bands pass");
+        checkContains(qeScript, "kpts=bandpath",
+                      "reusing the BandPath directly — unlike VASP/SIESTA, "
+                      "ASE's Espresso writer special-cases anything with a "
+                      "`.kpts` attribute (hasattr check) and emits "
+                      "K_POINTS crystal_b, verified against a real "
+                      "write_espresso_in() call with a BandPath");
     }
 
     std::printf("XAS generation:\n");
@@ -3135,6 +3314,191 @@ int main(int argc, char** argv)
         hugeMap.bzMapSamples = 4096;
         checkContains(generateTwoDBandsScript(hugeMap), "_bzn = 96",
                       "a runaway map mesh is clamped");
+    }
+
+    std::printf("2D band surfaces — VASP, Quantum ESPRESSO, SIESTA "
+               "(Task 3):\n");
+    {
+        // VASP: baseline (CHGCAR) required, exactly like GPAW's .gpw — the
+        // wizard's baseline-inheriting flow is unchanged, only which file
+        // it inherits differs. isym=0 and reciprocal=True are the two
+        // correctness-critical flags for handing VASP an EXPLICIT 2D grid
+        // (as opposed to the 1D k-path this mirrors) — verified for real by
+        // constructing ase.calculators.vasp.create_input.format_kpoints
+        // against an (N,3) array with each flag on and off.
+        TwoDBandsConfig vasp;
+        vasp.backend = TwoDBandsBackend::Vasp;
+        vasp.baselineDensityPath = "/jobs/proc_1/CHGCAR";
+        vasp.gridSamples = 16;
+        const std::string vaspScript = generateTwoDBandsScript(vasp);
+        checkContains(vaspScript, "/jobs/proc_1/CHGCAR",
+                      "restarts from the selected CHGCAR baseline");
+        checkContains(vaspScript, "shutil.copyfile(_baseline, 'CHGCAR')",
+                      "copied in, since VASP takes no path option for it");
+        checkContains(vaspScript, "icharg=11",
+                      "non-self-consistent on the fixed density");
+        checkContains(vaspScript, "isym=0",
+                      "symmetry disabled — an unreduced 2D grid, not a path "
+                      "VASP would visit once each regardless");
+        checkContains(vaspScript, "kpts=_kpts,",
+                      "hands VASP the plain fractional array");
+        checkContains(vaspScript, "reciprocal=True",
+                      "marked fractional, not Cartesian");
+        check(!contains(vaspScript, "kpts=bandpath"),
+              "never a raw BandPath — that crashes VASP's k-point writer, "
+              "as the 1D Electronic Structure module's own bug (fixed "
+              "alongside this one) demonstrated");
+        checkContains(vaspScript, "_nspin = band_calc.get_number_of_spins()",
+              "reads eigenvalues back through the same generic ASE API "
+              "every engine here shares — no VASP-specific parsing");
+
+        TwoDBandsConfig vaspBands = vasp;
+        vaspBands.totalBands = 20;
+        checkContains(generateTwoDBandsScript(vaspBands), "nbands=20",
+                      "NBANDS is wired through when requested");
+
+        TwoDBandsConfig vaspNoBaseline = vasp;
+        vaspNoBaseline.baselineDensityPath.clear();
+        checkContains(generateTwoDBandsScript(vaspNoBaseline),
+                      "The baseline charge density is gone",
+                      "an empty baseline still fails loudly, at the "
+                      "existence check, not with a confusing VASP error");
+
+        // Quantum ESPRESSO: self-contained (no baseline concept — see the
+        // header doc for why), an explicit K_POINTS crystal list, and the
+        // get_potential_energy() workaround a REAL pw.x run against real
+        // graphene pseudopotentials proved necessary: a "bands" calculation
+        // runs and populates every eigenvalue but reports no total energy,
+        // so the unguarded call from a first draft of this generator raised
+        // PropertyNotImplementedError and never wrote bands_2d.json at all.
+        TwoDBandsConfig qe;
+        qe.backend = TwoDBandsBackend::Espresso;
+        qe.gridSamples = 16;
+        const std::string qeScript = generateTwoDBandsScript(qe);
+        checkContains(qeScript, "\"calculation\": \"scf\"",
+                      "an SCF pass runs first — no baseline to restart from");
+        checkContains(qeScript, "\"calculation\": \"bands\"",
+                      "then a non-self-consistent pass on the 2D grid");
+        // K_POINTS crystal needs an EXPLICIT (N, 4) array — verified against
+        // ase.io.espresso.write_espresso_in, whose K_POINTS writer takes the
+        // 'crystal' branch ONLY for an (N, 4) ndarray; an (N, 3) array falls
+        // through to the Monkhorst-Pack 'automatic' branch instead and is
+        // silently misread as a 3-integer grid shape.
+        checkContains(qeScript, "_kpts4 = np.zeros((len(_kpts), 4))",
+                      "the grid is widened to (N, 4) before being handed to "
+                      "Espresso — a plain (N, 3) array would silently "
+                      "misparse as a Monkhorst-Pack grid shape instead");
+        checkContains(qeScript, "kpts=_kpts4",
+                      "and that widened array is what Espresso receives");
+        checkContains(qeScript, "nosym=True, noinv=True",
+                      "symmetry reduction is disabled explicitly, even "
+                      "though an explicit crystal list is not folded by it "
+                      "either way — stated rather than left implicit");
+        checkContains(qeScript, "PropertyNotImplementedError",
+                      "the bands pass catches the one exception a real "
+                      "pw.x run raises after successfully computing every "
+                      "eigenvalue, rather than crashing on it");
+        check(!contains(qeScript, "kpts=bandpath"),
+              "never emits the 1D module's own bandpath variable — this "
+              "generator's k-path is consulted for special-point labels "
+              "only, same invariant as the GPAW branch above");
+
+        TwoDBandsConfig qeBands = qe;
+        qeBands.totalBands = 12;
+        checkContains(generateTwoDBandsScript(qeBands), "\"nbnd\"] = 12",
+                      "nbnd is wired through when requested");
+
+        // Configured pseudo directories mirror AseScriptGenerator.cpp's own
+        // emitEspresso()/emitSiesta() exactly — same placeholder when empty,
+        // same substitution when set, so Preferences -> External Files
+        // means the same thing to every generator that reads it.
+        TwoDBandsConfig qePseudo = qe;
+        qePseudo.espressoPseudoDir = "/opt/pseudos/sssp";
+        checkContains(generateTwoDBandsScript(qePseudo),
+                      "pseudo_dir=\"/opt/pseudos/sssp\",\n",
+                      "a configured Quantum ESPRESSO pseudo directory "
+                      "replaces the EDIT ME placeholder, without the "
+                      "trailing comment that flags it as one");
+        check(!contains(generateTwoDBandsScript(qePseudo), "# EDIT ME\n)"),
+              "and the placeholder comment is gone with it");
+
+        // SIESTA: self-contained, and the grid reaches SIESTA through
+        // `bandpath=`, never `kpts=` — SIESTA's own `kpts=` is the SCF
+        // Monkhorst-Pack grid DIMENSIONS ONLY; passing an explicit k-point
+        // set through it crashes at write-input time (verified for real:
+        // TypeError: len() of unsized object), exactly the bug fixed in the
+        // 1D Electronic Structure module's SIESTA branch alongside this one.
+        TwoDBandsConfig siesta;
+        siesta.backend = TwoDBandsBackend::Siesta;
+        siesta.gridSamples = 16;
+        const std::string siestaScript = generateTwoDBandsScript(siesta);
+        checkContains(siestaScript, "from ase.dft.kpoints import BandPath",
+                      "builds a real BandPath from the grid");
+        checkContains(siestaScript, "_grid_path = BandPath(atoms.cell, kpts=_kpts)",
+                      "with NO path string or special points — just the "
+                      "grid's own fractional points, verified against a "
+                      "real Siesta(bandpath=...).write_input() call to "
+                      "write an unreduced %block BandPoints of all of them");
+        checkContains(siestaScript, "bandpath=_grid_path",
+                      "handed to SIESTA through bandpath=");
+        check(!contains(siestaScript, "kpts=_kpts,")
+                  && !contains(siestaScript, "kpts=_grid_path"),
+              "never through kpts= — that indexes a 3-tuple of grid "
+              "dimensions and cannot accept an explicit point set at all");
+        checkContains(siestaScript, "DM.UseSaveDM",
+                      "restarts from the SCF density matrix — implied by "
+                      "ASE's Siesta calculator once bandpath= is set, "
+                      "confirmed by inspecting a real write_input() output");
+        check(!contains(siestaScript, "totalBands")
+                  && !contains(siestaScript, "nbands="),
+              "no band-count knob is wired for SIESTA — its finite atomic "
+              "basis sets the count implicitly, with nothing to override");
+        checkContains(siestaScript,
+                      "if not os.environ.get(\"SIESTA_PP_PATH\"):",
+                      "with no directory configured, a real runtime check "
+                      "raises if SIESTA_PP_PATH is not already set in the "
+                      "job environment — never a fabricated path");
+
+        TwoDBandsConfig siestaPseudo = siesta;
+        siestaPseudo.siestaPseudoDir = "/opt/pseudos/siesta";
+        const std::string siestaPseudoScript =
+            generateTwoDBandsScript(siestaPseudo);
+        checkContains(siestaPseudoScript,
+                      "os.environ.setdefault(\"SIESTA_PP_PATH\", "
+                      "r\"/opt/pseudos/siesta\")",
+                      "a configured SIESTA pseudo directory sets "
+                      "SIESTA_PP_PATH directly instead");
+        check(!contains(siestaPseudoScript,
+                        "if not os.environ.get(\"SIESTA_PP_PATH\"):"),
+              "and the runtime check is gone with it — one or the other, "
+              "never both");
+
+        // Every non-GPAW engine skips the GPAW-only extras entirely, not
+        // just leaves them at a default value — an engine ignoring an
+        // option silently is worse than the option not existing for it.
+        // Requested ON for all three, so this is a real test of the gate
+        // rather than a config that never asked for them in the first place.
+        TwoDBandsConfig vaspExtras = vasp;
+        vaspExtras.spinOrbit = true;
+        vaspExtras.bzMap = true;
+        TwoDBandsConfig qeExtras = qe;
+        qeExtras.spinOrbit = true;
+        qeExtras.bzMap = true;
+        TwoDBandsConfig siestaExtras = siesta;
+        siestaExtras.spinOrbit = true;
+        siestaExtras.bzMap = true;
+        for (const TwoDBandsConfig* extras :
+             {&vaspExtras, &qeExtras, &siestaExtras}) {
+            const std::string script = generateTwoDBandsScript(*extras);
+            check(!contains(script, "soc_eigenstates")
+                      && !contains(script, "bz_map"),
+                  "no spin-orbit or Brillouin-zone-map code reaches a "
+                  "non-GPAW script even when both are requested on the "
+                  "config");
+            checkContains(script, "'spin_orbit': False",
+                          "and the JSON reports spin_orbit False regardless "
+                          "of the request, since none was actually applied");
+        }
     }
 
     // -- MLWF -> Wannier interpolation handoff --------------------------------
@@ -6293,6 +6657,73 @@ int main(int argc, char** argv)
         checkContains(bulkScript, "\"voigt\": 4,",
                       "and xz — nothing is excluded for an ordinary 3D "
                       "crystal");
+    }
+
+    std::printf("Graphene Oxide MDMC — hydroxyl antiposition:\n");
+    {
+        // Off is the default and must reproduce exactly what this script
+        // generated before the antiposition move existed.
+        GrapheneOxideMdmcConfig off;
+        off.calculator = maceConfig();
+        const std::string offScript = GrapheneOxideMdmcScriptGenerator::generate(off);
+        checkContains(offScript, "hydroxyl_antiposition = False",
+                      "off by default");
+        checkContains(offScript, "if hydroxyl_antiposition:",
+                      "the pairing bootstrap is still emitted, gated");
+        checkContains(offScript, "groups = collect_groups(atoms, graph0)",
+                      "and the ordinary single-hydroxyl collection is "
+                      "unconditional, exactly as before this option existed");
+
+        GrapheneOxideMdmcConfig on = off;
+        on.hydroxylAntiposition = true;
+        const std::string script = GrapheneOxideMdmcScriptGenerator::generate(on);
+        checkContains(script, "hydroxyl_antiposition = True",
+                      "the flag reaches the script");
+
+        // The pairing bootstrap: recovered from geometry exactly once, from
+        // the loaded structure, never re-derived per cycle.
+        checkContains(script, "def pair_hydroxyls(raw_groups, positions, "
+                              "framework, graph):",
+                      "the one-time pair-recovery function is emitted");
+        checkContains(script,
+                      "groups, n_hydroxyl_pairs, n_hydroxyl_unpaired = "
+                      "pair_hydroxyls(",
+                      "and called exactly once, before the site graph and "
+                      "the MC loop are built");
+        checkContains(script, "\"hydroxyl_pair\": \"pair\"",
+                      "a pair draws from the bonded-PAIR pool — the same "
+                      "pool an epoxide uses — never the single-carbon pool");
+        checkContains(script, "if kind == \"hydroxyl_pair\":",
+                      "both the topology check and the geometry rebuild "
+                      "know the compound kind");
+        checkContains(script, "side_a * side_b < 0.0",
+                      "chemistry_survived() re-checks the opposite-face "
+                      "invariant on every frame, not only at placement time");
+        checkNotContains(script, "def hydroxyl_pair(",
+                         "it is a group KIND, not a second code path — "
+                         "reuses build_group/topology_intact via a branch");
+
+        // Position, relative to the site graph and MC loop, matters: the
+        // pairing bootstrap must run before sites are ever occupied, or a
+        // pair's two carbons would already have been reserved individually
+        // as two ordinary hydroxyls.
+        const auto bootstrapAt = script.find("groups, n_hydroxyl_pairs");
+        const auto siteGraphAt = script.find("sites = SiteGraph(");
+        check(bootstrapAt != std::string::npos
+                  && siteGraphAt != std::string::npos
+                  && bootstrapAt < siteGraphAt,
+              "the pairing bootstrap runs before the site graph is built");
+
+        // Move-proposal symmetry: a pair move must revert through the SAME
+        // generic mechanism epoxide's pre-existing compound move uses —
+        // there is exactly one MC loop and one revert(), not a special case
+        // for hydroxyl_pair, which is what keeps the existing proposal-
+        // symmetry argument valid without a Hastings correction.
+        checkContains(script, "def revert():",
+                      "a single revert() serves every group kind");
+        checkContains(script, "for cycle in range(1, mc_cycles + 1):",
+                      "one MC loop handles every group kind, hydroxyl_pair "
+                      "included — no special-cased second loop");
     }
 
     std::printf(failures == 0 ? "\nAll script checks passed.\n"

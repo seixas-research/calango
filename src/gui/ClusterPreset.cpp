@@ -25,6 +25,14 @@ QJsonObject ClusterPreset::toJson() const
         {QStringLiteral("walltime"), walltime},
         {QStringLiteral("parallelEnvironment"), parallelEnvironment},
         {QStringLiteral("setupLines"), setupLines},
+        {QStringLiteral("vaspPotcarPath"), vaspPotcarPath},
+        {QStringLiteral("account"), account},
+        {QStringLiteral("qos"), qos},
+        {QStringLiteral("cpusPerTask"), cpusPerTask},
+        {QStringLiteral("gpusPerNode"), gpusPerNode},
+        {QStringLiteral("nodeList"), nodeList},
+        {QStringLiteral("extraDirectives"), extraDirectives},
+        {QStringLiteral("command"), command},
     };
 }
 
@@ -59,6 +67,14 @@ ClusterPreset ClusterPreset::fromJson(const QJsonObject& json)
     preset.parallelEnvironment =
         str("parallelEnvironment", preset.parallelEnvironment);
     preset.setupLines = str("setupLines", preset.setupLines);
+    preset.vaspPotcarPath = str("vaspPotcarPath", preset.vaspPotcarPath);
+    preset.account = str("account", preset.account);
+    preset.qos = str("qos", preset.qos);
+    preset.cpusPerTask = num("cpusPerTask", preset.cpusPerTask);
+    preset.gpusPerNode = num("gpusPerNode", preset.gpusPerNode);
+    preset.nodeList = str("nodeList", preset.nodeList);
+    preset.extraDirectives = str("extraDirectives", preset.extraDirectives);
+    preset.command = str("command", preset.command);
     return preset;
 }
 
@@ -72,7 +88,13 @@ bool ClusterPreset::operator==(const ClusterPreset& other) const
         && memoryMbPerNode == other.memoryMbPerNode
         && walltime == other.walltime
         && parallelEnvironment == other.parallelEnvironment
-        && setupLines == other.setupLines;
+        && setupLines == other.setupLines
+        && vaspPotcarPath == other.vaspPotcarPath
+        && account == other.account && qos == other.qos
+        && cpusPerTask == other.cpusPerTask
+        && gpusPerNode == other.gpusPerNode && nodeList == other.nodeList
+        && extraDirectives == other.extraDirectives
+        && command == other.command;
 }
 
 namespace ClusterPresets {

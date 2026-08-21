@@ -45,6 +45,14 @@ public:
     /// the cluster, submit, and start monitoring.
     void submitStagedJob(const QString& localJobDir, const QString& jobName);
 
+    /// The scheduler request the form currently describes. A pure,
+    /// side-effect-free read of UI state into a plain struct — public (like
+    /// the various wizards' config()/runConfig()) specifically so a test can
+    /// drive the widgets and assert on the resulting RemoteJobSpec without
+    /// a live SSH connection, e.g. the VASP-POTCAR-override-prepended-to-
+    /// setupLines logic in the .cpp.
+    core::RemoteJobSpec specFromUi(const QString& jobName) const;
+
 Q_SIGNALS:
     /// Results were downloaded into `localDir` (after job completion).
     void resultsReady(const QString& localDir);
@@ -80,7 +88,6 @@ private:
     void refreshPresetCombo(const QString& select = QString());
     /// Show the SGE parallel-environment row only for SGE.
     void updateSchedulerRows();
-    core::RemoteJobSpec specFromUi(const QString& jobName) const;
     core::Scheduler scheduler() const;
     void appendLog(const QString& text, bool isError = false);
     /// Set the terse status line. `detail`, when given, becomes the label's
@@ -135,6 +142,27 @@ private:
     int peRow_ = -1;
     QLineEdit* walltimeEdit_;
     QPlainTextEdit* setupEdit_;
+    /// This cluster's VASP POTCAR library — per-profile, since different
+    /// clusters keep it in different places. See ClusterPreset::
+    /// vaspPotcarPath. Empty leaves VASP's dataset resolution exactly as it
+    /// was before this field existed.
+    QLineEdit* vaspPotcarEdit_ = nullptr;
+
+    // Scheduler tab — SLURM-only extensions (Task 4). See
+    // core::RemoteJobSpec's fields of the same name for what each maps to;
+    // rows are hidden for PBS/SGE by updateSchedulerRows(), the same way
+    // peRow_ already is for everything but SGE.
+    QLineEdit* accountEdit_ = nullptr;
+    QLineEdit* qosEdit_ = nullptr;
+    QSpinBox* cpusPerTaskSpin_ = nullptr;
+    QSpinBox* gpusPerNodeSpin_ = nullptr;
+    QLineEdit* nodeListEdit_ = nullptr;
+    QPlainTextEdit* extraDirectivesEdit_ = nullptr;
+    QVector<int> slurmOnlyRows_; ///< schedulerForm_ row indices of the above
+    /// The payload command — may be multiple lines (a launcher line, then
+    /// cleanup that must run after it). Unlike the SLURM-only fields above,
+    /// this applies to every scheduler, so it is never hidden.
+    QPlainTextEdit* commandEdit_ = nullptr;
 
     // Queue & Logs tab
     QLabel* jobLabel_;

@@ -155,8 +155,34 @@ numeric $x$, $y$, $z$.
 \section{Visual effects}
 \label{sec:visual-effects}
 
-\menu{View}\menusep\menu{Visual Effects} opens a modeless dialog --- the
-scene stays interactive while you tune it --- with two depth cues.
+\menu{View}\menusep\menu{Visual Effects} toggles the \ui{Visual Effects}
+dock --- the scene stays interactive while you tune it. It is a five-tab
+panel running from what lights the scene, through the scene itself, to the
+passes that post-process the finished image: \ui{Light} (the studio
+lighting rig, Chapter~\ref{ch:appearance}), \ui{Shadow}, \ui{Fog},
+\ui{Blur} and \ui{SSAO}. Every effect defaults to off. The ground plane
+used to sit here as a \ui{Floor} tab; it now lives in the \ui{Spatial
+References} dock instead (Chapter~\ref{ch:appearance}), since it draws a
+whole extra object into the scene rather than an image filter.
+
+\subsection{Shadows}
+
+Real-time shadow mapping with percentage-closer filtering: atoms and bonds
+cast shadows onto neighbouring geometry, including the floor when it is on.
+Off by default; adds roughly one extra depth-only pass per frame.
+
+\begin{description}
+  \item[\ui{Intensity}] 0.00--1.00. How much direct light an occluded
+    surface loses --- ambient light is never attenuated, so even at 1.00
+    shadowed geometry stays readable rather than going black.
+  \item[\ui{Softness / blur radius}] 0--6 texels. The PCF blur radius: 0
+    gives hard, aliased edges; each step averages a wider neighbourhood, so
+    quality and cost both rise together. 2--3 suits most structures.
+\end{description}
+
+The shadow projection follows the \textbf{primary light} --- the first
+entry under the \ui{Light} tab. Re-aiming that light re-aims the shadows;
+fill lights stay unshadowed, which is what keeps occluded regions legible.
 
 \subsection{Distance fog}
 

@@ -71,6 +71,8 @@
 #include "gui/PhaseDiagramWindow.hpp"
 #include "gui/TdbGeneratorDialog.hpp"
 #include "gui/HpcPanel.hpp"
+#include "gui/PreferencesDialog.hpp"
+#include "gui/ShortcutRegistry.hpp"
 #include "gui/OpticsWizard.hpp"
 #include "gui/WannierWizard.hpp"
 #include "gui/WannierRunLoader.hpp"
@@ -98,7 +100,9 @@
 #include <QDoubleSpinBox>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QKeySequenceEdit>
 #include <QPlainTextEdit>
+#include <QTabWidget>
 #include <QPushButton>
 #include <QRadioButton>
 #include <QSlider>
@@ -122,6 +126,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
+#include <string>
 
 using namespace calango::gui;
 
@@ -360,7 +365,7 @@ int main(int argc, char** argv)
               "periodic sheet: no edge groups placed");
         check(sheet.placedFor(Group::Epoxide) > 0
                   && sheet.placedFor(Group::Hydroxyl) > 0,
-              "periodic sheet: the H/O slider's 50/50 default gave both basal groups");
+              "periodic sheet: the H/O slider's 1:2 default gave both basal groups");
 
         // The rim defaults to zero oxidation, which is CATEGORICAL: strictly
         // hydrogen-terminated, as in the parent hydrocarbon. Basal chemistry
@@ -385,6 +390,40 @@ int main(int argc, char** argv)
               "nanoflake: and takes those rim hydrogens away");
         check(oxidizedRim.basalOxygenPlaced == flake.basalOxygenPlaced,
               "nanoflake: while leaving the basal plane exactly as it was");
+
+        // The wiring risk this checkbox actually carries: that ticking it in
+        // the wizard reaches config.hydroxylAntiposition at all. The
+        // placement invariants themselves (pairing, opposite faces) are the
+        // core builder's own test's job; this only has to show the wizard's
+        // checkbox and the build it produces agree.
+        GrapheneOxideWizard antiposWizard;
+        // Found by its label text rather than an objectName -- this
+        // checkbox, like the other stage-2 toggles, is not named for
+        // findChild lookup; only the four ratio controls are.
+        auto* antiposCheck = [&]() -> QCheckBox* {
+            for (QCheckBox* box : antiposWizard.findChildren<QCheckBox*>())
+                if (box->text().contains(QStringLiteral("antiposition"),
+                                          Qt::CaseInsensitive))
+                    return box;
+            return nullptr;
+        }();
+        check(antiposCheck != nullptr,
+              "the antiposition checkbox is present in the wizard");
+        if (antiposCheck) {
+            antiposCheck->setChecked(true);
+            if (auto* basalOxidationBox = antiposWizard.findChild<QDoubleSpinBox*>(
+                    QStringLiteral("basalOxidationBox")))
+                basalOxidationBox->setValue(0.3); // enough basal oxygen to pair
+            for (int stage = 0; stage < kGrapheneOxideStages; ++stage)
+                QMetaObject::invokeMethod(&antiposWizard, "goNext");
+            const auto antiposReport = antiposWizard.report();
+            check(antiposReport.placedFor(Group::Hydroxyl) > 0,
+                  "wizard-driven antiposition build placed hydroxyls");
+            check(antiposReport.placedFor(Group::Hydroxyl) % 2 == 0,
+                  "wizard-driven antiposition build placed them in pairs "
+                  "(even count) -- config.hydroxylAntiposition reached the "
+                  "builder");
+        }
     }
 
     std::printf("Graphene Oxide MDMC wizard:\n");
@@ -410,6 +449,32 @@ int main(int argc, char** argv)
         check(true, "survives every control being exercised");
         wizard.setSubstrate(0, 60, 18, false);
         check(true, "handles a substrate with no groups to move");
+
+        // Hydroxyls antiposition is INHERITED from the builder's own
+        // config, not a choice offered on this page (see setSubstrate's own
+        // doc comment) — so the wiring risk here is that the flag actually
+        // reaches the generated script, not that a checkbox exists for it.
+        GrapheneOxideMdmcWizard antiposWizard;
+        antiposWizard.setSubstrate(10, 40, 0, true,
+                                   /*hydroxylAntiposition=*/true);
+        bool labelMentionsAntiposition = false;
+        for (const QLabel* label : antiposWizard.findChildren<QLabel*>())
+            if (label->text().contains(QStringLiteral("antiposition"),
+                                       Qt::CaseInsensitive))
+                labelMentionsAntiposition = true;
+        check(labelMentionsAntiposition,
+              "the substrate summary says antiposition is on, read-only");
+        exerciseControls(&antiposWizard);
+        check(antiposWizard.script().contains(
+                  QStringLiteral("hydroxyl_antiposition = True")),
+              "and the flag reaches the generated script");
+
+        GrapheneOxideMdmcWizard offWizard;
+        offWizard.setSubstrate(10, 40, 0, true);
+        exerciseControls(&offWizard);
+        check(offWizard.script().contains(
+                  QStringLiteral("hydroxyl_antiposition = False")),
+              "off by default, exactly as before this option existed");
     }
 
     std::printf("Workflow report dialog:\n");
@@ -1712,6 +1777,72 @@ int main(int argc, char** argv)
             check(script.contains(QStringLiteral("_n = 48")),
                   "and uses the grid the dialog shows");
         }
+
+        // Task 3: VASP, Quantum ESPRESSO and SIESTA, reached through this
+        // wizard's OWN engine picker (the standard one is hidden, same as
+        // Electronic Structure) — switching it must swap which group
+        // (baseline restart vs. self-contained SCF) is visible AND change
+        // what the previewed script actually emits, not just which controls
+        // show. A wizard whose extras page ignores the engine change would
+        // pass the "has a script preview" check above and still generate
+        // the same GPAW script no matter what the user picked.
+        const auto combos = wizard.findChildren<QComboBox*>();
+        const auto engineCombo = std::find_if(
+            combos.begin(), combos.end(), [](const QComboBox* combo) {
+                return combo->count() == 4
+                    && combo->itemText(0) == QStringLiteral("GPAW");
+            });
+        check(engineCombo != combos.end(), "has its own engine picker");
+        if (engineCombo != combos.end()) {
+            auto* preview = wizard.findChild<QPlainTextEdit*>();
+
+            const auto selectEngine = [&](const QString& label) {
+                (*engineCombo)->setCurrentIndex((*engineCombo)->findText(label));
+            };
+            const auto groupVisible = [&](const QString& title) {
+                for (const QGroupBox* g : wizard.findChildren<QGroupBox*>())
+                    if (g->title() == title)
+                        return g->isVisibleTo(&wizard);
+                return false;
+            };
+
+            wizard.show(); // isVisibleTo() needs the page realized
+
+            selectEngine(QStringLiteral("Quantum ESPRESSO"));
+            check(groupVisible(QStringLiteral("Self-contained SCF"))
+                      && !groupVisible(QStringLiteral("Baseline SCF Density")),
+                  "Quantum ESPRESSO shows the self-contained SCF group, not "
+                  "the baseline one");
+            if (preview)
+                check(preview->toPlainText().contains(
+                          QStringLiteral("\"calculation\": \"scf\"")),
+                      "and the preview switches to the self-contained chain");
+
+            selectEngine(QStringLiteral("SIESTA"));
+            check(groupVisible(QStringLiteral("Self-contained SCF"))
+                      && !groupVisible(QStringLiteral("Baseline SCF Density")),
+                  "SIESTA shows the same self-contained group");
+            if (preview)
+                check(preview->toPlainText().contains(
+                          QStringLiteral("bandpath=_grid_path")),
+                      "and the preview reflects SIESTA's own chaining");
+
+            selectEngine(QStringLiteral("VASP"));
+            check(!groupVisible(QStringLiteral("Self-contained SCF"))
+                      && groupVisible(QStringLiteral("Baseline SCF Density")),
+                  "VASP switches back to the baseline group");
+            if (preview)
+                check(preview->toPlainText().contains(
+                          QStringLiteral("icharg=11")),
+                      "and the preview reflects VASP's ICHARG=11 restart");
+
+            selectEngine(QStringLiteral("GPAW"));
+            check(groupVisible(QStringLiteral("Baseline SCF Density"))
+                      && !groupVisible(QStringLiteral("Self-contained SCF")),
+                  "and back to GPAW restores the baseline group");
+        }
+        exerciseControls(&wizard);
+        check(true, "survives every control being exercised, on every engine");
     }
 
     // The 2D Charged Defects wizard. Same construction-order shape as 2D Bands
@@ -2537,6 +2668,225 @@ int main(int argc, char** argv)
                       "second entry");
             }
         }
+
+        // -- Per-cluster VASP POTCAR override (Task 1) ----------------------
+        const auto potcarEdit = std::find_if(
+            edits.begin(), edits.end(), [](const QLineEdit* e) {
+                return e->placeholderText().contains(
+                    QStringLiteral("POTCAR directory"));
+            });
+        check(potcarEdit != edits.end(),
+              "exposes a per-cluster VASP POTCAR directory field");
+        if (potcarEdit != edits.end()) {
+            // Empty by default: specFromUi() must not export anything.
+            (*potcarEdit)->clear();
+            const auto specEmpty = panel.specFromUi(QStringLiteral("job"));
+            check(specEmpty.setupLines.find("CALANGO_VASP_PP_PATH")
+                      == std::string::npos,
+                  "an empty POTCAR field exports nothing into setupLines");
+
+            // Set: exported ahead of the user's own setup lines, quoted.
+            for (QPlainTextEdit* edit : panel.findChildren<QPlainTextEdit*>())
+                if (edit->placeholderText().contains(QStringLiteral("module load")))
+                    edit->setPlainText(QStringLiteral("module load vasp"));
+            (*potcarEdit)->setText(QStringLiteral("/cluster/pseudo/potcars"));
+            const auto specSet = panel.specFromUi(QStringLiteral("job"));
+            const QString setupSet = QString::fromStdString(specSet.setupLines);
+            check(setupSet.contains(
+                      QStringLiteral(
+                          "export CALANGO_VASP_PP_PATH=\"/cluster/pseudo/potcars\"")),
+                  "a configured POTCAR field exports CALANGO_VASP_PP_PATH");
+            check(setupSet.indexOf(QStringLiteral("CALANGO_VASP_PP_PATH"))
+                      < setupSet.indexOf(QStringLiteral("module load vasp")),
+                  "and it comes BEFORE the user's own setup lines");
+
+            // Persists with the preset, like the other scheduler fields.
+            if (presetCombo != combos.end()
+                && buttonNamed(QStringLiteral("Save")) != buttons.end()) {
+                (*presetCombo)->setCurrentText(QStringLiteral("Alpha"));
+                (*buttonNamed(QStringLiteral("Save")))->click();
+                (*potcarEdit)->clear();
+                (*presetCombo)->setCurrentText(QStringLiteral("Beta"));
+                const int alpha = (*presetCombo)->findText(QStringLiteral("Alpha"));
+                (*presetCombo)->setCurrentIndex(alpha);
+                Q_EMIT(*presetCombo)->activated(alpha);
+                check((*potcarEdit)->text()
+                          == QStringLiteral("/cluster/pseudo/potcars"),
+                      "the POTCAR override round-trips with its cluster preset");
+            }
+        }
+
+        // -- SLURM extensions (Task 4) ---------------------------------
+        const auto accountEdit = std::find_if(
+            edits.begin(), edits.end(), [](const QLineEdit* e) {
+                return e->placeholderText().contains(QStringLiteral("billing account"));
+            });
+        const auto nodeListEdit = std::find_if(
+            edits.begin(), edits.end(), [](const QLineEdit* e) {
+                return e->placeholderText().contains(QStringLiteral("scheduler picks"));
+            });
+        check(accountEdit != edits.end() && nodeListEdit != edits.end(),
+              "the Account and Node list fields are present");
+
+        const auto plainEdits = panel.findChildren<QPlainTextEdit*>();
+        const auto commandEdit = std::find_if(
+            plainEdits.begin(), plainEdits.end(), [](const QPlainTextEdit* e) {
+                return e->toPlainText() == QStringLiteral("python3 run.py");
+            });
+        check(commandEdit != plainEdits.end(),
+              "the Command field defaults to \"python3 run.py\", matching "
+              "RemoteJobSpec's own default");
+
+        // Hidden for PBS/SGE, shown for SLURM -- re-derived from the combo
+        // rather than assumed, since "SLURM first" is a UI convention, not
+        // a guarantee.
+        const auto schedulerCombo = std::find_if(
+            combos.begin(), combos.end(), [](const QComboBox* c) {
+                return c->findText(QStringLiteral("SLURM")) >= 0
+                    && c->findText(QStringLiteral("PBS")) >= 0;
+            });
+        check(schedulerCombo != combos.end(), "the scheduler combo is findable");
+        // isVisible() reflects the whole ancestor chain, including whichever
+        // tab page currently owns it -- Connection, not Scheduler, is the
+        // panel's default tab, so every widget checked below is invisible
+        // for that reason alone unless the Scheduler tab is made current
+        // first.
+        if (auto* tabWidget = panel.findChild<QTabWidget*>()) {
+            for (int i = 0; i < tabWidget->count(); ++i)
+                if (tabWidget->tabText(i) == QStringLiteral("Scheduler"))
+                    tabWidget->setCurrentIndex(i);
+        }
+        if (schedulerCombo != combos.end() && accountEdit != edits.end()) {
+            (*schedulerCombo)->setCurrentText(QStringLiteral("SLURM"));
+            check((*accountEdit)->isVisible(), "Account is offered for SLURM");
+            (*schedulerCombo)->setCurrentText(QStringLiteral("PBS"));
+            check(!(*accountEdit)->isVisible(),
+                  "and hidden for PBS, whose script has no use for it");
+            (*schedulerCombo)->setCurrentText(QStringLiteral("SLURM"));
+        }
+
+        // specFromUi() actually carries these through to RemoteJobSpec.
+        if (accountEdit != edits.end() && nodeListEdit != edits.end()) {
+            (*accountEdit)->setText(QStringLiteral("phys-2026"));
+            (*nodeListEdit)->setText(QStringLiteral("work1"));
+            const auto spec = panel.specFromUi(QStringLiteral("job"));
+            check(spec.account == "phys-2026" && spec.nodeList == "work1",
+                  "typed Account/Node list values reach RemoteJobSpec via "
+                  "specFromUi()");
+        }
+    }
+
+    // Preferences -> Hotkeys (Task 2): the table PreferencesDialog builds
+    // from ShortcutRegistry::actions(), and the registry itself is what
+    // MainWindow/ViewportWidget actually read at runtime -- driving the
+    // WIDGETS here and asserting on the REGISTRY is what proves the wiring
+    // between them, not just that each half works in isolation.
+    std::printf("Preferences -> Hotkeys:\n");
+    {
+        ShortcutRegistry::resetAllToDefaults(); // a clean slate for this block
+        PreferencesDialog dialog;
+        dialog.show();
+
+        const auto edits = dialog.findChildren<QKeySequenceEdit*>();
+        const auto& actions = ShortcutRegistry::actions();
+        check(edits.size() == actions.size(),
+              "one QKeySequenceEdit per ShortcutRegistry action");
+
+        // Row order matches ShortcutRegistry::actions() (PreferencesDialog
+        // builds the table by iterating it directly) -- relied on below
+        // rather than searched for, the same way the table is built.
+        if (edits.size() == actions.size()) {
+            const int rotateRow = 0; // "viewport.mode.rotate", R by default
+            const int panRow = 1;    // "viewport.mode.pan", T by default
+            check(actions.at(rotateRow).id
+                      == QStringLiteral("viewport.mode.rotate")
+                  && actions.at(panRow).id == QStringLiteral("viewport.mode.pan"),
+              "row order assumption holds (fix the row indices above if "
+              "this ever fails)");
+
+            // A conflict-free remap: typing X for rotation.
+            edits.at(rotateRow)->setKeySequence(QKeySequence(Qt::Key_X));
+            Q_EMIT edits.at(rotateRow)->editingFinished();
+            check(ShortcutRegistry::binding(actions.at(rotateRow).id)
+                      == QKeySequence(Qt::Key_X),
+                  "a conflict-free remap reaches the registry");
+
+            // A COLLIDING remap: pointing rotation at whatever pan already
+            // has. Must be refused -- the registry keeps rotation's PREVIOUS
+            // binding (X, from just above), not pan's key.
+            //
+            // Refusal goes through a real, blocking QMessageBox::warning()
+            // (PreferencesDialog.cpp) -- nothing in a headless ctest run
+            // would ever click it, so its OWN nested event loop would hang
+            // this test forever. Armed here rather than skipped: closing
+            // whatever modal shows up shortly after triggering the conflict
+            // is the standard Qt pattern for exercising a code path that
+            // pops one, and it is what actually proves the warning fired at
+            // all (a hung process is not silent success).
+            const QKeySequence panKey = ShortcutRegistry::binding(actions.at(panRow).id);
+            edits.at(rotateRow)->setKeySequence(panKey);
+            QTimer::singleShot(0, &dialog, [] {
+                if (QWidget* modal = QApplication::activeModalWidget())
+                    modal->close();
+            });
+            Q_EMIT edits.at(rotateRow)->editingFinished();
+            check(ShortcutRegistry::binding(actions.at(rotateRow).id)
+                      == QKeySequence(Qt::Key_X),
+                  "a colliding remap is refused -- rotation keeps its prior "
+                  "binding, not pan's");
+            check(edits.at(rotateRow)->keySequence() == QKeySequence(Qt::Key_X),
+                  "and the widget itself is reverted to match, not left "
+                  "showing the refused key");
+            check(ShortcutRegistry::binding(actions.at(panRow).id) == panKey,
+                  "pan itself is completely unaffected by the refused "
+                  "attempt on rotation");
+
+            // Per-row Reset.
+            const auto resetButtons = dialog.findChildren<QPushButton*>(
+                QString(), Qt::FindChildrenRecursively);
+            QPushButton* rotateReset = nullptr;
+            for (QPushButton* button : resetButtons)
+                if (button->text() == QStringLiteral("Reset")
+                    && button->toolTip().contains(actions.at(rotateRow).label)) {
+                    rotateReset = button;
+                    break;
+                }
+            check(rotateReset != nullptr, "rotation's per-row Reset button is findable");
+            if (rotateReset) {
+                rotateReset->click();
+                check(ShortcutRegistry::binding(actions.at(rotateRow).id)
+                          == actions.at(rotateRow).defaultKey,
+                      "clicking it restores the factory default (R)");
+                check(edits.at(rotateRow)->keySequence()
+                          == actions.at(rotateRow).defaultKey,
+                      "and the widget reflects it immediately");
+            }
+
+            // Global "Reset All to Defaults": remap two, then clear both.
+            edits.at(rotateRow)->setKeySequence(QKeySequence(Qt::Key_X));
+            Q_EMIT edits.at(rotateRow)->editingFinished();
+            edits.at(panRow)->setKeySequence(QKeySequence(Qt::Key_Y));
+            Q_EMIT edits.at(panRow)->editingFinished();
+            QPushButton* resetAll = nullptr;
+            for (QPushButton* button : resetButtons)
+                if (button->text() == QStringLiteral("Reset All to Defaults")) {
+                    resetAll = button;
+                    break;
+                }
+            check(resetAll != nullptr, "the global Reset All button is findable");
+            if (resetAll) {
+                resetAll->click();
+                check(ShortcutRegistry::binding(actions.at(rotateRow).id)
+                              == actions.at(rotateRow).defaultKey
+                          && ShortcutRegistry::binding(actions.at(panRow).id)
+                              == actions.at(panRow).defaultKey,
+                      "clears every remap made through this dialog at once");
+            }
+        }
+
+        exerciseControls(&dialog);
+        check(true, "survives every control being exercised");
+        ShortcutRegistry::resetAllToDefaults(); // leave no trace for later tests
     }
 
     // The Processes dock. Two things here cannot be seen by construction

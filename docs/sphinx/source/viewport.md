@@ -15,7 +15,7 @@ The viewport toolbar. Every camera command lives here — there is no View → A
 
 ## Interaction modes
 
-Six exclusive modes, switched by single-letter shortcuts (text fields still receive these keys normally while you type):
+Six exclusive modes, switched by single-letter shortcuts (text fields still receive these keys normally while you type). These are the **factory defaults** — every one is remappable in {menuselection}`Edit --> Preferences --> Hotkeys` (see {ref}`remapping-shortcuts`), so the letters below are what a fresh install ships with, not a hard-coded key:
 
 | Key | Mode | Drag behavior |
 |---|---|---|
@@ -37,6 +37,15 @@ In every mode: middle-drag (or {kbd}`Shift`+left-drag) pans, the wheel zooms, an
 ### Fixed-angle rotations
 
 An editable angle step (1.0–180.0°, default **15.0°**, step 5.0) feeds six buttons — {guilabel}`X+` {guilabel}`X−` {guilabel}`Y+` {guilabel}`Y−` {guilabel}`Z+` {guilabel}`Z−` — that rotate the scene about the world axes. Each click animates over 200 ms and rotations compose exactly, so rapid clicks accumulate to precise multiples: three clicks of {guilabel}`Z+` at 15° is exactly 45°.
+
+### Cycling structure tabs
+
+{kbd}`Tab` switches to the next open structure tab and {kbd}`Shift+Tab` to the previous one, wrapping around at the ends — a no-op with a single tab open. Both are scoped to the viewport itself: they only fire while the 3D canvas has keyboard focus (click into it, or into anything inside it, first), so {kbd}`Tab` keeps its ordinary meaning — move to the next field — everywhere else in the app, text fields and dialogs included. Also remappable; see below.
+
+(remapping-shortcuts)=
+## Remapping shortcuts
+
+{menuselection}`Edit --> Preferences --> Hotkeys` lists every remappable shortcut — the six mouse modes and tab-cycling above, the camera resets ({kbd}`F`, {kbd}`O`), and {menuselection}`Edit --> Undo/Redo/Delete Selected Atoms` — as a table of action and key. Click a row's shortcut field, then press the new key or combination; a key already used elsewhere, including by a fixed (non-remappable) shortcut such as {kbd}`Ctrl+P` for Preferences itself, is refused with a message naming the clash rather than silently duplicated. Each row has its own {guilabel}`Reset` button, and {guilabel}`Reset All to Defaults` restores every one at once. Changes apply immediately — no restart, and no separate Apply/OK step, matching the rest of Preferences.
 
 ---
 
@@ -87,6 +96,17 @@ Every insertion, bond, and substitution is a single undo step. The neighboring {
 ## Visual effects
 
 Visual effects live in the **Visual Effects dock** (zone 9), a five-tab panel running from what lights the scene, through the scene itself, to the passes that post-process the finished image: {guilabel}`Light` (covered in {doc}`/representation`), {guilabel}`Shadow`, {guilabel}`Fog`, {guilabel}`Blur`, and {guilabel}`SSAO`. All effects default to off. The ground plane, which used to sit here as a {guilabel}`Floor` tab, is covered below under its new home, the **Spatial References dock** (zone 12).
+
+### Shadows
+
+Real-time shadow mapping with percentage-closer filtering: atoms and bonds cast shadows onto neighboring geometry, including the {guilabel}`Floor` (covered below) when it is on. Off by default; adds roughly one extra depth-only pass per frame.
+
+| Control | Range | Default |
+|---|---|---|
+| {guilabel}`Intensity` | 0.00–1.00 | how much direct light an occluded surface loses — ambient light is never attenuated, so even at 1.00 shadowed geometry stays readable rather than going black |
+| {guilabel}`Softness / blur radius` | 0–6 texels | PCF blur radius; 0 gives hard, aliased edges, each step averages a wider (2r+1)² neighborhood, and 2–3 suits most structures |
+
+The shadow projection follows the **primary light** — the first entry under the {guilabel}`Light` tab ({doc}`/representation`). Re-aiming that light re-aims the shadows; fill lights stay unshadowed, which is what keeps occluded regions legible.
 
 ### Distance fog
 

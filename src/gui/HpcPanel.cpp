@@ -15,6 +15,7 @@
 #include <QLineEdit>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QScrollBar>
 #include <QSettings>
 #include <QSpinBox>
@@ -271,11 +272,115 @@ HpcPanel::HpcPanel(const QString& pythonExe, QWidget* parent)
     schedulerForm->addRow(tr("Parallel env:"), peEdit_);
     peRow_ = schedulerForm->rowCount() - 1;
 
+    // -- SLURM-only extensions (Task 4) --------------------------------
+    // Hidden for PBS/SGE by updateSchedulerRows(), same as "Parallel env:"
+    // above is hidden for everything but SGE — each maps to the
+    // RemoteJobSpec field of the same name (SchedulerScript.hpp), emitted
+    // only inside Scheduler::Slurm's branch of generate().
+    accountEdit_ = new QLineEdit(schedulerPage);
+    accountEdit_->setPlaceholderText(tr("billing account (empty = default)"));
+    schedulerForm->addRow(tr("Account:"), accountEdit_);
+    slurmOnlyRows_.push_back(schedulerForm->rowCount() - 1);
+
+    qosEdit_ = new QLineEdit(schedulerPage);
+    qosEdit_->setPlaceholderText(tr("QOS (empty = default)"));
+    schedulerForm->addRow(tr("QOS:"), qosEdit_);
+    slurmOnlyRows_.push_back(schedulerForm->rowCount() - 1);
+
+    auto* slurmShapeRow = new QWidget(schedulerPage);
+    auto* slurmShapeLayout = new QHBoxLayout(slurmShapeRow);
+    slurmShapeLayout->setContentsMargins(0, 0, 0, 0);
+    cpusPerTaskSpin_ = new QSpinBox(slurmShapeRow);
+    cpusPerTaskSpin_->setRange(1, 4096);
+    cpusPerTaskSpin_->setValue(1);
+    cpusPerTaskSpin_->setToolTip(
+        tr("Cores per RANK (--cpus-per-task), for a hybrid MPI+OpenMP job. "
+           "Distinct from \"Nodes × tasks\" above, which is how many ranks "
+           "share a node -- this is how many cores each rank itself gets. "
+           "1 (SLURM's own default) omits the directive."));
+    slurmShapeLayout->addWidget(new QLabel(tr("CPUs/task:"), slurmShapeRow));
+    slurmShapeLayout->addWidget(cpusPerTaskSpin_);
+    gpusPerNodeSpin_ = new QSpinBox(slurmShapeRow);
+    gpusPerNodeSpin_->setRange(0, 64);
+    gpusPerNodeSpin_->setValue(0);
+    gpusPerNodeSpin_->setSpecialValueText(tr("none"));
+    gpusPerNodeSpin_->setToolTip(
+        tr("GPUs per node, requested as --gres=gpu:N -- the gres spelling "
+           "that works on essentially every SLURM cluster with GPU nodes."));
+    slurmShapeLayout->addWidget(new QLabel(tr("GPUs/node:"), slurmShapeRow));
+    slurmShapeLayout->addWidget(gpusPerNodeSpin_);
+    slurmShapeLayout->addStretch(1);
+    schedulerForm->addRow(tr("Shape:"), slurmShapeRow);
+    slurmOnlyRows_.push_back(schedulerForm->rowCount() - 1);
+
+    nodeListEdit_ = new QLineEdit(schedulerPage);
+    nodeListEdit_->setPlaceholderText(
+        tr("specific node(s) (empty = scheduler picks)"));
+    nodeListEdit_->setToolTip(
+        tr("--nodelist -- pin the job to particular node(s) by name. Rarely "
+           "needed; leave empty unless the cluster or the job specifically "
+           "requires it."));
+    schedulerForm->addRow(tr("Node list:"), nodeListEdit_);
+    slurmOnlyRows_.push_back(schedulerForm->rowCount() - 1);
+
+    extraDirectivesEdit_ = new QPlainTextEdit(schedulerPage);
+    extraDirectivesEdit_->setPlaceholderText(
+        tr("# any further #SBATCH lines, verbatim, e.g.\n"
+           "#SBATCH --mail-type=END\n"
+           "#SBATCH --exclusive"));
+    extraDirectivesEdit_->setToolTip(
+        tr("Written into the #SBATCH block exactly as typed, after every "
+           "field above -- the escape hatch for a directive this panel has "
+           "no dedicated control for. Include your own \"#SBATCH \" prefix "
+           "on each line (or \"##SBATCH \" for one you want present but "
+           "disabled, as SLURM only ever reads a line starting with exactly "
+           "\"#SBATCH\")."));
+    extraDirectivesEdit_->setMaximumHeight(64);
+    schedulerForm->addRow(tr("Extra #SBATCH lines:"), extraDirectivesEdit_);
+    slurmOnlyRows_.push_back(schedulerForm->rowCount() - 1);
+
     setupEdit_ = new QPlainTextEdit(schedulerPage);
     setupEdit_->setPlaceholderText(
         tr("# environment setup, e.g.\nmodule load python\nsource ~/venv/bin/activate"));
     setupEdit_->setMaximumHeight(64);
     schedulerForm->addRow(tr("Setup:"), setupEdit_);
+
+    // VASP's POTCAR library is a per-installation path, so it belongs to
+    // the cluster profile rather than to global Preferences — a job
+    // submitted here exports it as CALANGO_VASP_PP_PATH ahead of the
+    // "Setup:" lines above, which the generated VASP script prefers over
+    // whatever path was baked in on the LOCAL machine at generation time
+    // (see AseScriptGenerator.cpp, emitVasp()). Left empty, VASP dataset
+    // resolution is exactly what it was before this field existed.
+    vaspPotcarEdit_ = new QLineEdit(schedulerPage);
+    vaspPotcarEdit_->setPlaceholderText(
+        tr("this cluster's POTCAR directory (empty = use the local default)"));
+    vaspPotcarEdit_->setToolTip(
+        tr("Only matters for VASP jobs. Overrides, for THIS cluster only, "
+           "the POTCAR directory configured in Preferences → External "
+           "Files — set it when the cluster keeps its PAW dataset library "
+           "somewhere other than wherever this machine's copy lives.\n\n"
+           "POTCARs are licensed material and are never bundled or "
+           "transferred by Calango: this only tells the job where to find "
+           "a library that already exists on the cluster."));
+    schedulerForm->addRow(tr("VASP POTCAR dir:"), vaspPotcarEdit_);
+
+    // The payload -- applies to every scheduler, so unlike the SLURM-only
+    // fields above it is never hidden. Multi-line so it can carry both a
+    // launcher line ("mpirun -n 4 gpaw python run_gpaw.py") and cleanup
+    // that must run AFTER it ("conda deactivate"), exactly like a real
+    // cluster script's tail.
+    commandEdit_ = new QPlainTextEdit(schedulerPage);
+    commandEdit_->setPlainText(QStringLiteral("python3 run.py"));
+    commandEdit_->setToolTip(
+        tr("What actually runs, after the Setup lines above. The default "
+           "just launches the staged script directly; a real HPC job "
+           "usually wraps it, e.g. \"mpirun -n 4 python3 run.py\" or a "
+           "site-specific launcher like GPAW's own \"gpaw python "
+           "run.py\". A second line (or more) runs after it -- e.g. "
+           "\"conda deactivate\"."));
+    commandEdit_->setMaximumHeight(56);
+    schedulerForm->addRow(tr("Command:"), commandEdit_);
 
     // The paragraph that used to sit here explaining the submission flow has
     // moved to the tab's own tooltip. It was four wrapped lines of prose in a
@@ -286,7 +391,17 @@ HpcPanel::HpcPanel(const QString& pythonExe, QWidget* parent)
     connect(schedulerCombo_, &QComboBox::currentIndexChanged, this,
             [this] { updateSchedulerRows(); });
 
-    tabs->addTab(schedulerPage, tr("Scheduler"));
+    // Wrapped in a scroll area (Task 4 added six more rows to a panel that
+    // already lived at bottom-row-dock height) so a short dock scrolls the
+    // form instead of clipping it — the SLURM-only rows above are usually
+    // hidden anyway (PBS/SGE), but every row shows at once for SLURM, the
+    // default scheduler.
+    auto* schedulerScroll = new QScrollArea(tabs);
+    schedulerScroll->setWidget(schedulerPage);
+    schedulerScroll->setWidgetResizable(true);
+    schedulerScroll->setFrameShape(QFrame::NoFrame);
+    schedulerScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    tabs->addTab(schedulerScroll, tr("Scheduler"));
     tabs->setTabToolTip(
         tabs->count() - 1,
         tr("Resource request for jobs submitted from a simulation wizard: "
@@ -436,7 +551,44 @@ core::RemoteJobSpec HpcPanel::specFromUi(const QString& jobName) const
     spec.memoryMbPerNode = memorySpin_->value();
     spec.parallelEnvironment = peEdit_->text().trimmed().toStdString();
     spec.walltime = walltimeEdit_->text().trimmed().toStdString();
-    spec.setupLines = setupEdit_->toPlainText().toStdString();
+    // The VASP POTCAR override, if set, is exported FIRST — before the
+    // user's own setup lines, in case those lines (module loads, conda
+    // activation) need it, and always emitted regardless of which
+    // calculator this job actually is: a non-VASP job simply never reads
+    // an unused environment variable, and the generator has no way to know
+    // the calculator kind here (RemoteJobSpec is scheduler/wrapper-level,
+    // not calculator-aware).
+    QString setup = setupEdit_->toPlainText();
+    const QString potcarPath =
+        vaspPotcarEdit_ ? vaspPotcarEdit_->text().trimmed() : QString();
+    if (!potcarPath.isEmpty()) {
+        setup = QStringLiteral("export CALANGO_VASP_PP_PATH=\"%1\"\n")
+                    .arg(potcarPath)
+            + setup;
+    }
+    spec.setupLines = setup.toStdString();
+    // SLURM-only extensions (Task 4). Reading these unconditionally rather
+    // than gating on `scheduler()` is deliberate and harmless: generate()
+    // itself only ever consults them inside Scheduler::Slurm's branch, so a
+    // PBS/SGE spec quietly carries values its own script never emits --
+    // exactly like the parallel-environment field already does in reverse.
+    if (accountEdit_)
+        spec.account = accountEdit_->text().trimmed().toStdString();
+    if (qosEdit_)
+        spec.qos = qosEdit_->text().trimmed().toStdString();
+    if (cpusPerTaskSpin_)
+        spec.cpusPerTask = cpusPerTaskSpin_->value();
+    if (gpusPerNodeSpin_)
+        spec.gpusPerNode = gpusPerNodeSpin_->value();
+    if (nodeListEdit_)
+        spec.nodeList = nodeListEdit_->text().trimmed().toStdString();
+    if (extraDirectivesEdit_)
+        spec.extraDirectives = extraDirectivesEdit_->toPlainText().toStdString();
+    if (commandEdit_) {
+        const QString command = commandEdit_->toPlainText();
+        if (!command.trimmed().isEmpty())
+            spec.command = command.toStdString();
+    }
     return spec;
 }
 
@@ -813,6 +965,22 @@ void HpcPanel::saveSettings() const
     settings.setValue(QStringLiteral("parallelEnv"), peEdit_->text());
     settings.setValue(QStringLiteral("walltime"), walltimeEdit_->text());
     settings.setValue(QStringLiteral("setup"), setupEdit_->toPlainText());
+    settings.setValue(QStringLiteral("vaspPotcarPath"),
+                      vaspPotcarEdit_ ? vaspPotcarEdit_->text() : QString());
+    settings.setValue(QStringLiteral("account"),
+                      accountEdit_ ? accountEdit_->text() : QString());
+    settings.setValue(QStringLiteral("qos"), qosEdit_ ? qosEdit_->text() : QString());
+    settings.setValue(QStringLiteral("cpusPerTask"),
+                      cpusPerTaskSpin_ ? cpusPerTaskSpin_->value() : 1);
+    settings.setValue(QStringLiteral("gpusPerNode"),
+                      gpusPerNodeSpin_ ? gpusPerNodeSpin_->value() : 0);
+    settings.setValue(QStringLiteral("nodeList"),
+                      nodeListEdit_ ? nodeListEdit_->text() : QString());
+    settings.setValue(QStringLiteral("extraDirectives"),
+                      extraDirectivesEdit_ ? extraDirectivesEdit_->toPlainText()
+                                           : QString());
+    settings.setValue(QStringLiteral("command"),
+                      commandEdit_ ? commandEdit_->toPlainText() : QString());
     settings.endGroup();
     if (presetCombo_)
         settings.setValue(QStringLiteral("hpc/lastCluster"),
@@ -844,6 +1012,30 @@ void HpcPanel::restoreSettings()
         settings.value(QStringLiteral("walltime"), QStringLiteral("01:00:00"))
             .toString());
     setupEdit_->setPlainText(settings.value(QStringLiteral("setup")).toString());
+    if (vaspPotcarEdit_)
+        vaspPotcarEdit_->setText(
+            settings.value(QStringLiteral("vaspPotcarPath")).toString());
+    if (accountEdit_)
+        accountEdit_->setText(settings.value(QStringLiteral("account")).toString());
+    if (qosEdit_)
+        qosEdit_->setText(settings.value(QStringLiteral("qos")).toString());
+    if (cpusPerTaskSpin_)
+        cpusPerTaskSpin_->setValue(
+            settings.value(QStringLiteral("cpusPerTask"), 1).toInt());
+    if (gpusPerNodeSpin_)
+        gpusPerNodeSpin_->setValue(
+            settings.value(QStringLiteral("gpusPerNode"), 0).toInt());
+    if (nodeListEdit_)
+        nodeListEdit_->setText(settings.value(QStringLiteral("nodeList")).toString());
+    if (extraDirectivesEdit_)
+        extraDirectivesEdit_->setPlainText(
+            settings.value(QStringLiteral("extraDirectives")).toString());
+    if (commandEdit_) {
+        const QString saved = settings.value(QStringLiteral("command")).toString();
+        commandEdit_->setPlainText(saved.isEmpty()
+                                       ? QStringLiteral("python3 run.py")
+                                       : saved);
+    }
     settings.endGroup();
     updateSchedulerRows();
 }
@@ -872,6 +1064,16 @@ ClusterPreset HpcPanel::presetFromUi(const QString& name) const
     preset.walltime = walltimeEdit_->text().trimmed();
     preset.parallelEnvironment = peEdit_->text().trimmed();
     preset.setupLines = setupEdit_->toPlainText();
+    preset.vaspPotcarPath =
+        vaspPotcarEdit_ ? vaspPotcarEdit_->text().trimmed() : QString();
+    preset.account = accountEdit_ ? accountEdit_->text().trimmed() : QString();
+    preset.qos = qosEdit_ ? qosEdit_->text().trimmed() : QString();
+    preset.cpusPerTask = cpusPerTaskSpin_ ? cpusPerTaskSpin_->value() : 1;
+    preset.gpusPerNode = gpusPerNodeSpin_ ? gpusPerNodeSpin_->value() : 0;
+    preset.nodeList = nodeListEdit_ ? nodeListEdit_->text().trimmed() : QString();
+    preset.extraDirectives =
+        extraDirectivesEdit_ ? extraDirectivesEdit_->toPlainText() : QString();
+    preset.command = commandEdit_ ? commandEdit_->toPlainText() : QString();
     // The password is deliberately absent — see ClusterPreset.
     return preset;
 }
@@ -894,6 +1096,24 @@ void HpcPanel::applyPreset(const ClusterPreset& preset)
     walltimeEdit_->setText(preset.walltime);
     peEdit_->setText(preset.parallelEnvironment);
     setupEdit_->setPlainText(preset.setupLines);
+    if (vaspPotcarEdit_)
+        vaspPotcarEdit_->setText(preset.vaspPotcarPath);
+    if (accountEdit_)
+        accountEdit_->setText(preset.account);
+    if (qosEdit_)
+        qosEdit_->setText(preset.qos);
+    if (cpusPerTaskSpin_)
+        cpusPerTaskSpin_->setValue(preset.cpusPerTask > 0 ? preset.cpusPerTask : 1);
+    if (gpusPerNodeSpin_)
+        gpusPerNodeSpin_->setValue(preset.gpusPerNode);
+    if (nodeListEdit_)
+        nodeListEdit_->setText(preset.nodeList);
+    if (extraDirectivesEdit_)
+        extraDirectivesEdit_->setPlainText(preset.extraDirectives);
+    if (commandEdit_)
+        commandEdit_->setPlainText(preset.command.isEmpty()
+                                       ? QStringLiteral("python3 run.py")
+                                       : preset.command);
     // Switching cluster must not carry the previous one's password across:
     // it would be silently wrong, and on a locked-out account it costs the
     // user a failed login they cannot explain.
@@ -961,6 +1181,16 @@ void HpcPanel::updateSchedulerRows()
         schedulerForm_->setRowVisible(
             peRow_, schedulerCombo_->currentIndex()
                         == static_cast<int>(core::Scheduler::Sge));
+    // Account/QOS/CPUs-per-task/GPUs/node-list/extra directives are SLURM-
+    // only (SchedulerScript.cpp only ever reads them inside
+    // Scheduler::Slurm's branch) -- hiding them elsewhere keeps a PBS/SGE
+    // user from filling in a field their own script silently ignores.
+    if (schedulerForm_) {
+        const bool slurm = schedulerCombo_->currentIndex()
+            == static_cast<int>(core::Scheduler::Slurm);
+        for (int row : slurmOnlyRows_)
+            schedulerForm_->setRowVisible(row, slurm);
+    }
 }
 
 } // namespace calango::gui

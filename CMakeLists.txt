@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.8.34
+    VERSION 26.8.35
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -529,6 +529,8 @@ qt_add_executable(calango
     src/gui/SlabWizard.cpp
     src/gui/PreferencesDialog.hpp
     src/gui/PreferencesDialog.cpp
+    src/gui/ShortcutRegistry.hpp
+    src/gui/ShortcutRegistry.cpp
     src/gui/EnginePresets.hpp
     src/gui/EnginePresets.cpp
     src/gui/RunCommands.hpp
@@ -603,6 +605,8 @@ qt_add_executable(calango
     src/gui/MaceTrainerDialog.cpp
     src/gui/PythonPackagePreflight.hpp
     src/gui/PythonPackagePreflight.cpp
+    src/gui/VaspPotcarPreflight.hpp
+    src/gui/VaspPotcarPreflight.cpp
     src/gui/GpawEigenvaluePeek.hpp
     src/gui/GpawEigenvaluePeek.cpp
     src/gui/EnergyWindowWidget.hpp
@@ -1955,6 +1959,7 @@ if(CALANGO_BUILD_TESTS)
         # time on someone else's cluster, hours in, so they are pinned here.
         src/gui/MaceTrainerDialog.cpp
         src/gui/PythonPackagePreflight.cpp
+        src/gui/VaspPotcarPreflight.cpp
         # LDOS: the baseline-eigenvalue peek (a real, synchronous GPAW
         # restart under python -c, same shape as the preflight check above)
         # and the draggable dual-handle energy-window widget it feeds.
@@ -2079,6 +2084,14 @@ if(CALANGO_BUILD_TESTS)
         # this target here.
         src/gui/CellRelaxationControls.cpp
         src/gui/ForceConvergenceControl.cpp
+        # PreferencesDialog (Task 2's Hotkeys tab) and its own dependencies
+        # not already pulled in above.
+        src/gui/PreferencesDialog.hpp
+        src/gui/PreferencesDialog.cpp
+        src/gui/ShortcutRegistry.hpp
+        src/gui/ShortcutRegistry.cpp
+        src/gui/EnvFile.hpp
+        src/gui/EnvFile.cpp
     )
     target_include_directories(calango_dialog_test PRIVATE src
         "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -2222,6 +2235,7 @@ if(CALANGO_BUILD_TESTS)
         # core::DatasetSplit::makeStratified().
         src/gui/MaceTrainerDialog.cpp
         src/gui/PythonPackagePreflight.cpp
+        src/gui/VaspPotcarPreflight.cpp
         src/core/DatasetSplit.cpp
     )
     target_include_directories(calango_orchestration_si_test PRIVATE src
@@ -2303,6 +2317,7 @@ if(CALANGO_BUILD_TESTS)
         src/jobs/JobRunner.cpp
         src/gui/MaceTrainerDialog.cpp
         src/gui/PythonPackagePreflight.cpp
+        src/gui/VaspPotcarPreflight.cpp
         src/core/DatasetSplit.cpp
     )
     target_include_directories(calango_mace_trainer_preflight_test PRIVATE src
@@ -2391,6 +2406,7 @@ if(CALANGO_BUILD_TESTS)
         # core::DatasetSplit::makeStratified().
         src/gui/MaceTrainerDialog.cpp
         src/gui/PythonPackagePreflight.cpp
+        src/gui/VaspPotcarPreflight.cpp
         src/core/DatasetSplit.cpp
     )
     target_include_directories(calango_orchestration_handoff_test PRIVATE src
@@ -2484,6 +2500,7 @@ if(CALANGO_BUILD_TESTS)
         # core::DatasetSplit::makeStratified().
         src/gui/MaceTrainerDialog.cpp
         src/gui/PythonPackagePreflight.cpp
+        src/gui/VaspPotcarPreflight.cpp
         src/core/DatasetSplit.cpp
     )
     target_include_directories(calango_orchestration_batch_test PRIVATE src
@@ -2583,6 +2600,23 @@ if(CALANGO_BUILD_TESTS)
     )
     target_include_directories(calango_scheduler_test PRIVATE src)
     add_test(NAME scheduler_script COMMAND calango_scheduler_test)
+
+    add_executable(calango_vasp_potcar_preflight_test
+        tests/VaspPotcarPreflightTest.cpp
+        src/gui/VaspPotcarPreflight.cpp
+    )
+    target_include_directories(calango_vasp_potcar_preflight_test PRIVATE src)
+    target_link_libraries(calango_vasp_potcar_preflight_test PRIVATE Qt6::Core)
+    add_test(NAME vasp_potcar_preflight COMMAND calango_vasp_potcar_preflight_test)
+
+    add_executable(calango_shortcut_registry_test
+        tests/ShortcutRegistryTest.cpp
+        src/gui/ShortcutRegistry.cpp
+        src/gui/SettingsManager.cpp
+    )
+    target_include_directories(calango_shortcut_registry_test PRIVATE src)
+    target_link_libraries(calango_shortcut_registry_test PRIVATE Qt6::Core Qt6::Gui)
+    add_test(NAME shortcut_registry COMMAND calango_shortcut_registry_test)
 
     # The persistent SSH session, Qt side. Drives RemoteClient against a real
     # paramiko SSH server on 127.0.0.1 that demands a one-time code (started
@@ -3270,6 +3304,33 @@ if(CALANGO_BUILD_TESTS)
                 $<TARGET_FILE:calango_script_test>)
     set_tests_properties(graphene_tetrahedron PROPERTIES TIMEOUT 1800)
 
+    # 2D Bands (Task 3's GPAW -> +VASP/QE/SIESTA extension), RUN against
+    # real graphene on Quantum ESPRESSO — the one of the three new engines
+    # this machine can run without a license (VASP) or a broken local
+    # binary (siesta itself SIGKILLs unconditionally here, confirmed
+    # separately from anything this generator emits). Small grid, low
+    # cutoff: this is a generator/pipeline correctness check against a real
+    # pw.x, not a converged DFT result. Self-skips without pw.x, an
+    # ase-capable interpreter, or a carbon pseudopotential — all of which
+    # are this machine's own local installs, not build/runtime dependencies.
+    add_test(NAME graphene_2d_bands_qe
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/graphene_2d_bands_qe_benchmark.py
+                $<TARGET_FILE:calango_script_test>)
+    set_tests_properties(graphene_2d_bands_qe PROPERTIES TIMEOUT 600)
+
+    # Same, for SIESTA (see graphene_2d_bands_qe's own comment for VASP).
+    # Self-skips without a siesta binary that actually runs `siesta
+    # --version` (some local installs SIGKILL unconditionally; only a
+    # binary that passes that check is used — see the script's own
+    # find_siesta_bin()), an ase-capable interpreter, or a carbon
+    # pseudopotential.
+    add_test(NAME graphene_2d_bands_siesta
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/graphene_2d_bands_siesta_benchmark.py
+                $<TARGET_FILE:calango_script_test>)
+    set_tests_properties(graphene_2d_bands_siesta PROPERTIES TIMEOUT 600)
+
     # Band symmetry classification validated on graphene against Kogan &
     # Nazarov, PRB 85, 115418 (2012) — a paper whose entire content is the
     # irrep each graphene band realizes, so it is a table of expected answers
@@ -3303,6 +3364,17 @@ if(CALANGO_BUILD_TESTS)
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/xtb_integration_test.py
                 $<TARGET_FILE:calango_script_test>)
     set_tests_properties(xtb_integration PROPERTIES TIMEOUT 1800)
+
+    # Hydroxyls antiposition, RUN through a real MDMC trajectory on plain
+    # Lennard-Jones (no MACE/GPAW/xTB needed): independently re-derives
+    # pairing from geometry, on every frame, and checks it never breaks —
+    # the bug this generator used to have. Self-skips without an interpreter
+    # that has ase.
+    add_test(NAME graphene_oxide_mdmc_antiposition
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/graphene_oxide_mdmc_antiposition_test.py
+                $<TARGET_FILE:calango_script_test>)
+    set_tests_properties(graphene_oxide_mdmc_antiposition PROPERTIES TIMEOUT 600)
 
     # DSIM vs. its own reference implementation (oncapintada), live: EMT-relax
     # a Cu/Pd 27-atom fcc supercell case, run it through oncapintada, check
@@ -3651,7 +3723,9 @@ if(CALANGO_BUILD_TESTS)
         dislocation_builder dos_smearing double_group dsim dsim_oncapintada elastic_tensor elf_silicon
         elph_analysis elph_io extxyz_attributes frame_streaming
         generated_ase_scripts generated_script_lint graphene_band_symmetry
-        graphene_oxide graphene_oxide_sites graphene_tetrahedron
+        graphene_2d_bands_qe graphene_2d_bands_siesta
+        graphene_oxide graphene_oxide_mdmc_antiposition graphene_oxide_sites
+        graphene_tetrahedron
         energy_diagram_benchmark
         gw_qp_parser gw_silicon hubbard_linear_response hydrogen_bonds
         hydrogen_completion ice_builder kpath_table lammps_environment
@@ -3663,12 +3737,13 @@ if(CALANGO_BUILD_TESTS)
         phonon_diamond phonon_thermodynamics piezoelectric_tensor
         polymer_builder raman_ir_math
         raman_ir_mgo raman_ir_parsers raman_si_diamond remote_session
-        remote_session_helper scheduler_script solid_interface_builder
+        remote_session_helper scheduler_script shortcut_registry solid_interface_builder
         solvation_builder sqs_generator sqs_sige_alloy strain_voigt
         structural_phase
         structure_transforms sublattice_cluster_variation superconductivity
         symmetry_si_diamond tdb_database tetrahedron_bz
-        thermodynamic_integration vibrational_modes volumetric_parse
+        thermodynamic_integration vasp_potcar_preflight vibrational_modes
+        volumetric_parse
         wannier_interpolation_silicon wannier_preflight wannier_silicon
         wavefunctions_h2o
         workflow_report xas_broadening xtb_integration)

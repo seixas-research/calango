@@ -36,9 +36,13 @@ public:
 
     /// Seed the run from the structure the builder produced. `groupCount` and
     /// the site counts are used only to size the defaults and warn about a
-    /// substrate with nothing to move.
+    /// substrate with nothing to move. `hydroxylAntiposition` is inherited
+    /// state about the STRUCTURE, not a sampling choice offered here: when
+    /// true, the generated script tracks each bonded, opposite-face hydroxyl
+    /// pair as one compound move instead of moving the two halves
+    /// independently — see core::GrapheneOxideMdmcConfig::hydroxylAntiposition.
     void setSubstrate(int functionalGroups, int basalCarbons, int edgeCarbons,
-                      bool periodic);
+                      bool periodic, bool hydroxylAntiposition = false);
 
     /// Whether MainWindow should redefine each streamed frame's Cast from
     /// its own functional-group classification (the "Redefine Cast on every
@@ -86,6 +90,7 @@ private:
     int basalCarbons_ = 0;
     int edgeCarbons_ = 0;
     bool periodic_ = true;
+    bool hydroxylAntiposition_ = false;
 
     mutable core::GrapheneOxideMdmcConfig config_;
 };

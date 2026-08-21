@@ -52,6 +52,8 @@ GrapheneOxideMdmcScriptGenerator::generate(const GrapheneOxideMdmcConfig& c)
         << "timestep_fs = " << c.timestepFs << "\n"
         << "friction_per_fs = " << c.frictionPerFs << "\n"
         << "both_faces = " << (c.bothFaces ? "True" : "False") << "\n"
+        << "hydroxyl_antiposition = "
+        << (c.hydroxylAntiposition ? "True" : "False") << "\n"
         << "snapshot_interval = " << c.snapshotInterval << "\n"
         << "seed = " << c.seed << "\n"
         << "constant_pressure = " << (c.constantPressure ? "True" : "False")
@@ -366,6 +368,25 @@ def build_group(kind, hosts, positions, graph, framework_set, normal,
         height = math.sqrt(max(CO_EPOXIDE ** 2 - half ** 2, 0.25))
         return ["O"], [mid + face * height * normal]
 
+    if kind == "hydroxyl_pair":
+        # The opposite-face split IS the antiposition motif, so this ignores
+        # `face` -- drawn by the caller for an ordinary single-sided group --
+        # and always forces a fresh, independent sign between the two
+        # carbons, mirroring GrapheneOxideBuilder's own antiposition
+        # placement, which for the same reason draws its own sign here
+        # rather than going through the ordinary per-group face draw (that
+        # draw would collapse to the SAME face on both carbons whenever
+        # both_faces is off, which is not a pair at all).
+        a, b = hosts
+        sign = 1.0 if rng.random() < 0.5 else -1.0
+        symbols_a, positions_a = build_group(
+            "hydroxyl", [a], positions, graph, framework_set, normal, sign,
+            rng)
+        symbols_b, positions_b = build_group(
+            "hydroxyl", [b], positions, graph, framework_set, normal, -sign,
+            rng)
+        return symbols_a + symbols_b, positions_a + positions_b
+
     host = hosts[0]
     base = positions[host]
     if kind == "hydroxyl":
@@ -406,9 +427,65 @@ def build_group(kind, hosts, positions, graph, framework_set, normal,
     raise ValueError(f"unknown group kind: {kind}")
 
 
+def pair_hydroxyls(raw_groups, positions, framework, graph):
+    """Merge bonded, opposite-face hydroxyls into "hydroxyl_pair" entries.
+
+    Runs EXACTLY ONCE, on the structure as loaded -- the only point pairing
+    is ever recovered from geometry rather than tracked explicitly. From
+    here on every pair is one entry in `groups`, carried by index like any
+    other group and never re-guessed: a plain "hydroxyl" and a
+    "hydroxyl_pair" are, from this point in the script on, simply two
+    different kinds of group in the same list.
+
+    A hydroxyl with no eligible partner -- an odd count, or a hand-edited
+    structure -- is left as an ordinary single rather than dropped or
+    forced into a pair that is not actually one; GrapheneOxideBuilder's own
+    Config::hydroxylAntiposition documents exactly this possibility (a
+    requested odd count is rounded up by at most one).
+
+    Restricted to BASAL hosts (the SiteGraph pair pool this builds against
+    is basal-basal bonds only, matching the C++ side's fw.basalBonds): a
+    phenolic edge hydroxyl next to a basal one is not what "antiposition"
+    means, and pairing it in would hand the mover a "pair" whose sites the
+    site graph does not track as a pair at all.
+    """
+    normal = sheet_normal(positions, framework)
+    hydroxyls = [g for g in raw_groups
+                if g[0] == "hydroxyl" and not is_edge[g[2][0]]]
+    others = [g for g in raw_groups
+             if g[0] != "hydroxyl" or is_edge[g[2][0]]]
+    by_host = {g[2][0]: g for g in hydroxyls}
+    claimed = set()
+    pairs = []
+    for host in sorted(by_host):
+        if host in claimed:
+            continue
+        partner = next((j for j in sorted(graph[host])
+                        if j in by_host and j not in claimed and j != host),
+                       None)
+        if partner is None:
+            continue
+        a, b = sorted((host, partner))
+        o_a, o_b = by_host[a][1][0], by_host[b][1][0]
+        side_a = np.dot(positions[o_a] - positions[a], normal)
+        side_b = np.dot(positions[o_b] - positions[b], normal)
+        if side_a * side_b >= 0.0:
+            continue  # same face -- adjacent, but not an antiposition pair
+        claimed.add(a)
+        claimed.add(b)
+        members = list(by_host[a][1]) + list(by_host[b][1])
+        pairs.append(("hydroxyl_pair", members, [a, b]))
+    leftovers = [g for g in hydroxyls if g[2][0] not in claimed]
+    return others + pairs + leftovers, len(pairs), len(leftovers)
+
+
 GROUP_REGION = {
     "epoxide": "pair",
     "hydroxyl": "basal",
+    # An antiposition pair draws from the same bonded-PAIR pool an epoxide
+    # does -- both carbons free AND bonded to each other -- never the
+    # single-carbon pool a lone hydroxyl uses.
+    "hydroxyl_pair": "pair",
     "carbonyl": "edge",
     "carboxyl": "edge",
 }
@@ -431,6 +508,28 @@ def topology_intact(kind, hosts, member_indices, system, graph):
         hydrogens = [j for j in graph[o] if symbols[j] == "H" and j in members]
         return len(bonded_hosts) == 1 and bonded_hosts[0] == hosts[0] \
             and len(hydrogens) == 1
+    if kind == "hydroxyl_pair":
+        # A pair is two ordinary hydroxyls (checked exactly like "hydroxyl"
+        # above, one per half) PLUS the two invariants that make it a pair
+        # rather than two coincidentally adjacent singles: the hosts are
+        # still bonded to each other -- they never move, but this costs
+        # nothing and catches a corrupted hosts list immediately -- and the
+        # two -OH groups are still on OPPOSITE faces, which is the entire
+        # content of "antiposition". Checked every time chemistry_survived()
+        # runs, i.e. on every frame this run ever accepts or even considers.
+        a, b = hosts
+        if b not in graph[a]:
+            return False
+        half_a = topology_intact("hydroxyl", [a], member_indices[:2], system, graph)
+        half_b = topology_intact("hydroxyl", [b], member_indices[2:], system, graph)
+        if not (half_a and half_b):
+            return False
+        positions = system.get_positions()
+        normal = sheet_normal(positions, framework)
+        o_a, o_b = member_indices[0], member_indices[2]
+        side_a = np.dot(positions[o_a] - positions[a], normal)
+        side_b = np.dot(positions[o_b] - positions[b], normal)
+        return side_a * side_b < 0.0
     if kind == "carbonyl":
         o = member_indices[0]
         bonded_hosts = [j for j in graph[o] if j in framework_set]
@@ -461,6 +560,23 @@ if not groups:
                    "MDMC refines an EXISTING decoration; build one first.")
     raise SystemExit(1)
 
+# Hydroxyls antiposition: recover each bonded, opposite-face pair from THIS
+# geometry -- the structure the builder just produced, which is the only
+# state anyone can promise still respects the invariant -- and replace the
+# two independent "hydroxyl" entries with one "hydroxyl_pair" entry that the
+# rest of this script moves, checks and reports as a single unit. Off, this
+# block does not run and every hydroxyl is exactly the independent single it
+# always was.
+if hydroxyl_antiposition:
+    groups, n_hydroxyl_pairs, n_hydroxyl_unpaired = pair_hydroxyls(
+        groups, atoms.get_positions(), framework, graph0)
+    _calango_event(
+        "info",
+        f"hydroxyl antiposition: {n_hydroxyl_pairs} pair(s) tracked as "
+        "compound moves" + (f", {n_hydroxyl_unpaired} hydroxyl(s) had no "
+                            "eligible partner and will move individually"
+                            if n_hydroxyl_unpaired else ""))
+
 sites = SiteGraph(framework, is_edge, graph0)
 for kind, members, hosts in groups:
     for host in hosts:
@@ -470,7 +586,8 @@ if not sites.consistent():
     raise SystemExit(1)
 
 counts = {k: sum(1 for g in groups if g[0] == k)
-          for k in ("epoxide", "hydroxyl", "carboxyl", "carbonyl")}
+          for k in ("epoxide", "hydroxyl", "hydroxyl_pair", "carboxyl",
+                    "carbonyl")}
 _calango_event("info", f"groups: {len(groups)} - " + ", ".join(
     f"{n} {k}" for k, n in counts.items() if n))
 

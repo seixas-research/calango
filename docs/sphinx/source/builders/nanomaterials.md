@@ -209,7 +209,18 @@ approximate:
 
 - **0.0** — only epoxides.
 - **1.0** — only hydroxyls.
-- The Lerf–Klinowski picture has both in comparable amounts, so the middle is ordinary.
+- **2/3 (default)** — epoxide : hydroxyl = 1:2, the Lerf–Klinowski picture's usual case,
+  somewhat more hydroxyl than epoxide.
+
+{guilabel}`Hydroxyls antiposition` (off by default) forces every hydroxyl onto a
+*neighbouring* pair of basal carbons — the same bonded pair an epoxide may bridge —
+rather than each hydroxyl sitting on its own, independently chosen carbon. One −OH stands
+above the plane and the other below it: a trans-diol, not two unrelated single sites. Each
+placement therefore delivers two hydroxyls at once, so a requested count can be rounded up
+by at most one to keep every hydroxyl paired. The pair's own two faces are always split —
+this ignores {guilabel}`Decorate both faces` for its own hydroxyls, since opposite faces
+are the whole point; that setting still governs epoxides and any hydroxyl placed while
+this is off.
 
 #### Edge oxidation
 
@@ -302,6 +313,17 @@ reject the move by the Metropolis criterion at the configured temperature.
 Because a move only ever relocates a group to another site of its own kind,
 the sheet's total inventory — how many epoxides, hydroxyls, carboxyls,
 carbonyls — is an invariant of the whole run; only *where* they sit changes.
+
+If the structure was built with {guilabel}`Hydroxyls antiposition` on, each
+bonded, opposite-face hydroxyl pair is one of these "groups" in its own
+right: MDMC recovers every such pair from the structure's geometry once, at
+the start, and from then on moves, checks and reports it as a single
+compound unit — drawing a new *bonded pair* of free carbons (the same pool
+an epoxide draws from) and rebuilding both −OH groups with a fresh,
+independent opposite-face split. A swap can therefore never separate the two
+halves of a pair onto unrelated carbons; a hydroxyl with no eligible partner
+(possible when a requested count was odd) moves on its own, exactly as it
+would with the option off.
 
 Reached from a separate wizard (not another page of the builder dialog):
 MDMC is where a **calculator** is chosen, and `SimulationWizardBase`'s

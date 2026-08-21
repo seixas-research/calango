@@ -22,10 +22,21 @@ Key & Action \\
 \kbd{A} & Angle measurement mode \\
 \kbd{O} & Toggle orthographic / perspective \\
 \kbd{F} & Frame structure \\
+\kbd{Tab} / \kbd{Shift}+\kbd{Tab} & Next / previous structure tab \\
 \kbd{Delete} / \kbd{Backspace} & Delete selection (Selection mode) \\
 \bottomrule
 \end{tabular}
 \end{center}
+
+\begin{calnote}
+Every row above except \kbd{Delete}/\kbd{Backspace} is remappable in
+\menu{Edit}\menusep\menu{Preferences}\menusep\menu{Hotkeys}: a table with
+one key-capture cell per action, live conflict detection against both this
+list and the Application shortcuts below, and a per-row \ui{Reset} plus a
+\ui{Reset All to Defaults}. \kbd{Tab}/\kbd{Shift}+\kbd{Tab} cycling wraps
+around and is a no-op with a single tab open; both keys yield to the
+viewport losing focus, same as the letter shortcuts above.
+\end{calnote}
 
 \subsection{Application}
 
@@ -49,8 +60,8 @@ Shortcut & Action \\
 \kbd{Ctrl}+\kbd{Shift}+\kbd{Z} & Redo \\
 \kbd{Ctrl}+\kbd{Shift}+\kbd{A} & Add atom \\
 \kbd{Ctrl}+\kbd{B} & Bond editor \\
-\kbd{Ctrl}+\kbd{R} & New calculation \\
-\kbd{Ctrl}+\kbd{Shift}+\kbd{R} & New remote calculation \\
+\kbd{Ctrl}+\kbd{P} & Preferences \\
+\kbd{Ctrl}+\kbd{R} & Single-point calculation \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -213,8 +224,9 @@ Marker & Effect \\
 
   \item[The remote panel reports a connection failure.]
     Test the same host, port, user and key with \texttt{ssh} from a
-    terminal first. Remember that the passphrase field doubles as the key
-    passphrase in \ui{SSH key} mode.
+    terminal first. Remember that with a \ui{Key file} set, the
+    \ui{Password} field doubles as that key's passphrase rather than a
+    login password (Chapter~\ref{ch:remote} explains the full inference).
 
   \item[Adsorption site detection finds no bridge or hollow sites.]
     The surface cell is too small to have in-plane neighbours. Build a
@@ -230,10 +242,28 @@ Marker & Effect \\
     \texttt{imageio-ffmpeg} for MP4, in Calango's Python environment.
 \end{description}
 
+\section{Citing Calango}
+\label{sec:citing}
+
+\menu{Help}\menusep\menu{About Calango} has a \ui{Citations} tab, right
+after \ui{Third-Party Licenses}: it groups the references worth citing for
+a Calango-produced result into \ui{Core} (Calango itself, and ASE, which
+every generated script builds on), \ui{Databases} (Materials Project,
+PubChem, C2DB --- whichever a structure actually came from), \ui{Calculators}
+(the DFT/MD engine a wizard generated a script for --- cite the ones a
+given result actually ran on, not the whole list), and \ui{Libraries}
+(spglib, NumPy, phonopy, icet, dftd4 --- customary to cite where a venue
+expects it). Each entry has a \ui{BibTeX viewer\ldots} button opening a
+read-only, monospaced, copyable BibTeX record, so citing a result correctly
+never means retyping a reference by hand or guessing a citation key.
+
 \section{Further reading}
 
 \begin{description}
   \item[\file{README.md}] Feature overview and build instructions.
+  \item[\file{docs/sphinx/}] The Sphinx manual --- the primary, most
+    frequently updated reference, covering every builder, wizard,
+    calculator and analysis viewer in more depth than this guide.
   \item[\file{docs/packaging.pdf}] Building the macOS and Linux installers.
   \item[\url{https://github.com/seixas-research/calango}] Source, issues
     and releases.

@@ -49,6 +49,24 @@ std::string generate(const RemoteJobSpec& spec)
             out << "#SBATCH --mem=" << spec.memoryMbPerNode << "M\n";
         if (!spec.queue.empty())
             out << "#SBATCH --partition=" << spec.queue << "\n";
+        // SLURM-only extensions (Task 4): each "" / 0 = omit, so a spec
+        // that never touches these produces exactly the output it always
+        // did.
+        if (!spec.account.empty())
+            out << "#SBATCH --account=" << spec.account << "\n";
+        if (!spec.qos.empty())
+            out << "#SBATCH --qos=" << spec.qos << "\n";
+        if (spec.cpusPerTask > 1)
+            out << "#SBATCH --cpus-per-task=" << spec.cpusPerTask << "\n";
+        if (spec.gpusPerNode > 0)
+            out << "#SBATCH --gres=gpu:" << spec.gpusPerNode << "\n";
+        if (!spec.nodeList.empty())
+            out << "#SBATCH --nodelist=" << spec.nodeList << "\n";
+        if (!spec.extraDirectives.empty()) {
+            out << spec.extraDirectives;
+            if (spec.extraDirectives.back() != '\n')
+                out << "\n";
+        }
         break;
 
     case Scheduler::Pbs:

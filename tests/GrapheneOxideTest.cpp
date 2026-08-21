@@ -1135,6 +1135,216 @@ int main()
               "frames");
     }
 
+    std::printf("Default epoxide:hydroxyl ratio:\n");
+    {
+        // Deterministic checks on the raw Config defaults themselves, not on
+        // a build's stochastic outcome -- the single source of truth for
+        // "what does a caller get who touches nothing."
+        Config config;
+        check(config.weight[static_cast<std::size_t>(Group::Epoxide)] == 1.0
+                  && config.weight[static_cast<std::size_t>(Group::Hydroxyl)]
+                      == 2.0,
+              "Dosing::TargetRatio default weight is epoxide:hydroxyl = 1:2");
+        check(std::abs(config.basalHydroxylShare - 2.0 / 3.0) < 1e-12,
+              "Dosing::DecoupledRegions default basalHydroxylShare is 2/3 "
+              "(epoxide:hydroxyl = 1:2)");
+        check(!config.hydroxylAntiposition,
+              "hydroxylAntiposition defaults to off");
+    }
+    {
+        // The build-based confirmation: leave every basal dial at its
+        // default and check the OUTCOME is hydroxyl-majority, not just that
+        // the numbers on paper look right. A large enough basal target that
+        // a 1:2 weighting is overwhelmingly unlikely to invert by chance.
+        Config config;
+        config.supercell[0] = config.supercell[1] = 6;
+        config.dosing = Dosing::DecoupledRegions;
+        config.basalOxygenToCarbon = 0.3;
+        Report report;
+        Builder::build(config, &report);
+        check(report.placedFor(Group::Hydroxyl) > report.placedFor(Group::Epoxide),
+              "with every dial left at default, more hydroxyls than "
+              "epoxides get placed (2:1 by weight)");
+    }
+
+    std::printf("Hydroxyls antiposition:\n");
+    {
+        // ExplicitCoverage: only hydroxyls enabled, paired.
+        Config config;
+        config.supercell[0] = config.supercell[1] = 8;
+        config.dosing = Dosing::ExplicitCoverage;
+        config.setCoverage(Group::Hydroxyl, 0.35);
+        config.hydroxylAntiposition = true;
+        config.seed = 3;
+        Report report;
+        const Structure s = Builder::build(config, &report);
+
+        check(report.placedFor(Group::Hydroxyl) > 0,
+              "antiposition placed at least one hydroxyl (ExplicitCoverage)");
+        check(report.placedFor(Group::Hydroxyl) % 2 == 0,
+              "antiposition never leaves a hydroxyl unpaired -- placed count "
+              "is even (ExplicitCoverage)");
+
+        double closest = 0.0;
+        check(!anythingFused(s, closest),
+              "no atom pair came out fused (ExplicitCoverage)");
+
+        // One group per carbon still holds -- the pair-based placement path
+        // goes through the SAME reservation table as everything else.
+        const auto attachments = attachmentsPerCarbon(s, report.carbonCount);
+        bool oneGroupPerCarbon = true;
+        for (const auto& [carbon, count] : attachments)
+            oneGroupPerCarbon = oneGroupPerCarbon && count <= 1;
+        check(oneGroupPerCarbon,
+              "no carbon hosts more than one functional group "
+              "(ExplicitCoverage, antiposition)");
+
+        // The payoff: recompute the pairing from bonding + geometry alone,
+        // independent of the builder's own bookkeeping. Every hydroxyl's
+        // host carbon must have a directly-bonded neighbour that is ALSO a
+        // hydroxyl host, and the two oxygens must sit on opposite faces
+        // (z of opposite sign) -- the antiposition motif itself.
+        const auto clusters = Builder::findFunctionalGroups(s);
+        std::map<int, calango::core::Vec3> hydroxylOxygenByCarbon;
+        for (const auto& cluster : clusters) {
+            if (cluster.kind != Group::Hydroxyl)
+                continue;
+            // GroupCluster::atoms is the group's own atoms first, then its
+            // host carbon(s) -- one oxygen, one hydrogen, one host carbon.
+            int oxygenAtom = -1;
+            int hostCarbon = -1;
+            for (int index : cluster.atoms) {
+                const Atom& atom = s.atoms()[static_cast<std::size_t>(index)];
+                if (atom.atomicNumber == 8)
+                    oxygenAtom = index;
+                else if (atom.atomicNumber == 6)
+                    hostCarbon = index;
+            }
+            if (oxygenAtom >= 0 && hostCarbon >= 0)
+                hydroxylOxygenByCarbon[hostCarbon] =
+                    s.atoms()[static_cast<std::size_t>(oxygenAtom)].position;
+        }
+        check(static_cast<int>(hydroxylOxygenByCarbon.size())
+                  == report.placedFor(Group::Hydroxyl),
+              "findFunctionalGroups() recovers exactly the hydroxyls the "
+              "builder reports placing");
+
+        // At this density a carbon can easily have MORE than one bonded
+        // hydroxyl neighbour -- its own antiposition partner plus, by pure
+        // coincidence of the lattice, a hydroxyl from an entirely different,
+        // unrelated pair. So the invariant to check is "at least one bonded
+        // hydroxyl neighbour", and separately "at least one of those is on
+        // the OPPOSITE face" -- not that the first neighbour found is
+        // automatically the true partner, which a dense structure need not
+        // satisfy even when every pair is correctly antiposition.
+        int paired = 0;
+        int hasOppositeFacePartner = 0;
+        for (const auto& [carbon, oxygen] : hydroxylOxygenByCarbon) {
+            const calango::core::Vec3 cPos =
+                s.atoms()[static_cast<std::size_t>(carbon)].position;
+            bool foundBondedHydroxyl = false;
+            bool foundOppositeFace = false;
+            for (const auto& [otherCarbon, otherOxygen] : hydroxylOxygenByCarbon) {
+                if (otherCarbon == carbon)
+                    continue;
+                const calango::core::Vec3 oPos =
+                    s.atoms()[static_cast<std::size_t>(otherCarbon)].position;
+                if (periodicDistance(s, cPos, oPos) < 1.55) {
+                    foundBondedHydroxyl = true;
+                    // Relative to each carbon's OWN z, not the raw oxygen z:
+                    // the sheet sits at z = kVacuum/2, not z = 0, so both
+                    // faces' oxygens land on the same (positive) side of
+                    // z = 0 and a raw sign comparison would be meaningless.
+                    if ((oxygen.z - cPos.z) * (otherOxygen.z - oPos.z) < 0.0)
+                        foundOppositeFace = true;
+                }
+            }
+            if (foundBondedHydroxyl)
+                ++paired;
+            if (foundOppositeFace)
+                ++hasOppositeFacePartner;
+        }
+        check(paired == static_cast<int>(hydroxylOxygenByCarbon.size()),
+              "every hydroxyl's host carbon is directly bonded to another "
+              "hydroxyl's host carbon");
+        check(hasOppositeFacePartner == static_cast<int>(hydroxylOxygenByCarbon.size()),
+              "every hydroxyl's host carbon has a bonded hydroxyl neighbour "
+              "on the OPPOSITE face -- the antiposition motif");
+    }
+    {
+        // DecoupledRegions: the mode the wizard actually drives. Same
+        // invariants, different dosing path through place().
+        Config config;
+        config.supercell[0] = config.supercell[1] = 8;
+        config.dosing = Dosing::DecoupledRegions;
+        config.basalOxygenToCarbon = 0.3;
+        config.basalHydroxylShare = 1.0; // isolate hydroxyls from epoxides
+        config.hydroxylAntiposition = true;
+        config.seed = 11;
+        Report report;
+        const Structure s = Builder::build(config, &report);
+
+        check(report.placedFor(Group::Hydroxyl) > 0,
+              "antiposition placed at least one hydroxyl (DecoupledRegions)");
+        check(report.placedFor(Group::Hydroxyl) % 2 == 0,
+              "antiposition never leaves a hydroxyl unpaired -- placed count "
+              "is even (DecoupledRegions)");
+
+        const auto clusters = Builder::findFunctionalGroups(s);
+        std::map<int, calango::core::Vec3> hydroxylOxygenByCarbon;
+        for (const auto& cluster : clusters) {
+            if (cluster.kind != Group::Hydroxyl)
+                continue;
+            int oxygenAtom = -1;
+            int hostCarbon = -1;
+            for (int index : cluster.atoms) {
+                const Atom& atom = s.atoms()[static_cast<std::size_t>(index)];
+                if (atom.atomicNumber == 8)
+                    oxygenAtom = index;
+                else if (atom.atomicNumber == 6)
+                    hostCarbon = index;
+            }
+            if (oxygenAtom >= 0 && hostCarbon >= 0)
+                hydroxylOxygenByCarbon[hostCarbon] =
+                    s.atoms()[static_cast<std::size_t>(oxygenAtom)].position;
+        }
+
+        // Same "at least one" reasoning as the ExplicitCoverage block above.
+        int paired = 0;
+        int hasOppositeFacePartner = 0;
+        for (const auto& [carbon, oxygen] : hydroxylOxygenByCarbon) {
+            const calango::core::Vec3 cPos =
+                s.atoms()[static_cast<std::size_t>(carbon)].position;
+            bool foundBondedHydroxyl = false;
+            bool foundOppositeFace = false;
+            for (const auto& [otherCarbon, otherOxygen] : hydroxylOxygenByCarbon) {
+                if (otherCarbon == carbon)
+                    continue;
+                const calango::core::Vec3 oPos =
+                    s.atoms()[static_cast<std::size_t>(otherCarbon)].position;
+                if (periodicDistance(s, cPos, oPos) < 1.55) {
+                    foundBondedHydroxyl = true;
+                    // Relative to each carbon's OWN z, not the raw oxygen z:
+                    // the sheet sits at z = kVacuum/2, not z = 0, so both
+                    // faces' oxygens land on the same (positive) side of
+                    // z = 0 and a raw sign comparison would be meaningless.
+                    if ((oxygen.z - cPos.z) * (otherOxygen.z - oPos.z) < 0.0)
+                        foundOppositeFace = true;
+                }
+            }
+            if (foundBondedHydroxyl)
+                ++paired;
+            if (foundOppositeFace)
+                ++hasOppositeFacePartner;
+        }
+        check(paired == static_cast<int>(hydroxylOxygenByCarbon.size()),
+              "every hydroxyl's host carbon is directly bonded to another "
+              "hydroxyl's host carbon (DecoupledRegions)");
+        check(hasOppositeFacePartner == static_cast<int>(hydroxylOxygenByCarbon.size()),
+              "every hydroxyl's host carbon has a bonded hydroxyl neighbour "
+              "on the OPPOSITE face (DecoupledRegions)");
+    }
+
     std::printf(failures == 0 ? "\nAll graphene oxide checks passed.\n"
                               : "\n%d check(s) FAILED.\n",
                 failures);

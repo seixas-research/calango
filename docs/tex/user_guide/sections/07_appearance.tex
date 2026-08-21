@@ -78,9 +78,14 @@ structure. Each row offers a colour swatch and a radius scale
 \ui{Background} sets the viewport background colour. Distance fog, if
 enabled, automatically fades into whatever you choose.
 
-\section{Unit cell and axes}
+\section{Spatial References}
+\label{sec:spatial-references}
 
-The \ui{Unit Cell \& Axes} panel (zone 12):
+The \ui{Spatial References} dock (zone 12) holds four tabs --- the cell
+wireframe, the orientation triad, and the per-atom vector overlay (covered
+with the rest of the default layout in Chapter~\ref{ch:workspace}), plus,
+last, the ground plane, since it draws a whole extra object into the scene
+rather than an overlay on the structure the way the other three do.
 
 \begin{description}
   \item[\ui{Show unit cell}] Also on \menu{View}\menusep\menu{Overlays}.
@@ -99,6 +104,35 @@ thick cell edges are drawn as tube geometry rather than wide lines. The
 tubes are lit like the rest of the scene, so they also read correctly in
 ray-traced exports.
 \end{calnote}
+
+\subsection{Floor}
+
+The \ui{Floor} tab's \ui{Ground plane (floor)} checkbox adds a large plane
+just under the structure, so an isolated molecule reads as an object
+resting in a space rather than one floating in a void. It is a shadow
+\emph{receiver} only --- atoms and bonds cast onto it, from the
+\ui{Shadow} tab of the Visual Effects dock (Section~\ref{sec:visual-effects}),
+and it casts nothing itself.
+
+\begin{description}
+  \item[\ui{Plane}] \ui{xy}, \ui{xz} or \ui{yz}; the default \ui{xy} sits
+    perpendicular to \textbf{c} (world $+z$), the axis Calango's default
+    view has pointing up.
+  \item[\ui{Offset}] Extra clearance beyond the automatic fit, which lands
+    the plane 0.25\,\AA{} under the lowest drawn point and re-fits itself
+    whenever the structure changes or a trajectory is scrubbed --- the
+    offset is what survives that re-fit.
+  \item[\ui{Color}, \ui{Opacity}] The plane's own shaded colour and
+    translucency.
+\end{description}
+
+The floor is \textbf{display only}: never part of the structure, never
+picked by a click, never written into an exported POSCAR, CIF or XYZ. It
+\emph{does} appear in every render of the scene --- off-screen and
+publication renders, animations, POV-Ray and Tachyon scene files, and the
+Alembic cache, where it rides the same \ui{Include unit cell} switch as the
+rest of the scene furniture (and, uniquely there, always bakes in fully
+opaque, since Alembic meshes carry no opacity channel).
 
 \section{Lighting}
 

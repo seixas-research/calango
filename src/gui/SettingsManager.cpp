@@ -27,7 +27,7 @@ struct Managed {
     const char* jsonName = nullptr;
 };
 
-std::array<Managed, 19> managedKeys()
+std::array<Managed, 20> managedKeys()
 {
     return {{
         {SettingsManager::kTheme, QStringLiteral("system")},
@@ -65,6 +65,9 @@ std::array<Managed, 19> managedKeys()
         {SettingsManager::kPseudopotentialsSiesta, QString()},
         {SettingsManager::kMlPotentialsDir, QString()},
         {SettingsManager::kMaterialsProjectApiKey, QString()},
+        // Remapped keyboard shortcuts (Preferences -> "Hotkeys"), a
+        // JSON-object string of overrides only -- see ShortcutRegistry.
+        {SettingsManager::kHotkeys, QString()},
         // Encoded camera state restored by "Reset camera"; empty = auto-frame.
         {SettingsManager::kDefaultPointOfView, QString()},
         // Which shader profile draws each class of geometry (Preferences →

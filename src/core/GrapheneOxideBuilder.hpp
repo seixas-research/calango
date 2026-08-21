@@ -157,7 +157,12 @@ public:
         /// Dosing::TargetRatio — relative propensity of each group within its
         /// region. Only the ratios matter; the absolute amount is set by
         /// `targetCarbonToOxygen`. A weight of 0 excludes the group.
-        double weight[kGroupCount] = {1.0, 1.0, 1.0, 1.0};
+        ///
+        /// Epoxide : hydroxyl defaults to 1:2 — twice as many hydroxyls as
+        /// epoxides among the basal groups, the ordinary case for oxidized
+        /// graphene (see `basalHydroxylShare`, which states the same default
+        /// for Dosing::DecoupledRegions). The edge weights are untouched.
+        double weight[kGroupCount] = {1.0, 2.0, 1.0, 1.0};
 
         /// Dosing::TargetRatio — target C/O of the FINISHED structure: every
         /// carbon (framework plus the carboxyl carbons the groups bring with
@@ -211,8 +216,8 @@ public:
         /// Hydrogen per oxygen on the basal plane — equivalently the hydroxyl
         /// share of the basal groups, since an epoxide brings one oxygen and no
         /// hydrogen while a hydroxyl brings one of each. 0 is all epoxide,
-        /// 1 all hydroxyl.
-        double basalHydroxylShare = 0.5;
+        /// 1 all hydroxyl. Defaults to 2/3: epoxide : hydroxyl = 1:2.
+        double basalHydroxylShare = 2.0 / 3.0;
 
         /// Deterministic seed. The same seed and configuration reproduce the
         /// same structure exactly — a generated structure nobody can regenerate
@@ -224,6 +229,25 @@ public:
         /// artificial dipole across the sheet. Edge groups lie in the plane and
         /// are unaffected.
         bool bothFaces = true;
+
+        /// Force every hydroxyl onto a bonded PAIR of basal carbons — the same
+        /// pool an epoxide draws from — one -OH standing off each carbon, on
+        /// OPPOSITE faces: a trans-diol, not two independently sited -OH
+        /// groups. This is the "antiposition" arrangement.
+        ///
+        /// Each successful placement therefore delivers TWO hydroxyls at once,
+        /// never one: a request for an odd count under Dosing::ExplicitCoverage
+        /// is rounded up by at most one, and under Dosing::TargetRatio the
+        /// "closest reachable composition" search (which predicts one group's
+        /// worth of oxygen per step) can overshoot by one hydroxyl's oxygen for
+        /// the same reason. Both are reported like any other shortfall/overshoot
+        /// this builder already tolerates elsewhere, not silently absorbed.
+        ///
+        /// The opposite-face requirement is what "anti" means, so a pair
+        /// ignores `bothFaces` and always splits its own two carbons across
+        /// both faces; `bothFaces` continues to govern epoxides, and any
+        /// hydroxyl placed while this is off.
+        bool hydroxylAntiposition = false;
 
         double coverageFor(Group g) const
         {

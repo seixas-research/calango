@@ -45,6 +45,14 @@ calango::gui::ClusterPreset sample()
     preset.walltime = QStringLiteral("06:00:00");
     preset.parallelEnvironment = QStringLiteral("mpi");
     preset.setupLines = QStringLiteral("module load gpaw\nconda activate dft");
+    preset.vaspPotcarPath = QStringLiteral("/gpfs/projects/bsc/pseudo/potcars");
+    preset.account = QStringLiteral("phys-2026");
+    preset.qos = QStringLiteral("priority");
+    preset.cpusPerTask = 8;
+    preset.gpusPerNode = 2;
+    preset.nodeList = QStringLiteral("work1");
+    preset.extraDirectives = QStringLiteral("#SBATCH --mail-type=END");
+    preset.command = QStringLiteral("mpirun -n 4 gpaw python run_gpaw.py\n\nconda deactivate");
     return preset;
 }
 
@@ -68,6 +76,17 @@ int main(int argc, char** argv)
               "including the numeric resource request");
         check(restored.setupLines.contains(QLatin1Char('\n')),
               "and a multi-line setup prologue keeps its newlines");
+        check(restored.vaspPotcarPath == original.vaspPotcarPath
+                  && !restored.vaspPotcarPath.isEmpty(),
+              "and the per-cluster VASP POTCAR override (Task 1)");
+        check(restored.account == original.account
+                  && restored.qos == original.qos
+                  && restored.cpusPerTask == 8 && restored.gpusPerNode == 2
+                  && restored.nodeList == original.nodeList
+                  && restored.extraDirectives == original.extraDirectives
+                  && restored.command == original.command,
+              "and every Task 4 SLURM extension (account/QOS/cpus-per-task/"
+              "GPUs/node list/extra directives/command)");
     }
 
     std::printf("The password is not persisted:\n");
@@ -173,6 +192,17 @@ int main(int argc, char** argv)
                   && old[0].port == 22,
               "with usable defaults for the fields it predates — an empty "
               "walltime would be submitted verbatim and rejected");
+        check(old[0].vaspPotcarPath.isEmpty(),
+              "including an empty VASP POTCAR override, which just leaves "
+              "the local default in charge — not a crash on the field it "
+              "predates");
+        check(old[0].account.isEmpty() && old[0].qos.isEmpty()
+                  && old[0].cpusPerTask == 1 && old[0].gpusPerNode == 0
+                  && old[0].nodeList.isEmpty()
+                  && old[0].extraDirectives.isEmpty() && old[0].command.isEmpty(),
+              "and every Task 4 SLURM extension it predates too — cpusPerTask "
+              "specifically defaults to 1, not 0, matching SLURM's own "
+              "default so an old preset does not suddenly request 0 cores");
 
         // A nameless entry can never be selected, saved over or deleted.
         check(ClusterPresets::fromJsonText(

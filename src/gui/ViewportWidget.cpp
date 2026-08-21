@@ -2,6 +2,7 @@
 
 #include "core/Element.hpp"
 #include "core/Structure.hpp"
+#include "gui/ShortcutRegistry.hpp"
 
 #include <QMouseEvent>
 #include <QOpenGLFramebufferObject>
@@ -1710,6 +1711,37 @@ void ViewportWidget::wheelEvent(QWheelEvent* event)
 
 void ViewportWidget::keyPressEvent(QKeyEvent* event)
 {
+    // [Tab]/[Shift+Tab] cycles the workspace tab bar, but ONLY while this
+    // widget itself holds keyboard focus (Qt::StrongFocus, set in the
+    // constructor) — returning here without calling the base class is what
+    // stops Qt's own Tab-focus-traversal from ALSO firing for this one key
+    // press; every other widget in the app (text fields, spin boxes,
+    // dialogs) never routes through this override at all, so their Tab
+    // handling is completely untouched.
+    //
+    // Key_Backtab is not a platform quirk to route around, it is the
+    // regular way Shift+Tab arrives on several platforms (X11 among them) —
+    // a distinct key code rather than Key_Tab + ShiftModifier — so both
+    // spellings are normalized to the one canonical form before comparing
+    // against what ShortcutRegistry has stored.
+    int key = event->key();
+    Qt::KeyboardModifiers modifiers = event->modifiers();
+    if (key == Qt::Key_Backtab) {
+        key = Qt::Key_Tab;
+        modifiers |= Qt::ShiftModifier;
+    }
+    const QKeySequence pressed(
+        QKeyCombination(modifiers, static_cast<Qt::Key>(key)));
+    if (pressed == ShortcutRegistry::binding(QStringLiteral("viewport.tab.next"))) {
+        Q_EMIT cycleTabRequested(1);
+        return;
+    }
+    if (pressed
+        == ShortcutRegistry::binding(QStringLiteral("viewport.tab.previous"))) {
+        Q_EMIT cycleTabRequested(-1);
+        return;
+    }
+
     // Select mode: Delete/Backspace removes the boxed/picked atoms. The
     // Edit-menu action already binds the Del key window-wide; this path
     // adds Backspace and works whenever the viewport has focus.

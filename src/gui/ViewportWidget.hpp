@@ -421,6 +421,11 @@ Q_SIGNALS:
     /// Select mode: Delete/Backspace pressed with atoms selected —
     /// MainWindow deletes them (bonds rebuild via structure refresh).
     void deleteSelectionRequested();
+    /// [Tab]/[Shift+Tab] (or whatever ShortcutRegistry currently binds
+    /// "viewport.tab.next"/"viewport.tab.previous" to) pressed while the
+    /// viewport has focus — MainWindow owns tabBar_, so it does the actual
+    /// cycling. `direction` is +1 for next, -1 for previous.
+    void cycleTabRequested(int direction);
     /// A different Structure is now observed (its scalar fields may differ).
     void structureReplaced();
     /// A text overlay was dragged to a new world position — the dock owns the

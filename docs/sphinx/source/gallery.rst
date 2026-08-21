@@ -20,7 +20,7 @@ The workspace
    :figclass: screenshot
 
    The default layout — Structure, Volumetric Data, and Processes on the left;
-   Representation, Cell & Axes, and Visual Effects on the right; the Results
+   Representation, Spatial References, and Visual Effects on the right; the Results
    dock and HPC panel along the bottom.
 
 .. figure:: _static/img/gallery_workspace_wizard.png
