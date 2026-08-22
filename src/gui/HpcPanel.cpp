@@ -1,5 +1,6 @@
 #include "gui/HpcPanel.hpp"
 
+#include "gui/RunCommands.hpp"
 #include "ui/IconManager.hpp"
 
 #include <QComboBox>
@@ -388,20 +389,58 @@ HpcPanel::HpcPanel(const QString& pythonExe, QWidget* parent)
            "a library that already exists on the cluster."));
     schedulerForm->addRow(tr("VASP POTCAR dir:"), vaspPotcarEdit_);
 
+    // VASP's three build flavors are compiled executables, not a runtime
+    // flag, and each cluster's own builds live wherever that cluster's
+    // module system put them — same per-installation reasoning as the
+    // POTCAR field above. Exported as CALANGO_VASP_STD/GAM/NCL ahead of
+    // "Setup:" the same way (see SettingsManager.hpp's kVaspExecutable*
+    // comment for what each flavor is for). Only vasp_ncl is ever REQUIRED
+    // — a spin-orbit run with none configured here (or in local
+    // Preferences) is refused before it starts.
+    vaspStdEdit_ = new QLineEdit(schedulerPage);
+    vaspStdEdit_->setPlaceholderText(
+        tr("this cluster's vasp_std (empty = use the local default)"));
+    schedulerForm->addRow(tr("VASP vasp_std:"), vaspStdEdit_);
+    vaspGamEdit_ = new QLineEdit(schedulerPage);
+    vaspGamEdit_->setPlaceholderText(
+        tr("this cluster's vasp_gam (optional — Γ-only speed-up)"));
+    schedulerForm->addRow(tr("VASP vasp_gam:"), vaspGamEdit_);
+    vaspNclEdit_ = new QLineEdit(schedulerPage);
+    vaspNclEdit_->setPlaceholderText(
+        tr("this cluster's vasp_ncl (REQUIRED for spin-orbit runs)"));
+    vaspNclEdit_->setToolTip(
+        tr("vasp_std cannot run a noncollinear calculation at all — a "
+           "Non-Collinear (spin-orbit) job submitted to this cluster with "
+           "neither this nor Preferences → External Files → VASP "
+           "executables set is refused before it starts, locally, and "
+           "again at runtime on the cluster itself if it somehow got "
+           "this far."));
+    schedulerForm->addRow(tr("VASP vasp_ncl:"), vaspNclEdit_);
+
     // The payload -- applies to every scheduler, so unlike the SLURM-only
     // fields above it is never hidden. Multi-line so it can carry both a
     // launcher line ("mpirun -n 4 gpaw python run_gpaw.py") and cleanup
     // that must run AFTER it ("conda deactivate"), exactly like a real
     // cluster script's tail.
     commandEdit_ = new QPlainTextEdit(schedulerPage);
-    commandEdit_->setPlainText(QStringLiteral("python3 run.py"));
+    // Left BLANK, not pre-filled with a literal "python3 run.py": blank is
+    // what specFromUi() reads as "no per-cluster override", which is what
+    // lets it substitute the calculator-aware default (RunCommands::
+    // resolve(), same per-engine MPI knowledge the local "Run" tab uses)
+    // instead. A literal default text here would defeat that -- it would
+    // never look empty, so the smart default could never apply and a
+    // parallel GPAW job would submit as a silent single serial process
+    // regardless of Nodes x Tasks/node above. See specFromUi()'s comment.
+    commandEdit_->setPlaceholderText(QStringLiteral("python3 run.py"));
     commandEdit_->setToolTip(
-        tr("What actually runs, after the Setup lines above. The default "
-           "just launches the staged script directly; a real HPC job "
-           "usually wraps it, e.g. \"mpirun -n 4 python3 run.py\" or a "
-           "site-specific launcher like GPAW's own \"gpaw python "
-           "run.py\". A second line (or more) runs after it -- e.g. "
-           "\"conda deactivate\"."));
+        tr("What actually runs, after the Setup lines above. Left blank, "
+           "this is filled in automatically from the job's calculator: a "
+           "plain serial script for most engines, or the right MPI "
+           "launcher line for one that runs in-process, e.g. GPAW's "
+           "\"mpirun -n 4 gpaw python run.py\" -- matching Nodes x "
+           "Tasks/node. Type something here only to override that, e.g. a "
+           "site-specific launcher. A second line (or more) runs after "
+           "it -- e.g. \"conda deactivate\"."));
     commandEdit_->setMaximumHeight(56);
     schedulerForm->addRow(tr("Command:"), commandEdit_);
 
@@ -563,7 +602,8 @@ remote::SshConfig HpcPanel::configFromUi() const
     return config;
 }
 
-core::RemoteJobSpec HpcPanel::specFromUi(const QString& jobName) const
+core::RemoteJobSpec HpcPanel::specFromUi(const QString& jobName,
+                                         core::CalculatorKind kind) const
 {
     core::RemoteJobSpec spec;
     spec.scheduler = scheduler();
@@ -589,7 +629,20 @@ core::RemoteJobSpec HpcPanel::specFromUi(const QString& jobName) const
                     .arg(potcarPath)
             + setup;
     }
-    spec.setupLines = setup.toStdString();
+    // Same reasoning and same "export everything configured, unconditionally"
+    // shape as CALANGO_VASP_PP_PATH just above: the generated script itself
+    // (AseScriptGenerator.cpp's emitVasp()) is the one place that knows,
+    // per run, which flavor it actually needs.
+    for (const auto& [edit, variable] :
+         {std::pair{vaspStdEdit_, "CALANGO_VASP_STD"},
+          std::pair{vaspGamEdit_, "CALANGO_VASP_GAM"},
+          std::pair{vaspNclEdit_, "CALANGO_VASP_NCL"}}) {
+        const QString path = edit ? edit->text().trimmed() : QString();
+        if (!path.isEmpty())
+            setup = QStringLiteral("export %1=\"%2\"\n")
+                        .arg(QLatin1String(variable), path)
+                + setup;
+    }
     // SLURM-only extensions (Task 4). Reading these unconditionally rather
     // than gating on `scheduler()` is deliberate and harmless: generate()
     // itself only ever consults them inside Scheduler::Slurm's branch, so a
@@ -603,11 +656,61 @@ core::RemoteJobSpec HpcPanel::specFromUi(const QString& jobName) const
         spec.nodeList = nodeListEdit_->text().trimmed().toStdString();
     if (extraDirectivesEdit_)
         spec.extraDirectives = extraDirectivesEdit_->toPlainText().toStdString();
-    if (commandEdit_) {
-        const QString command = commandEdit_->toPlainText();
-        if (!command.trimmed().isEmpty())
-            spec.command = command.toStdString();
+
+    const QString userCommand =
+        commandEdit_ ? commandEdit_->toPlainText().trimmed() : QString();
+    if (!userCommand.isEmpty()) {
+        spec.command = userCommand.toStdString();
+    } else {
+        // No per-cluster override: resolve the SAME per-engine template the
+        // local "Run" tab uses, so a remote job's launch line carries the
+        // same MPI knowledge the local one already has instead of the
+        // struct's own bare "python3 run.py" default -- which runs every
+        // engine, parallel or not, as one serial process regardless of
+        // what nodes/tasksPerNode above actually requested. This was the
+        // real bug behind "GPAW runs on 1 core despite cores=4" for a
+        // remote submission specifically (RunCommands.cpp already got the
+        // LOCAL path right).
+        //
+        // "cores" here is the total task count this profile is asking the
+        // scheduler for (nodes x tasksPerNode) -- the number GPAW's own
+        // `mpirun -n {cores}` needs to match, not the unrelated local-
+        // machine "Cores" preference (RunCommands::cores()).
+        RunCommands::Context context;
+        context.scriptFile = QStringLiteral("run.py");
+        // Resolved via PATH / a module-loaded interpreter on the cluster
+        // itself -- there is no local absolute-path concept remotely,
+        // matching the struct default's own bare "python3" convention.
+        context.pythonExecutable = QStringLiteral("python3");
+        context.cores = std::max(1, spec.nodes * spec.tasksPerNode);
+        const RunCommands::Resolved resolved =
+            RunCommands::resolve(kind, context, QString());
+        spec.command = resolved.commandLine.toStdString();
+        // A solver-command engine (Quantum ESPRESSO, SIESTA, ...) needs its
+        // OWN mpirun wrapper exported as an environment variable instead of
+        // appearing on the command line at all -- see RunCommands.hpp's
+        // doc comment for why GPAW and these are fundamentally different
+        // shapes. Prepended so it is available to the setup lines exactly
+        // like the VASP fields above.
+        //
+        // Only THAT one variable is taken from resolved.environment, not
+        // the whole map: for VASP specifically, resolve() also folds in
+        // CALANGO_VASP_STD/GAM/NCL read from THIS machine's local
+        // Preferences -- meaningless (or worse, actively wrong) on a
+        // remote cluster, which has its own filesystem layout. The
+        // per-cluster equivalents of those three are already exported
+        // above from vaspStdEdit_/vaspGamEdit_/vaspNclEdit_; re-adding
+        // the local machine's paths here would just shadow them with the
+        // wrong value.
+        const QString solverVariable = RunCommands::solverCommandVariable(kind);
+        if (!solverVariable.isEmpty()
+            && resolved.environment.contains(solverVariable))
+            setup = QStringLiteral("export %1=\"%2\"\n")
+                        .arg(solverVariable,
+                             resolved.environment.value(solverVariable))
+                + setup;
     }
+    spec.setupLines = setup.toStdString();
     return spec;
 }
 
@@ -753,7 +856,8 @@ void HpcPanel::onProbeFinished(bool ok, const QString& message,
 }
 
 void HpcPanel::submitStagedJob(const QString& localJobDir,
-                                        const QString& jobName)
+                               const QString& jobName,
+                               core::CalculatorKind kind)
 {
     const remote::SshConfig config = configFromUi();
     if (config.host.isEmpty() || config.username.isEmpty()) {
@@ -764,7 +868,7 @@ void HpcPanel::submitStagedJob(const QString& localJobDir,
     client_->setConfig(config);
 
     // Wrapper script generated from the Scheduler tab settings.
-    const core::RemoteJobSpec spec = specFromUi(jobName);
+    const core::RemoteJobSpec spec = specFromUi(jobName, kind);
     QFile wrapper(localJobDir + QStringLiteral("/job.sh"));
     if (!wrapper.open(QIODevice::WriteOnly | QIODevice::Text)) {
         appendLog(tr("could not write job.sh\n"), true);
@@ -989,6 +1093,12 @@ void HpcPanel::saveSettings() const
     settings.setValue(QStringLiteral("setup"), setupEdit_->toPlainText());
     settings.setValue(QStringLiteral("vaspPotcarPath"),
                       vaspPotcarEdit_ ? vaspPotcarEdit_->text() : QString());
+    settings.setValue(QStringLiteral("vaspStdPath"),
+                      vaspStdEdit_ ? vaspStdEdit_->text() : QString());
+    settings.setValue(QStringLiteral("vaspGamPath"),
+                      vaspGamEdit_ ? vaspGamEdit_->text() : QString());
+    settings.setValue(QStringLiteral("vaspNclPath"),
+                      vaspNclEdit_ ? vaspNclEdit_->text() : QString());
     settings.setValue(QStringLiteral("cpusPerTask"),
                       cpusPerTaskSpin_ ? cpusPerTaskSpin_->value() : 1);
     settings.setValue(QStringLiteral("gpusPerNode"),
@@ -1035,6 +1145,15 @@ void HpcPanel::restoreSettings()
     if (vaspPotcarEdit_)
         vaspPotcarEdit_->setText(
             settings.value(QStringLiteral("vaspPotcarPath")).toString());
+    if (vaspStdEdit_)
+        vaspStdEdit_->setText(
+            settings.value(QStringLiteral("vaspStdPath")).toString());
+    if (vaspGamEdit_)
+        vaspGamEdit_->setText(
+            settings.value(QStringLiteral("vaspGamPath")).toString());
+    if (vaspNclEdit_)
+        vaspNclEdit_->setText(
+            settings.value(QStringLiteral("vaspNclPath")).toString());
     // Older-settings "account"/"qos" keys, if present, are simply never
     // read any more (Task 3 removed both fields) -- not an error, ignored.
     if (cpusPerTaskSpin_)
@@ -1049,10 +1168,12 @@ void HpcPanel::restoreSettings()
         extraDirectivesEdit_->setPlainText(
             settings.value(QStringLiteral("extraDirectives")).toString());
     if (commandEdit_) {
-        const QString saved = settings.value(QStringLiteral("command")).toString();
-        commandEdit_->setPlainText(saved.isEmpty()
-                                       ? QStringLiteral("python3 run.py")
-                                       : saved);
+        // Blank (no saved key, or a key explicitly saved blank) is left
+        // blank -- see the field's own construction comment: blank is the
+        // "use the calculator-aware default" signal specFromUi() reads,
+        // not something to paper over with a literal fallback string here.
+        commandEdit_->setPlainText(
+            settings.value(QStringLiteral("command")).toString());
     }
     settings.endGroup();
     updateSchedulerRows();
@@ -1084,6 +1205,12 @@ ClusterPreset HpcPanel::presetFromUi(const QString& name) const
     preset.setupLines = setupEdit_->toPlainText();
     preset.vaspPotcarPath =
         vaspPotcarEdit_ ? vaspPotcarEdit_->text().trimmed() : QString();
+    preset.vaspStdPath =
+        vaspStdEdit_ ? vaspStdEdit_->text().trimmed() : QString();
+    preset.vaspGamPath =
+        vaspGamEdit_ ? vaspGamEdit_->text().trimmed() : QString();
+    preset.vaspNclPath =
+        vaspNclEdit_ ? vaspNclEdit_->text().trimmed() : QString();
     preset.cpusPerTask = cpusPerTaskSpin_ ? cpusPerTaskSpin_->value() : 1;
     preset.gpusPerNode = gpusPerNodeSpin_ ? gpusPerNodeSpin_->value() : 0;
     preset.nodeList = nodeListEdit_ ? nodeListEdit_->text().trimmed() : QString();
@@ -1114,6 +1241,12 @@ void HpcPanel::applyPreset(const ClusterPreset& preset)
     setupEdit_->setPlainText(preset.setupLines);
     if (vaspPotcarEdit_)
         vaspPotcarEdit_->setText(preset.vaspPotcarPath);
+    if (vaspStdEdit_)
+        vaspStdEdit_->setText(preset.vaspStdPath);
+    if (vaspGamEdit_)
+        vaspGamEdit_->setText(preset.vaspGamPath);
+    if (vaspNclEdit_)
+        vaspNclEdit_->setText(preset.vaspNclPath);
     // preset.account/preset.qos (an older preset's saved values, if it has
     // any) are simply never applied any more (Task 3 removed both fields).
     if (cpusPerTaskSpin_)
@@ -1125,9 +1258,11 @@ void HpcPanel::applyPreset(const ClusterPreset& preset)
     if (extraDirectivesEdit_)
         extraDirectivesEdit_->setPlainText(preset.extraDirectives);
     if (commandEdit_)
-        commandEdit_->setPlainText(preset.command.isEmpty()
-                                       ? QStringLiteral("python3 run.py")
-                                       : preset.command);
+        // Same "blank stays blank" reasoning as restoreSettings() above --
+        // a preset saved before this field was ever customized should still
+        // get the calculator-aware default at submit time, not a hardcoded
+        // serial invocation.
+        commandEdit_->setPlainText(preset.command);
     // Switching cluster must not carry the previous one's password across:
     // it would be silently wrong, and on a locked-out account it costs the
     // user a failed login they cannot explain.

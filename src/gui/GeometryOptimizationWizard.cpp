@@ -124,6 +124,12 @@ core::CalculatorConfig GeometryOptimizationWizard::config() const
     c.fmax = fmax_.value();
     c.maxSteps = maxStepsSpin_->value();
     cell_.applyTo(c);
+    // VASP's own internal route reads NSW from its own field, not this
+    // stage's "Max relaxation steps" — that stage is exactly what
+    // skipTaskSettingsStage() bypasses on this route, so its widgets sit at
+    // their untouched defaults rather than a value the user actually chose.
+    if (vaspInternalRelaxationSelected())
+        c.maxSteps = vaspNsw();
     return c;
 }
 

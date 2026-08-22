@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.8.37
+    VERSION 26.8.38
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -176,7 +176,6 @@ qt_add_executable(calango
     src/core/Noise.hpp
     src/core/Noise.cpp
     src/core/PhononScriptGenerator.hpp
-    src/core/ElectronPhononScriptGenerator.cpp
     src/core/PhononScriptGenerator.cpp
     src/core/TdbDatabase.cpp
     src/core/TdbExpression.cpp
@@ -184,11 +183,6 @@ qt_add_executable(calango
     src/core/CalphadModel.cpp
     src/core/CalphadScriptGenerator.cpp
     src/core/PhaseDiagram.cpp
-    src/core/ElectronPhononAnalysis.cpp
-    src/core/ElectronPhononIo.cpp
-    src/core/Superconductivity.cpp
-    src/core/NumpyArray.cpp
-    src/core/TetrahedronBz.cpp
     src/core/PhononThermodynamics.hpp
     src/core/PhononThermodynamics.cpp
     # Thermodynamic integration: absolute free energies of liquids and
@@ -290,6 +284,8 @@ qt_add_executable(calango
     src/core/BoltzmannTransport.cpp
     src/core/CpaSolver.cpp
     src/core/JobFailureReason.cpp
+    src/core/GpawOutputParser.hpp
+    src/core/GpawOutputParser.cpp
     src/core/CrpaSolver.cpp
     src/core/BseSolver.hpp
     src/core/BseSolver.cpp
@@ -591,6 +587,8 @@ qt_add_executable(calango
     src/gui/PythonPackagePreflight.cpp
     src/gui/VaspPotcarPreflight.hpp
     src/gui/VaspPotcarPreflight.cpp
+    src/gui/GpawMpiPreflight.hpp
+    src/gui/GpawMpiPreflight.cpp
     src/gui/GpawEigenvaluePeek.hpp
     src/gui/GpawEigenvaluePeek.cpp
     src/gui/EnergyWindowWidget.hpp
@@ -752,8 +750,6 @@ qt_add_executable(calango
     src/gui/CastColorsDialog.cpp
     src/gui/AddAdsorbateDialog.hpp
     src/gui/AddAdsorbateDialog.cpp
-    src/gui/ElectronPhononWizard.hpp
-    src/gui/ElectronPhononWizard.cpp
     src/gui/GpuTelemetry.hpp
     src/gui/GpuTelemetry.cpp
     src/gui/GrainCasts.hpp
@@ -1058,31 +1054,14 @@ endif()
 # Integration tests (GUI-free: core + embedded Python bridge only)
 #   cmake -B build -DCALANGO_BUILD_TESTS=ON ... && ctest --test-dir build
 # ---------------------------------------------------------------------------
-# Headless post-processing for electron-phonon runs.
-#
-# Deliberately a separate binary from the GUI: the runs that need it most
-# are the ones too big to bring home. |g|^2 is
-# (spins, q, k, modes, bands, bands) complex and reaches tens of gigabytes
-# on a production mesh, so the analysis belongs on the cluster beside the
-# run rather than after a download. Qt-free for the same reason — it has
-# to build where there is no Qt.
-add_executable(calango-elph-analyze
-    tools/elph_analyze.cpp
-    src/core/ElectronPhononIo.cpp
-    src/core/ElectronPhononAnalysis.cpp
-    src/core/Superconductivity.cpp
-    src/core/NumpyArray.cpp
-    src/core/TetrahedronBz.cpp
-)
-target_include_directories(calango-elph-analyze PRIVATE src)
-
 # The native counterpart to core::analyzeRingPercolationTrajectory() reachable
 # from outside the GUI: a test harness verifying a real MDMC trajectory
 # (tests/graphene_oxide_percolation_mdmc_test.py), or a user who already has a
 # trajectory file and wants the ring/percolation numbers for it without
-# opening the app — the same value proposition calango-elph-analyze has for
-# cluster-side post-processing. Reads via ase.io (any format ASE knows), so
-# unlike calango-elph-analyze this embeds Python.
+# opening the app. Reads via ase.io (any format ASE knows), hence embeds
+# Python. (Formerly paired with calango-elph-analyze, a headless
+# electron-phonon post-processor for cluster-side runs too big to bring
+# home — removed along with the electron-phonon coupling feature.)
 add_executable(calango-ring-percolation-analyze
     tools/calango_ring_percolation_analyze.cpp
     src/core/GrapheneOxidePercolation.cpp
@@ -1955,7 +1934,6 @@ if(CALANGO_BUILD_TESTS)
         src/core/ConvergenceSweepBlocks.cpp
         src/core/CutoffConvergenceScriptGenerator.cpp
         src/gui/KpointsConvergenceWizard.cpp
-        src/core/ElectronPhononScriptGenerator.cpp
         src/core/KpointsConvergenceScriptGenerator.cpp
         src/core/CddScriptGenerator.cpp
         src/core/Noise.cpp
@@ -1972,6 +1950,7 @@ if(CALANGO_BUILD_TESTS)
         src/gui/MaceTrainerDialog.cpp
         src/gui/PythonPackagePreflight.cpp
         src/gui/VaspPotcarPreflight.cpp
+        src/gui/GpawMpiPreflight.cpp
         # LDOS: the baseline-eigenvalue peek (a real, synchronous GPAW
         # restart under python -c, same shape as the preflight check above)
         # and the draggable dual-handle energy-window widget it feeds.
@@ -2104,6 +2083,11 @@ if(CALANGO_BUILD_TESTS)
         # this target here.
         src/gui/CellRelaxationControls.cpp
         src/gui/ForceConvergenceControl.cpp
+        # Geometry Optimization Setup itself — not previously exercised
+        # here at all. Added for the VASP-page-height regression test
+        # (SimulationWizardBase::wrapInScrollArea()): the wizard that
+        # actually reported the "does not fit the screen" bug.
+        src/gui/GeometryOptimizationWizard.cpp
         # PreferencesDialog (Task 2's Hotkeys tab) and its own dependencies
         # not already pulled in above.
         src/gui/PreferencesDialog.hpp
@@ -2256,6 +2240,7 @@ if(CALANGO_BUILD_TESTS)
         src/gui/MaceTrainerDialog.cpp
         src/gui/PythonPackagePreflight.cpp
         src/gui/VaspPotcarPreflight.cpp
+        src/gui/GpawMpiPreflight.cpp
         src/core/DatasetSplit.cpp
     )
     target_include_directories(calango_orchestration_si_test PRIVATE src
@@ -2338,6 +2323,7 @@ if(CALANGO_BUILD_TESTS)
         src/gui/MaceTrainerDialog.cpp
         src/gui/PythonPackagePreflight.cpp
         src/gui/VaspPotcarPreflight.cpp
+        src/gui/GpawMpiPreflight.cpp
         src/core/DatasetSplit.cpp
     )
     target_include_directories(calango_mace_trainer_preflight_test PRIVATE src
@@ -2427,6 +2413,7 @@ if(CALANGO_BUILD_TESTS)
         src/gui/MaceTrainerDialog.cpp
         src/gui/PythonPackagePreflight.cpp
         src/gui/VaspPotcarPreflight.cpp
+        src/gui/GpawMpiPreflight.cpp
         src/core/DatasetSplit.cpp
     )
     target_include_directories(calango_orchestration_handoff_test PRIVATE src
@@ -2521,6 +2508,7 @@ if(CALANGO_BUILD_TESTS)
         src/gui/MaceTrainerDialog.cpp
         src/gui/PythonPackagePreflight.cpp
         src/gui/VaspPotcarPreflight.cpp
+        src/gui/GpawMpiPreflight.cpp
         src/core/DatasetSplit.cpp
     )
     target_include_directories(calango_orchestration_batch_test PRIVATE src
@@ -2598,9 +2586,6 @@ if(CALANGO_BUILD_TESTS)
     # phase selection, independent of pycalphad (which no Calango environment
     # ships). Checked against a hand-written database covering the syntax that
     # varies in the wild, and against the real SGTE files when present.
-    # Linear-tetrahedron BZ integration, checked against the closed-form
-    # free-electron DOS. Foundation for the electron-phonon double delta,
-    # which is why it is tested on its own before that goes on top.
     # Batch-scheduler directives: one resource request translated into SLURM,
     # PBS and SGE dialects. The mistranslations are silent (a job that queues
     # forever rather than erroring), so they are pinned.
@@ -2628,6 +2613,36 @@ if(CALANGO_BUILD_TESTS)
     target_include_directories(calango_vasp_potcar_preflight_test PRIVATE src)
     target_link_libraries(calango_vasp_potcar_preflight_test PRIVATE Qt6::Core)
     add_test(NAME vasp_potcar_preflight COMMAND calango_vasp_potcar_preflight_test)
+
+    # GPAW MPI pre-flight (Task 2): "cores>1 requested but no MPI launcher /
+    # non-MPI GPAW" must be caught with a clear message before a job is
+    # staged, not discovered as a silently-serial run. See
+    # GpawMpiPreflight.hpp; the real build-detection assertions skip cleanly
+    # when no "gpaw_fast" conda environment is found, same as
+    # calango_mace_trainer_preflight_test does for mace_env.
+    add_executable(calango_gpaw_mpi_preflight_test
+        tests/GpawMpiPreflightTest.cpp
+        src/gui/GpawMpiPreflight.cpp
+        src/gui/CondaEnvs.cpp
+    )
+    target_include_directories(calango_gpaw_mpi_preflight_test PRIVATE src)
+    target_link_libraries(calango_gpaw_mpi_preflight_test PRIVATE Qt6::Core)
+    add_test(NAME gpaw_mpi_preflight COMMAND calango_gpaw_mpi_preflight_test)
+
+    # RunCommands::resolve()/displayCommand() round-trip (Task 1, 2026-08-22):
+    # the "GPAW runs on 1 core despite cores=4" bug that survived a previous
+    # fix, traced to resolve() misclassifying an already-substituted preview
+    # string. See RunCommandsTest.cpp's own header for the full story.
+    add_executable(calango_run_commands_test
+        tests/RunCommandsTest.cpp
+        src/gui/RunCommands.cpp
+        src/gui/EnginePresets.cpp
+        src/gui/CondaEnvs.cpp
+        src/gui/SettingsManager.cpp
+    )
+    target_include_directories(calango_run_commands_test PRIVATE src)
+    target_link_libraries(calango_run_commands_test PRIVATE Qt6::Core)
+    add_test(NAME run_commands COMMAND calango_run_commands_test)
 
     add_executable(calango_shortcut_registry_test
         tests/ShortcutRegistryTest.cpp
@@ -2666,52 +2681,6 @@ if(CALANGO_BUILD_TESTS)
                      ${CMAKE_CURRENT_SOURCE_DIR}/tests/remote_session_test.py
                      ${CMAKE_CURRENT_SOURCE_DIR}/assets/remote/calango_remote.py)
     set_tests_properties(remote_session_helper PROPERTIES TIMEOUT 300)
-
-    # alpha^2F / lambda / tau from raw elph data, checked end to end against a
-    # closed form: free-electron band + constant |g|^2 + one mode makes
-    # lambda = 2 g0^2 zeta(q) / (N(E_F) w0) exactly.
-    add_executable(calango_elph_analysis_test
-        tests/ElectronPhononAnalysisTest.cpp
-        src/core/ElectronPhononAnalysis.cpp
-        src/core/Superconductivity.cpp
-        src/core/TetrahedronBz.cpp
-    )
-    target_include_directories(calango_elph_analysis_test PRIVATE src)
-    add_test(NAME elph_analysis COMMAND calango_elph_analysis_test)
-
-    # The handoff from GPAW: .npy reading, the manifest, and a round trip of
-    # the closed-form case through files. Uses the build tree for scratch so
-    # nothing lands in the source directory.
-    add_executable(calango_elph_io_test
-        tests/ElectronPhononIoTest.cpp
-        src/core/ElectronPhononIo.cpp
-        src/core/ElectronPhononAnalysis.cpp
-        src/core/Superconductivity.cpp
-        src/core/NumpyArray.cpp
-        src/core/TetrahedronBz.cpp
-    )
-    target_include_directories(calango_elph_io_test PRIVATE src)
-    add_test(NAME elph_io COMMAND calango_elph_io_test)
-    set_tests_properties(elph_io PROPERTIES
-        ENVIRONMENT "CALANGO_TEST_TMPDIR=${CMAKE_CURRENT_BINARY_DIR}")
-
-    # T_c from the coupling. Checked against the closed form AND against the
-    # measured transition temperatures of lead and aluminium, using
-    # literature lambda/omega_log as inputs — the second is what would catch a
-    # mistyped fit constant.
-    add_executable(calango_superconductivity_test
-        tests/SuperconductivityTest.cpp
-        src/core/Superconductivity.cpp
-    )
-    target_include_directories(calango_superconductivity_test PRIVATE src)
-    add_test(NAME superconductivity COMMAND calango_superconductivity_test)
-
-    add_executable(calango_tetrahedron_test
-        tests/TetrahedronBzTest.cpp
-        src/core/TetrahedronBz.cpp
-    )
-    target_include_directories(calango_tetrahedron_test PRIVATE src)
-    add_test(NAME tetrahedron_bz COMMAND calango_tetrahedron_test)
 
     add_executable(calango_tdb_test
         tests/TdbDatabaseTest.cpp
@@ -3052,7 +3021,6 @@ if(CALANGO_BUILD_TESTS)
         src/core/CalphadScriptGenerator.cpp
         # The k-point sweep, which brings its shared measurement/analysis
         # blocks with it (ConvergenceSweepBlocks).
-        src/core/ElectronPhononScriptGenerator.cpp
         src/core/KpointsConvergenceScriptGenerator.cpp
         src/core/ConvergenceSweepBlocks.cpp
         # Thermodynamic integration. Its script defines two ASE
@@ -3217,6 +3185,17 @@ if(CALANGO_BUILD_TESTS)
     )
     target_include_directories(calango_bandgap_test PRIVATE src)
     add_test(NAME band_gap COMMAND calango_bandgap_test)
+
+    # Post-launch parallelism verification (Task 1, 2026-08-22): parses
+    # gpaw.out's own "cores:  N" line so a launch bug that slips past the
+    # pre-flight check (GpawMpiPreflight.hpp) is still caught against the
+    # run's own account of itself.
+    add_executable(calango_gpaw_output_parser_test
+        tests/GpawOutputParserTest.cpp
+        src/core/GpawOutputParser.cpp
+    )
+    target_include_directories(calango_gpaw_output_parser_test PRIVATE src)
+    add_test(NAME gpaw_output_parser COMMAND calango_gpaw_output_parser_test)
 
     # Popescu-Zunger unfolding geometry: supercell matrix deduction, the
     # reciprocal fold (M-transpose), and spectral-weight broadening.
@@ -3579,19 +3558,6 @@ if(CALANGO_BUILD_TESTS)
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/gw_qp_parser_test.py
                 $<TARGET_FILE:calango_script_test>)
 
-    # Electron-phonon coupling end to end on fcc Al. The most expensive test
-    # in the suite by construction — stage 1 is 6N+1 self-consistent runs on
-    # the supercell, and there is no cheap version of that which still means
-    # anything. Al is the anchor: lambda ~ 0.4 from the literature gives
-    # tau ~ 10 fs at 300 K, within a few fs of a Drude fit to its measured
-    # optical conductivity.
-    #
-    # Asserts the STRUCTURE strictly (the Allen relation, hbar/tau, and the
-    # factor of two into the optics module's rate) and the VALUE loosely: a
-    # 2x2x2 supercell on a coarse mesh is not a converged lambda, and
-    # pinning it tightly would test the settings rather than the workflow.
-    #
-    # Self-skips without gpaw.elph.
     # Wannier spread validation on bulk FCC Cu, the canonical reference. The
     # d-like spreads have a literature scale (<= ~1 A^2) that a units or
     # b-vector-weight error cannot survive, so this pins the wannierization
@@ -3600,6 +3566,18 @@ if(CALANGO_BUILD_TESTS)
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/cu_wannier_spread_benchmark.py)
     set_tests_properties(cu_wannier_spread PROPERTIES TIMEOUT 3600)
+
+    # The VASP-interface sibling of the above: no VASP-side wannierization
+    # of its own exists to validate (VASP's Wannier90 library does that
+    # internally), so this instead proves the parser + JSON schema
+    # (WannierScriptGenerator.cpp's generateVaspWannier90Script(), reading
+    # via ASE's own read_wout_all()) against a wout-format-correct Cu
+    # fixture carrying cu_wannier_spread_benchmark.py's own real, previously
+    # -measured spreads. Self-skips (exit 0) without ase. Seconds, not an
+    # hour: no DFT of any kind runs here.
+    add_test(NAME cu_wannier_vasp_fixture
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/cu_wannier_vasp_fixture_test.py)
 
 # Optics validation on bulk Si: GPAW SCF → NSCF → DielectricFunction,
     # verifying ε₁/ε₂. Self-skips (exit 0) without the GPAW response stack.
@@ -3737,16 +3715,18 @@ if(CALANGO_BUILD_TESTS)
         boltzmann_transport bond_perception brillouin_zone_clip bse_solver c2db calphad cluster_expansion
         cluster_expansion_fit cluster_presets cluster_variation convex_hull
         cpa_solver crpa_solver crpa_vasp_validation cu_wannier_spread
+        cu_wannier_vasp_fixture
         ternary_convex_hull
         dataset_split egqca
         defect_2d_correction defect_2d_monolayer
         dislocation_builder dos_smearing double_group dsim dsim_oncapintada elastic_tensor elf_silicon
-        elph_analysis elph_io extxyz_attributes frame_streaming
-        generated_ase_scripts generated_script_lint graphene_band_symmetry
+        extxyz_attributes frame_streaming
+        generated_ase_scripts generated_script_lint gpaw_output_parser graphene_band_symmetry
         graphene_2d_bands_qe graphene_2d_bands_siesta
         graphene_oxide graphene_oxide_mdmc_antiposition graphene_oxide_percolation
         graphene_oxide_percolation_mdmc graphene_oxide_sites graphene_tetrahedron
         energy_diagram_benchmark
+        gpaw_mpi_preflight
         gw_qp_parser gw_silicon hubbard_linear_response hydrogen_bonds
         hydrogen_completion ice_builder kpath_table lammps_environment
         lammps_scripts ldos_h2o mace_trainer_preflight magnetic_space_group materials_project_mp1434
@@ -3757,11 +3737,11 @@ if(CALANGO_BUILD_TESTS)
         phonon_diamond phonon_thermodynamics piezoelectric_tensor
         polymer_builder raman_ir_math
         raman_ir_mgo raman_ir_parsers raman_si_diamond remote_session
-        remote_session_helper scheduler_script shortcut_registry solid_interface_builder
+        remote_session_helper run_commands scheduler_script shortcut_registry solid_interface_builder
         solvation_builder sqs_generator sqs_sige_alloy strain_voigt
         structural_phase
-        structure_transforms sublattice_cluster_variation superconductivity
-        symmetry_si_diamond tdb_database tetrahedron_bz
+        structure_transforms sublattice_cluster_variation
+        symmetry_si_diamond tdb_database
         thermodynamic_integration vasp_potcar_preflight vibrational_modes
         volumetric_parse
         wannier_interpolation_silicon wannier_preflight wannier_silicon
@@ -3927,12 +3907,8 @@ if(APPLE AND CALANGO_MACOS_BUNDLE)
     ")
 elseif(UNIX AND NOT APPLE)
     install(TARGETS calango RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-    # Shipped so a cluster job script can analyse its own run in place.
-    install(TARGETS calango-elph-analyze
-        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} OPTIONAL)
-    # OPTIONAL and un-bundled on macOS, like calango-elph-analyze above: a
-    # standalone analysis convenience, not something the GUI ever launches
-    # itself.
+    # OPTIONAL and un-bundled on macOS: a standalone analysis convenience,
+    # not something the GUI ever launches itself.
     install(TARGETS calango-ring-percolation-analyze
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} OPTIONAL)
 

@@ -76,6 +76,15 @@ private:
     QLabel* condaStatusLabel_ = nullptr;
     QTableWidget* engineEnvTable_ = nullptr;
     QTableWidget* externalFilesTable_ = nullptr;
+    /// VASP's three build flavors — see buildExternalFilesTab()'s own
+    /// comment for why each needs its own field rather than a row in
+    /// externalFilesTable_.
+    QLineEdit* vaspStdEdit_ = nullptr;
+    QLabel* vaspStdStatus_ = nullptr;
+    QLineEdit* vaspGamEdit_ = nullptr;
+    QLabel* vaspGamStatus_ = nullptr;
+    QLineEdit* vaspNclEdit_ = nullptr;
+    QLabel* vaspNclStatus_ = nullptr;
     QTableWidget* runCommandTable_ = nullptr;
     QSpinBox* runCoresSpin_ = nullptr;
     /// One combo per render::ShaderSlot, in slot order.

@@ -470,10 +470,6 @@ std::string generateHubbardScript(const HubbardRunConfig& config,
                "    lcharg=True,\n"
                "    lwave=True,\n"
             << ")\n\n";
-        if (!c.vaspPotcarPath.empty()) {
-            out << "os.environ.setdefault(\"VASP_PP_PATH\", r\""
-                << c.vaspPotcarPath << "\")\n\n";
-        }
     } else {
         out << "_QE_CONTROL = dict(calculation=\"scf\", tprnfor=True)\n"
             << "_QE_SYSTEM = dict(\n"
@@ -507,7 +503,10 @@ std::string generateHubbardScript(const HubbardRunConfig& config,
            "primitive = read(\""
         << structureFile << "\")\n"
         << "atoms = primitive.repeat(_SUPERCELL)\n"
-           "_calango_event('info',\n"
+        << (vasp ? AseScriptGenerator::vaspPotcarResolutionSnippet(
+                       c.vaspPotcarPath)
+                : std::string())
+        << "_calango_event('info',\n"
            "               f'{len(primitive)} atoms -> {len(atoms)} in a '\n"
            "               f'{_SUPERCELL[0]}x{_SUPERCELL[1]}x{_SUPERCELL[2]} "
            "supercell')\n"

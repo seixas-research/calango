@@ -7,9 +7,9 @@
 #include "gui/CvmComparisonWindow.hpp"
 #include "gui/MainWindow.hpp"
 
-#include "core/ElectronPhononIo.hpp"
 #include "core/AseScriptGenerator.hpp"
 #include "core/BrillouinZone.hpp"
+#include "core/GpawOutputParser.hpp"
 #include "core/HydrogenCompletion.hpp"
 #include "core/JobFailureReason.hpp"
 #include "core/PdbxFile.hpp"
@@ -77,7 +77,6 @@
 #include "gui/SinglePointWizard.hpp"
 #include "gui/MonteCarloWizard.hpp"
 #include "gui/CalphadDialog.hpp"
-#include "gui/ElectronPhononWizard.hpp"
 #include "gui/PhononWizard.hpp"
 #include "gui/SimulationWizardBase.hpp"
 #include "gui/NanoparticleDialog.hpp"
@@ -1280,15 +1279,11 @@ void MainWindow::createMenusAndDocks()
     simulationMenu->addSeparator();
     // -- Transition paths and vibrations ------------------------------------
     // NEB first: it is still a geometry-space method (a chain of images
-    // relaxed), so it sits closest to the optimizer above. Electron-phonon
-    // follows Phonon because it is the same finite-displacement machinery and
-    // the coupling only means anything alongside the modes it couples to.
+    // relaxed), so it sits closest to the optimizer above.
     simulationMenu->addAction(tr("&Nudged Elastic Band (NEB)…"),
                               this, &MainWindow::openNudgedElasticBand);
     simulationMenu->addAction(tr("&Phonon…"),
                               this, &MainWindow::openPhononBuilder);
-    simulationMenu->addAction(tr("&Electron-Phonon Coupling…"),
-                              this, &MainWindow::openElectronPhonon);
 
     simulationMenu->addSeparator();
     // -- Free energies -------------------------------------------------------
@@ -5234,130 +5229,6 @@ void MainWindow::openModeTrajectory(
             .arg(static_cast<int>(frames.size())));
 }
 
-void MainWindow::openElectronPhononResults(const QString& directory)
-{
-    // alpha^2F, lambda and tau, computed here rather than in the generated
-    // script. Both Fermi-surface deltas are integrated on tetrahedra, which
-    // is why there is no smearing to report or to converge: the in-script
-    // Gaussian this replaced gave lambda from 0.009 to 31 on fcc Al as its
-    // width was varied, with no plateau.
-    statusBar()->showMessage(
-        tr("Analysing electron-phonon coupling (tetrahedron integration)…"));
-    QApplication::setOverrideCursor(Qt::BusyCursor);
-
-    auto* watcher = new QFutureWatcher<ElectronPhononOutcome>(this);
-    connect(watcher, &QFutureWatcher<ElectronPhononOutcome>::finished, this,
-            [this, watcher, directory] {
-                QApplication::restoreOverrideCursor();
-                const ElectronPhononOutcome outcome = watcher->result();
-                watcher->deleteLater();
-                if (!outcome.ok) {
-                    statusBar()->clearMessage();
-                    QMessageBox::warning(
-                        this, tr("Electron-Phonon Coupling"),
-                        tr("The run finished, but its coupling could not be "
-                           "analysed:\n\n%1")
-                            .arg(outcome.error));
-                    return;
-                }
-                const auto& result = outcome.result;
-                statusBar()->showMessage(
-                    tr("lambda = %1, tau = %2 fs at %3 K")
-                        .arg(result.lambda, 0, 'f', 3)
-                        .arg(result.relaxationTimeFs, 0, 'f', 2)
-                        .arg(result.temperatureK, 0, 'f', 0));
-
-                QString text =
-                    tr("<b>&lambda; = %1</b><br>"
-                       "&omega;<sub>log</sub> = %2 meV<br>"
-                       "N(E<sub>F</sub>) = %3 states/eV per cell per spin"
-                       "<br><br>"
-                       "At %4 K:<br>"
-                       "&tau; = %5 fs (&hbar;/&tau; = %6 eV)<br>"
-                       "Drude <i>rate</i> for the Optics wizard = %7 eV")
-                        .arg(result.lambda, 0, 'f', 4)
-                        .arg(result.omegaLogEv * 1000.0, 0, 'f', 2)
-                        .arg(result.dosAtFermi, 0, 'f', 4)
-                        .arg(result.temperatureK, 0, 'f', 0)
-                        .arg(result.relaxationTimeFs, 0, 'f', 3)
-                        .arg(result.scatteringRateEv, 0, 'f', 5)
-                        .arg(result.drudeRateEv, 0, 'f', 5);
-                // The factor of two between tau and GPAW's `rate` is the
-                // standing trap, so the Optics number is spelled out rather
-                // than left to be derived.
-                text += tr("<br><br>m*/m = %1 (band-mass enhancement)")
-                            .arg(result.massEnhancement, 0, 'f', 3);
-
-                if (result.lambdaTransport > 0.0) {
-                    text += tr("<br><br><b>Transport</b><br>"
-                               "&lambda;<sub>tr</sub> = %1 "
-                               "(vs &lambda; = %2)<br>"
-                               "&tau;<sub>tr</sub> = %3 fs")
-                                .arg(result.lambdaTransport, 0, 'f', 4)
-                                .arg(result.lambda, 0, 'f', 4)
-                                .arg(result.relaxationTimeTransportFs, 0, 'f', 3);
-                    if (result.resistivityMicroOhmCm > 0.0)
-                        text += tr("<br>&rho;(%1 K) = %2 &micro;&Omega;&middot;cm")
-                                    .arg(result.temperatureK, 0, 'f', 0)
-                                    .arg(result.resistivityMicroOhmCm, 0, 'f', 3);
-                }
-
-                // T_c gets its own block, and its mu* is always shown beside
-                // it: the number depends on that empirical parameter
-                // exponentially and is not interpretable without it.
-                const auto& sc = result.superconductivity;
-                text += QStringLiteral("<br><br><b>")
-                    + tr("Superconductivity (&mu;* = %1)")
-                          .arg(sc.muStar, 0, 'f', 3)
-                    + QStringLiteral("</b><br>");
-                if (!sc.ok) {
-                    text += tr("Not a phonon-mediated superconductor at this "
-                               "coupling.");
-                } else {
-                    text += tr("<b>T<sub>c</sub> = %1 K</b> "
-                               "(Allen&ndash;Dynes, f<sub>1</sub> = %2, "
-                               "f<sub>2</sub> = %3)<br>"
-                               "uncorrected %4 K<br>"
-                               "2&Delta; = %5 meV "
-                               "(2&Delta;/k<sub>B</sub>T<sub>c</sub> = %6)")
-                                .arg(sc.tcAllenDynesCorrectedK, 0, 'f', 3)
-                                .arg(sc.f1, 0, 'f', 3)
-                                .arg(sc.f2, 0, 'f', 3)
-                                .arg(sc.tcAllenDynesK, 0, 'f', 3)
-                                .arg(2.0 * sc.gapMeV, 0, 'f', 4)
-                                .arg(sc.gapRatio, 0, 'f', 2);
-                }
-
-                text += tr("<br><br><small>Written to epc.json in %1.</small>")
-                            .arg(directory);
-                std::vector<std::string> allWarnings = result.warnings;
-                allWarnings.insert(allWarnings.end(), sc.warnings.begin(),
-                                   sc.warnings.end());
-                if (!allWarnings.empty()) {
-                    text += QStringLiteral("<br><br><b>")
-                        + tr("Notes") + QStringLiteral("</b><ul>");
-                    for (const std::string& warning : allWarnings)
-                        text += QStringLiteral("<li>")
-                            + QString::fromStdString(warning).toHtmlEscaped()
-                            + QStringLiteral("</li>");
-                    text += QStringLiteral("</ul>");
-                }
-                QMessageBox box(this);
-                box.setWindowTitle(tr("Electron-Phonon Coupling"));
-                box.setTextFormat(Qt::RichText);
-                box.setText(text);
-                box.exec();
-            });
-    watcher->setFuture(QtConcurrent::run([directory] {
-        ElectronPhononOutcome outcome;
-        std::string error;
-        outcome.ok = calango::core::postProcessElectronPhonon(
-            directory.toStdString(), outcome.result, &error);
-        outcome.error = QString::fromStdString(error);
-        return outcome;
-    }));
-}
-
 void MainWindow::openPhononResults(const QString& directory)
 {
     auto* window = new PhononPlotWindow(directory, this);
@@ -5430,6 +5301,13 @@ QList<QPair<QString, QString>> MainWindow::espressoBaselines() const
     QList<QPair<QString, QString>> baselines;
     for (const auto& [id, record] : processRecords_) {
         if (record.directory.isEmpty())
+            continue;
+        // Same reasoning as gpawBaselines()/vaspChargeDensityFiles() (Task
+        // 3, 2026-08-22): the .save directory is QE's own INTERMEDIATE
+        // working directory, written progressively through the run, not a
+        // marker written only on success.
+        if (processPanel_->taskStatus(id)
+            != ProcessManagerPanel::Status::Completed)
             continue;
         const QDir dir(record.directory);
         if (!dir.entryList({QStringLiteral("*.save")}, QDir::Dirs).isEmpty())
@@ -7023,7 +6901,7 @@ void MainWindow::openMaceTrainer()
         const int taskId =
             processPanel_->registerTask(tr("Remote %1").arg(label), jobDir);
         processPanel_->setTaskStatus(taskId, ProcessManagerPanel::Status::Running);
-        hpcPanel_->submitStagedJob(jobDir, label);
+        hpcPanel_->submitStagedJob(jobDir, label, core::CalculatorKind::Mace);
         statusBar()->showMessage(tr("Submitting %1 to the cluster…").arg(label));
         return;
     }
@@ -7176,6 +7054,13 @@ QList<QPair<QString, QString>> MainWindow::gpawBaselines() const
     QList<QPair<QString, QString>> baselines;
     for (const auto& [id, record] : processRecords_) {
         if (record.directory.isEmpty())
+            continue;
+        // A crashed or still-running parent must never be offered as a
+        // baseline (Task 3, 2026-08-22) -- a leftover .gpw from an earlier
+        // successful write, or one that is mid-write right now, looks
+        // exactly like a good one by filename alone.
+        if (processPanel_->taskStatus(id)
+            != ProcessManagerPanel::Status::Completed)
             continue;
         const QDir dir(record.directory);
         if (!dir.entryList({QStringLiteral("*.gpw")}, QDir::Files).isEmpty())
@@ -7363,6 +7248,10 @@ QList<QPair<QString, QString>> MainWindow::gpawDensityFiles() const
     for (const auto& [id, record] : processRecords_) {
         if (record.directory.isEmpty())
             continue;
+        // Same reasoning as gpawBaselines() above (Task 3, 2026-08-22).
+        if (processPanel_->taskStatus(id)
+            != ProcessManagerPanel::Status::Completed)
+            continue;
         const QDir dir(record.directory);
         // single_point.gpw is what the Single-Point wizard writes; accept any
         // other .gpw the directory holds so a hand-run job still qualifies.
@@ -7385,6 +7274,16 @@ QList<QPair<QString, QString>> MainWindow::vaspChargeDensityFiles() const
     QList<QPair<QString, QString>> baselines;
     for (const auto& [id, record] : processRecords_) {
         if (record.directory.isEmpty())
+            continue;
+        // A crashed or still-running parent must never be offered as a
+        // baseline (Task 3, 2026-08-22). This matters MORE here than for
+        // GPAW's .gpw: VASP writes CHGCAR incrementally throughout the SCF
+        // whenever LCHARG=.TRUE. (emitVasp()'s own default), so a run that
+        // crashed partway through — or one that is still running right
+        // now — can easily have already left a nonzero-size CHGCAR behind
+        // that looks, by size alone, exactly like a converged one.
+        if (processPanel_->taskStatus(id)
+            != ProcessManagerPanel::Status::Completed)
             continue;
         const QDir dir(record.directory);
         const QString chgcar = dir.absoluteFilePath(QStringLiteral("CHGCAR"));
@@ -8277,7 +8176,8 @@ void MainWindow::openGrapheneOxideMdmc(
             processPanel_->registerTask(tr("Remote graphene oxide MDMC"), jobDir);
         processPanel_->setTaskStatus(taskId, ProcessManagerPanel::Status::Running);
         hpcPanel_->submitStagedJob(jobDir,
-                                      QStringLiteral("graphene_oxide_mdmc"));
+                                      QStringLiteral("graphene_oxide_mdmc"),
+                                      wizard.calculatorKind());
         statusBar()->showMessage(tr("Submitting MDMC run to the cluster…"));
         return;
     }
@@ -8482,7 +8382,8 @@ void MainWindow::effectiveBandsCalculation()
             processPanel_->registerTask(tr("Remote effective bands"), jobDir);
         processPanel_->setTaskStatus(taskId, ProcessManagerPanel::Status::Running);
         hpcPanel_->submitStagedJob(
-            jobDir, QFileInfo(doc->fileName).completeBaseName());
+            jobDir, QFileInfo(doc->fileName).completeBaseName(),
+            wizard.calculatorKind());
         statusBar()->showMessage(tr("Submitting unfolding run to the cluster…"));
         return;
     }
@@ -8671,35 +8572,6 @@ void MainWindow::openPhononBuilder()
     wizard.setBornChargeProcesses(processResults(QStringLiteral("born_charges.json")));
     wizard.setOpticsProcesses(processResults(QStringLiteral("optics.json")));
     runSimulationWizard(wizard, tr("Phonon Calculation"));
-}
-
-void MainWindow::openElectronPhonon()
-{
-    Document* doc = currentDocument();
-    if (!doc || !doc->structure || doc->structure->empty()) {
-        QMessageBox::information(this, tr("Electron-Phonon Coupling"),
-                                 tr("Open or build a structure first."));
-        return;
-    }
-    // Periodicity is not a preference here. The whole method is a supercell
-    // of a periodic cell sampled at phonon momenta q; an isolated molecule has
-    // no q to couple at, and the displacement runner has no supercell to build.
-    const auto pbc = doc->structure->cell().pbc();
-    if (!doc->structure->cell().isDefined()
-        || !(pbc[0] || pbc[1] || pbc[2])) {
-        QMessageBox::information(
-            this, tr("Electron-Phonon Coupling"),
-            tr("This module needs a periodic cell.\n\n"
-               "Electron-phonon coupling here is g(k,q) — electrons at "
-               "crystal momentum k scattering off phonons at momentum q. An "
-               "isolated molecule has neither, and its vibrational analogue "
-               "is the Raman/IR module instead."));
-        return;
-    }
-    if (!ensureAseAvailable())
-        return;
-    ElectronPhononWizard wizard(this);
-    runSimulationWizard(wizard, tr("Electron-Phonon Coupling"));
 }
 
 void MainWindow::openCalphad()
@@ -9206,6 +9078,13 @@ void MainWindow::singlePointCalculation()
     if (!prepareSimulation(tr("Single-point Calculation")))
         return;
     SinglePointWizard wizard(this);
+    // The VASP group's "Restart from CHGCAR" combo (ICHARG = 11) — the SOC
+    // two-stage chain's second stage: run collinear first (writes CHGCAR
+    // via LCHARG, on by default), then a second Single-point WITH
+    // Non-Collinear spin restarts from it here. Same completed-run listing
+    // showBandStructure()/show2DBands() already use for their own baseline
+    // combos.
+    wizard.setVaspChgcarBaselines(vaspChargeDensityFiles());
     runSimulationWizard(wizard, tr("Single-Point Calculation"), /*expectFrames=*/false);
 }
 
@@ -9250,6 +9129,10 @@ void MainWindow::runSimulationWizard(SimulationWizardBase& wizard,
     // this completed run. stageJob() writes it as calculator.json and clears
     // the pending value.
     pendingCalculatorProvenance_ = wizard.calculatorProvenanceJson();
+    // A selected baseline density (Electronic Structure / 2D Bands) gets
+    // copied into the job directory too, so a remote run can find it —
+    // stageJob() writes it under a fixed name and clears the pending value.
+    pendingBaselineDensityPath_ = wizard.baselineDensityPathToStage();
 
     if (wizard.action() == SimulationWizardBase::Action::RunRemote) {
         // Zone-11 HPC manager: stage the script and submit it.
@@ -9263,7 +9146,8 @@ void MainWindow::runSimulationWizard(SimulationWizardBase& wizard,
             processPanel_->registerTask(tr("Remote %1").arg(label), jobDir);
         processPanel_->setTaskStatus(taskId, ProcessManagerPanel::Status::Running);
         hpcPanel_->submitStagedJob(
-            jobDir, doc ? QFileInfo(doc->fileName).completeBaseName() : label);
+            jobDir, doc ? QFileInfo(doc->fileName).completeBaseName() : label,
+            wizard.calculatorKind());
         statusBar()->showMessage(tr("Submitting %1 run to the cluster…").arg(label));
         return;
     }
@@ -9413,7 +9297,8 @@ void MainWindow::thermodynamicIntegration()
         processPanel_->setTaskStatus(taskId,
                                      ProcessManagerPanel::Status::Running);
         hpcPanel_->submitStagedJob(
-            jobDir, QFileInfo(doc->fileName).completeBaseName());
+            jobDir, QFileInfo(doc->fileName).completeBaseName(),
+            wizard.calculatorKind());
         return;
     }
 
@@ -9900,6 +9785,44 @@ QString MainWindow::stageJob(const QString& script, int procId)
             if (provenanceFile.open(QIODevice::WriteOnly | QIODevice::Text))
                 QTextStream(&provenanceFile) << provenance;
         }
+
+        // Baseline charge-density sidecar: copied under a FIXED name
+        // (baseline.gpw / baseline.CHGCAR) so a remote job can find it on
+        // the cluster. The generated script (ElectronicScriptGenerator.cpp /
+        // TwoDBandsScriptGenerator.cpp) checks for this staged copy before
+        // falling back to the absolute path baked in at generation time,
+        // which resolves only on this machine. Also copies the baseline's
+        // own single_point.json when present, so a VASP baseline's Fermi
+        // level travels with it too (see ElectronicScriptGenerator.cpp's
+        // ICHARG = 11 branch).
+        const QString baselinePath = pendingBaselineDensityPath_;
+        pendingBaselineDensityPath_.clear();
+        if (!baselinePath.isEmpty() && QFileInfo::exists(baselinePath)) {
+            const bool isGpw =
+                baselinePath.endsWith(QStringLiteral(".gpw"),
+                                      Qt::CaseInsensitive);
+            const QString staged = jobDir
+                + (isGpw ? QStringLiteral("/baseline.gpw")
+                        : QStringLiteral("/baseline.CHGCAR"));
+            if (!QFile::copy(baselinePath, staged)) {
+                statusBar()->showMessage(
+                    tr("Warning: could not stage the baseline density %1 — "
+                       "a remote run will not find it.").arg(baselinePath),
+                    8000);
+            }
+            // Named single_point.json here too (not e.g.
+            // "baseline_single_point.json"): once the script resolves
+            // _baseline to the staged relative "baseline.CHGCAR",
+            // os.path.dirname(_baseline) is "" — the job directory itself —
+            // so the SAME dirname-relative lookup that finds this sidecar
+            // next to an unstaged (absolute-path) baseline finds it here
+            // too, with no separate staged-vs-not branch in the script.
+            const QString sidecar = QFileInfo(baselinePath).absolutePath()
+                + QStringLiteral("/single_point.json");
+            if (QFileInfo::exists(sidecar))
+                QFile::copy(sidecar,
+                            jobDir + QStringLiteral("/single_point.json"));
+        }
     } catch (const std::exception& e) {
         QMessageBox::critical(this, tr("Run Calculation"), QString::fromUtf8(e.what()));
         return {};
@@ -9956,6 +9879,8 @@ void MainWindow::runScript(const QString& script, const QString& pythonExe,
     job.pythonExecutable = pythonExe;
     job.commandLine = resolved.commandLine;
     job.environment = resolved.environment;
+    job.kind = kind;
+    job.requestedCores = context.cores;
     job.expectFrames = expectFrames;
     // Snapshot the geometry the live tab would be seeded from. Deferring the
     // lookup to launch time would seed it from whatever tab happens to be
@@ -9994,6 +9919,8 @@ void MainWindow::runScript(const QString& script, const QString& pythonExe,
 void MainWindow::launchJob(const QueuedJob& job)
 {
     lastJobDir_ = job.jobDir;
+    lastJobKind_ = job.kind;
+    lastJobRequestedCores_ = job.requestedCores;
     currentTaskId_ = job.processId;
     // Adding + selecting the process repopulates (clears) the tabs for the
     // fresh run; its live samples then flow into the now-selected process.
@@ -10224,6 +10151,42 @@ void MainWindow::onJobFinished(int exitCode, bool crashed)
         processPanel_->setTaskStatus(currentTaskId_,
                                      failed ? ProcessManagerPanel::Status::Failed
                                             : ProcessManagerPanel::Status::Completed);
+        // Post-launch parallelism verification (Task 1, 2026-08-22). A
+        // pre-flight check (GpawMpiPreflight) can only prove parallelism
+        // was POSSIBLE before the run started — not that the command
+        // actually built and executed used it (this session's own bug:
+        // RunCommands::resolve() silently discarded a fully-correct
+        // mpirun-wrapped launch line, and the pre-flight had nothing to
+        // say about that, since it never inspects the resolved command).
+        // gpaw.out's own "cores:  N" line is GPAW's own account of what it
+        // actually ran with — checked here against what was requested and
+        // surfaced the same way a run failure already is (setTaskDetail()
+        // + a status-bar message that outlives the row once it scrolls
+        // away), rather than left to be discovered only by opening
+        // gpaw.out by hand.
+        if (!failed && lastJobKind_ == core::CalculatorKind::Gpaw
+            && lastJobRequestedCores_ > 1) {
+            QFile gpawOut(lastJobDir_ + QStringLiteral("/gpaw.out"));
+            if (gpawOut.open(QIODevice::ReadOnly | QIODevice::Text)) {
+                const auto actualCores = core::parseGpawWorldSize(
+                    QString::fromUtf8(gpawOut.readAll()).toStdString());
+                // A missing/unparsed header is left alone — "unknown" is
+                // not evidence of a serial run (see parseGpawWorldSize()'s
+                // own doc comment) and must not be reported as one.
+                if (actualCores && *actualCores != lastJobRequestedCores_) {
+                    const QString warning = tr(
+                        "Requested %1 cores, but GPAW's own output "
+                        "reports it ran on %2 — the parallel launch "
+                        "silently fell back to fewer ranks. Check that "
+                        "mpirun/mpiexec is reachable and this GPAW build "
+                        "has MPI support (Preferences → Run).")
+                            .arg(lastJobRequestedCores_)
+                            .arg(*actualCores);
+                    processPanel_->setTaskDetail(currentTaskId_, warning);
+                    statusBar()->showMessage(warning, 30000);
+                }
+            }
+        }
         // Final read of metrics.json so the last steps are captured, then
         // persist this process's metrics + log to proc_<id>/ so they survive
         // subsequent runs and can be reloaded from the Results selector.
@@ -10282,18 +10245,6 @@ void MainWindow::onJobFinished(int exitCode, bool crashed)
     // ⟨∂U/∂λ⟩ curve and ΔG appear without anyone asking for them.
     if (QFile::exists(lastJobDir_ + QStringLiteral("/ti.json"))) {
         openThermodynamicIntegrationResults(lastJobDir_);
-        return;
-    }
-    // Electron-phonon runs: the script stops at the raw arrays, so the
-    // analysis happens here. Off the GUI thread because |g|^2 is
-    // (spins, q, k, modes, bands, bands) and reaches tens of gigabytes on a
-    // production mesh — a synchronous read would freeze the window for
-    // minutes with no indication of why.
-    if (QFile::exists(lastJobDir_
-                      + QStringLiteral("/")
-                      + QString::fromLatin1(
-                          calango::core::electronPhononManifestName()))) {
-        openElectronPhononResults(lastJobDir_);
         return;
     }
     // Optics runs: open the optical-spectra viewer.
@@ -10574,9 +10525,13 @@ void MainWindow::about()
          "PSF License"},
         {"pybind11", tr("C++ ↔ Python bridge for the embedded interpreter"),
          "BSD 3-Clause"},
-        {"LAPACK", tr("dense linear algebra for the native DFT engine's "
-                      "generalised eigenproblem"),
-         "BSD 3-Clause (modified)"},
+        // LAPACK used to be listed here for the native DFT engine's
+        // generalised eigenproblem solve; removed from this list along with
+        // that engine (see git history / CLAUDE.md's "packaging dependency
+        // audit" section) -- nothing in the shipped calango binary links any
+        // BLAS/LAPACK implementation any more (Task 4), so listing it here
+        // would claim a license obligation for a library no longer actually
+        // distributed.
         {"HDF5", tr("compressed charge-density (.h5) volumetric storage"),
          "HDF5 License (BSD-style)"},
         {"ASE", tr("atomistic structures, calculators and dynamics"),

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/CalculatorConfig.hpp"
 #include "core/SchedulerScript.hpp"
 #include "gui/ClusterPreset.hpp"
 #include "remote/RemoteClient.hpp"
@@ -42,8 +43,13 @@ public:
                                QWidget* parent = nullptr);
 
     /// Generate job.sh next to run.py, upload the directory's files to
-    /// the cluster, submit, and start monitoring.
-    void submitStagedJob(const QString& localJobDir, const QString& jobName);
+    /// the cluster, submit, and start monitoring. `kind` is the job's
+    /// calculator — needed to pick the right default launch command (a
+    /// parallel GPAW job needs a fundamentally different one from a
+    /// serial/subprocess-parallel one; see specFromUi()) when the cluster
+    /// profile's own Command field is left blank.
+    void submitStagedJob(const QString& localJobDir, const QString& jobName,
+                         core::CalculatorKind kind);
 
     /// The scheduler request the form currently describes. A pure,
     /// side-effect-free read of UI state into a plain struct — public (like
@@ -51,7 +57,17 @@ public:
     /// drive the widgets and assert on the resulting RemoteJobSpec without
     /// a live SSH connection, e.g. the VASP-POTCAR-override-prepended-to-
     /// setupLines logic in the .cpp.
-    core::RemoteJobSpec specFromUi(const QString& jobName) const;
+    ///
+    /// `kind` decides the DEFAULT `command` (and any solver-command
+    /// environment export it needs) when the cluster profile's own Command
+    /// field is blank — see RunCommands::resolve(), reused here so a
+    /// remote job's launch line is not a second, independently-maintained
+    /// copy of the local one's per-engine MPI knowledge (script-launcher
+    /// vs solver-command; GPAW is the former, Quantum ESPRESSO/SIESTA the
+    /// latter — see RunCommands.hpp's own doc comment for what that means
+    /// for a job's parallelism).
+    core::RemoteJobSpec specFromUi(const QString& jobName,
+                                   core::CalculatorKind kind) const;
 
 Q_SIGNALS:
     /// Results were downloaded into `localDir` (after job completion).
@@ -147,6 +163,12 @@ private:
     /// vaspPotcarPath. Empty leaves VASP's dataset resolution exactly as it
     /// was before this field existed.
     QLineEdit* vaspPotcarEdit_ = nullptr;
+    /// This cluster's own builds of VASP's three flavors — per-profile,
+    /// like vaspPotcarEdit_ above. See ClusterPreset::vaspStdPath/
+    /// vaspGamPath/vaspNclPath.
+    QLineEdit* vaspStdEdit_ = nullptr;
+    QLineEdit* vaspGamEdit_ = nullptr;
+    QLineEdit* vaspNclEdit_ = nullptr;
 
     // Scheduler tab — SLURM-only extensions (Task 4). See
     // core::RemoteJobSpec's fields of the same name for what each maps to;

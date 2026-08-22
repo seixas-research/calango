@@ -27,7 +27,7 @@ struct Managed {
     const char* jsonName = nullptr;
 };
 
-std::array<Managed, 20> managedKeys()
+std::array<Managed, 23> managedKeys()
 {
     return {{
         {SettingsManager::kTheme, QStringLiteral("system")},
@@ -63,6 +63,9 @@ std::array<Managed, 20> managedKeys()
         {SettingsManager::kPseudopotentialsVasp, QString()},
         {SettingsManager::kPseudopotentialsEspresso, QString()},
         {SettingsManager::kPseudopotentialsSiesta, QString()},
+        {SettingsManager::kVaspExecutableStd, QString()},
+        {SettingsManager::kVaspExecutableGam, QString()},
+        {SettingsManager::kVaspExecutableNcl, QString()},
         {SettingsManager::kMlPotentialsDir, QString()},
         {SettingsManager::kMaterialsProjectApiKey, QString()},
         // Remapped keyboard shortcuts (Preferences -> "Hotkeys"), a
@@ -201,9 +204,27 @@ void SettingsManager::loadOrInitialize()
 QString SettingsManager::defaultSimulationsDirectory()
 {
     // QDir::homePath() rather than a platform switch: it is the user's home on
-    // both targets, and the folder name is deliberately plain so it reads the
-    // same in Finder and in a Linux file manager.
-    return QDir::homePath() + QStringLiteral("/My Simulations");
+    // both targets (the correct per-platform home-directory API — it resolves
+    // $HOME/the platform equivalent, never a literal "~", which a shell would
+    // expand but QDir/QFile never does), and the folder name is deliberately
+    // plain so it reads the same in Finder and in a Linux file manager.
+    //
+    // "calango_simulations", not "My Simulations" (the default this replaced,
+    // Task 3): unspaced and lower-case so it is one shell token to `cd` into
+    // and greps/scripts a user writes against it never need quoting — "My
+    // Simulations" needed both. This is a NEW-DEFAULT-ONLY change: an
+    // existing ~/.calango/settings.json with jobs/simulationsDir already set
+    // (to "My Simulations" or anything else) is read verbatim by
+    // simulationsDirectory() below and never touched here — this function is
+    // consulted only when that key is empty. Old runs already under
+    // ~/My Simulations are not migrated and are not "lost": nothing in this
+    // application discovers past runs by scanning this directory — Recent
+    // Files (MainWindow.cpp, "recent/files") records exactly the paths a user
+    // opened, and every "Load Results…"/"Browse…" picker is an ordinary,
+    // unrestricted file dialog that merely STARTS here; it can navigate
+    // anywhere, including a still-populated ~/My Simulations from before this
+    // change.
+    return QDir::homePath() + QStringLiteral("/calango_simulations");
 }
 
 QString SettingsManager::mlPotentialsStartPath(const QString& currentValue)

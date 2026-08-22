@@ -69,6 +69,15 @@ public:
     /// the value instead of matching a translated word, which is what the
     /// column was never a reliable source of anyway.
     Status rowStatus(int row) const;
+    /// Status of the task registered under `id`, or Queued if no such task
+    /// exists (removed, or never registered). The by-ID counterpart to
+    /// rowStatus() — added (Task 3, 2026-08-22) so a baseline picker (an
+    /// Electronic Structure/CDD/etc. wizard's "which completed run do I
+    /// restart from") can filter OUT a parent that crashed or is still
+    /// running instead of only checking whether it left a plausible-looking
+    /// file behind, which a VASP CHGCAR (written incrementally through the
+    /// SCF, not just at a successful end) does not guarantee at all.
+    Status taskStatus(int id) const;
 
 protected:
     /// Delete / Backspace (also ⌘⌫ on macOS) on the tree deletes the selected

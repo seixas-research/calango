@@ -395,6 +395,12 @@ bool TwoDBandsWizard::preflightSecondary()
     return false;
 }
 
+QString TwoDBandsWizard::baselineDensityPathToStage() const
+{
+    return baselineCombo_ ? baselineCombo_->currentData().toString()
+                          : QString();
+}
+
 void TwoDBandsWizard::setDensityBaselines(
     const QList<QPair<QString, QString>>& baselines)
 {
@@ -419,6 +425,7 @@ QString TwoDBandsWizard::generateScript() const
     cfg.scfKpts = scfKptsSpin_ ? scfKptsSpin_->value() : 7;
     cfg.espressoPseudoDir = espressoPseudoDirectory().toStdString();
     cfg.siestaPseudoDir = siestaPseudoDirectory().toStdString();
+    cfg.vaspPotcarPath = cfg.gpaw.vaspPotcarPath;
     cfg.gridSamples = samplesSpin_ ? samplesSpin_->value() : 24;
     cfg.bandsBelow = belowSpin_ ? belowSpin_->value() : 4;
     cfg.bandsAbove = aboveSpin_ ? aboveSpin_->value() : 4;

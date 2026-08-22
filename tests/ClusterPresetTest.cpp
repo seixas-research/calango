@@ -46,6 +46,11 @@ calango::gui::ClusterPreset sample()
     preset.parallelEnvironment = QStringLiteral("mpi");
     preset.setupLines = QStringLiteral("module load gpaw\nconda activate dft");
     preset.vaspPotcarPath = QStringLiteral("/gpfs/projects/bsc/pseudo/potcars");
+    // The three VASP build flavors (Task 5) -- same per-installation
+    // reasoning as vaspPotcarPath above, one path per compiled executable.
+    preset.vaspStdPath = QStringLiteral("/gpfs/projects/bsc/vasp/6.4.2/vasp_std");
+    preset.vaspGamPath = QStringLiteral("/gpfs/projects/bsc/vasp/6.4.2/vasp_gam");
+    preset.vaspNclPath = QStringLiteral("/gpfs/projects/bsc/vasp/6.4.2/vasp_ncl");
     // account/qos removed (Task 3) -- extraDirectives below is the escape
     // hatch a cluster requiring either now uses.
     preset.cpusPerTask = 8;
@@ -81,6 +86,11 @@ int main(int argc, char** argv)
         check(restored.vaspPotcarPath == original.vaspPotcarPath
                   && !restored.vaspPotcarPath.isEmpty(),
               "and the per-cluster VASP POTCAR override (Task 1)");
+        check(restored.vaspStdPath == original.vaspStdPath
+                  && restored.vaspGamPath == original.vaspGamPath
+                  && restored.vaspNclPath == original.vaspNclPath
+                  && !restored.vaspNclPath.isEmpty(),
+              "and the three per-cluster VASP executable flavors (Task 5)");
         check(restored.cpusPerTask == 8 && restored.gpusPerNode == 2
                   && restored.nodeList == original.nodeList
                   && restored.extraDirectives == original.extraDirectives
@@ -198,6 +208,10 @@ int main(int argc, char** argv)
               "including an empty VASP POTCAR override, which just leaves "
               "the local default in charge — not a crash on the field it "
               "predates");
+        check(old[0].vaspStdPath.isEmpty() && old[0].vaspGamPath.isEmpty()
+                  && old[0].vaspNclPath.isEmpty(),
+              "and the three Task 5 VASP executable flavors it predates too "
+              "— empty means std-only/local-default, not a load failure");
         check(old[0].cpusPerTask == 1 && old[0].gpusPerNode == 0
                   && old[0].nodeList.isEmpty()
                   && old[0].extraDirectives.isEmpty() && old[0].command.isEmpty(),

@@ -40,7 +40,25 @@ std::string generateTopologyScript(const TopologyConfig& cfg)
 _mj = os.path.join(_base, 'wannier.json')
 _gpw_path = None
 if os.path.exists(_mj):
-    _gpw_path = json.load(open(_mj)).get('gpw')
+    _meta = json.load(open(_mj))
+    # A VASP-sourced wannier.json (engine='VASP', gpw=None -- see
+    # WannierScriptGenerator.cpp's generateVaspWannier90Script) has no
+    # restartable GPAW wavefunction: parallel_transport below is a GPAW-
+    # specific function operating on a live GPAW object, which a VASP MLWF
+    # run never produced. Left unguarded this falls through to the .gpw
+    # search below, finds nothing, and reports a generic "no .gpw found"
+    # message -- true of the field, not the actual reason, and not
+    # actionable (Task 4, 2026-08-22; mirrors the identical guard
+    # WannierScriptGenerator.cpp's Wannier Interpolation path already has).
+    if _meta.get('engine') == 'VASP':
+        raise RuntimeError(
+            'The MLWF run in ' + _base + ' used VASP\'s own Wannier90 '
+            'library, not ase.dft.wannier -- topological invariants are '
+            'not implemented for that route yet (see FUTURE.md). Its '
+            'wannier90_hr.dat / wannier_hr.dat already holds H(R); this '
+            'module would need a reader for that instead of a GPAW '
+            'restart and gpaw.berryphase.parallel_transport.')
+    _gpw_path = _meta.get('gpw')
 if not (_gpw_path and os.path.exists(_gpw_path)):
     _found = sorted(glob.glob(os.path.join(_base, '*.gpw')))
     _gpw_path = _found[0] if _found else None

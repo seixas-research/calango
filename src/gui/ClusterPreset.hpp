@@ -53,6 +53,18 @@ struct ClusterPreset {
     /// Empty leaves the run.py-baked path (or the environment's own
     /// VASP_PP_PATH) in charge, exactly as before this field existed.
     QString vaspPotcarPath;
+    /// This cluster's own build of each VASP flavor — the executables
+    /// differ per machine exactly like the POTCAR library does, so they
+    /// belong here rather than in global Preferences. Exported as
+    /// CALANGO_VASP_STD / CALANGO_VASP_GAM / CALANGO_VASP_NCL ahead of
+    /// `setupLines`, the same way vaspPotcarPath is — see
+    /// SettingsManager.hpp's kVaspExecutable* comment for what each flavor
+    /// is for and why vasp_ncl is required (not optional) for spin-orbit.
+    /// Empty leaves whatever the LOCAL machine's Preferences baked into the
+    /// script (or the environment's own ASE_VASP_COMMAND) in charge.
+    QString vaspStdPath;
+    QString vaspGamPath;
+    QString vaspNclPath;
 
     // -- SLURM-only extensions (Task 4) -------------------------------
     // Mirror core::RemoteJobSpec's own fields of the same name exactly —

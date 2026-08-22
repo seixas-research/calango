@@ -279,7 +279,48 @@ Resolved resolve(core::CalculatorKind kind, const Context& context,
     };
 
     Resolved resolved;
-    if (text.contains(QLatin1String("{script}"))) {
+    // VASP's three build flavors (Preferences → External Files): exported
+    // UNCONDITIONALLY here, whichever command-line path this run takes
+    // below, because it is the GENERATED SCRIPT (AseScriptGenerator.cpp's
+    // emitVasp()) that reads them to pick ASE_VASP_COMMAND per run — the
+    // same "resolved wherever the script executes" design VASP_PP_PATH
+    // already uses (see SettingsManager.hpp's own comment on
+    // kVaspExecutableStd). A custom "{script}" launcher template still
+    // needs them for the same reason a template override does not disable
+    // VASP_PP_PATH resolution either.
+    if (kind == core::CalculatorKind::Vasp) {
+        static constexpr std::pair<const char*, const char*> kFlavors[] = {
+            {SettingsManager::kVaspExecutableStd, "CALANGO_VASP_STD"},
+            {SettingsManager::kVaspExecutableGam, "CALANGO_VASP_GAM"},
+            {SettingsManager::kVaspExecutableNcl, "CALANGO_VASP_NCL"},
+        };
+        for (const auto& [key, variable] : kFlavors) {
+            const QString path =
+                QSettings().value(QLatin1String(key)).toString().trimmed();
+            if (!path.isEmpty())
+                resolved.environment.insert(QLatin1String(variable), path);
+        }
+    }
+
+    // Script-launcher vs. solver-command is a property of the ENGINE
+    // (kind), not of whether the literal "{script}" placeholder still
+    // appears in this particular string — checking the string was the bug
+    // behind "GPAW runs on 1 core despite cores=4" surviving the previous
+    // fix (Task 1, 2026-08-22): displayCommand() below deliberately
+    // pre-substitutes every placeholder (including {script} -> "run.py")
+    // so the wizard's editable "Running:" field shows a ready-to-read
+    // command rather than raw template syntax. That already-substituted
+    // text is exactly what a caller who left the field untouched hands
+    // back here as `commandTemplate` (SimulationWizardBase::runCommand(),
+    // OrchestrationNodeItem::configuredRunCommand()) — with no literal
+    // "{script}" left in it, `text.contains("{script}")` was always FALSE
+    // for it, so a fully-correct GPAW "OMP_NUM_THREADS=1 mpirun -n 4 gpaw
+    // python run.py" preview was misclassified as a solver command,
+    // GPAW has no ASE_*_COMMAND (solverCommandVariable() returns empty for
+    // it), and the whole mpirun wrapper was silently discarded in favour
+    // of the generic solver-command fallback "{python} {script}" — a bare
+    // serial `python run.py`, with cores=4 lost with no diagnostic at all.
+    if (defaultTemplate(kind).contains(QLatin1String("{script}"))) {
         // A script launcher: this line starts the job process itself.
         resolved.commandLine = substitute(text);
         return resolved;

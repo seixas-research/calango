@@ -37,9 +37,16 @@ std::string generateTwoDBandsScript(const TwoDBandsConfig& cfg)
     // =====================================================================
     switch (cfg.backend) {
     case TwoDBandsBackend::Gpaw:
+        // MainWindow::stageJob() copies the baseline into this job's own
+        // directory as "baseline.gpw" (for a remote run, whose only
+        // filesystem is what got uploaded); prefer that staged copy over
+        // the absolute path baked in at generation time, which resolves
+        // only on the machine the script was generated on.
         out << AseScriptGenerator::gpawImports(cfg.gpaw) << "\n"
-            << "calc = GPAW(r\"" << cfg.baselineDensityPath
-            << "\", txt=\"gpaw_2d_bands.txt\")\n"
+               "import os\n"
+            << "_baseline = (\"baseline.gpw\" if os.path.exists(\"baseline.gpw\")\n"
+            << "             else r\"" << cfg.baselineDensityPath << "\")\n"
+               "calc = GPAW(_baseline, txt=\"gpaw_2d_bands.txt\")\n"
                "atoms = calc.get_atoms()\n"
                "efermi = float(calc.get_fermi_level())\n"
                "_calango_progress(1, 4)\n"
@@ -53,7 +60,9 @@ std::string generateTwoDBandsScript(const TwoDBandsConfig& cfg)
                "import shutil\n"
                "\n"
                "atoms = read(\"structure.extxyz\")\n"
-               "_calango_progress(1, 4)\n"
+            << AseScriptGenerator::vaspPotcarResolutionSnippet(
+                   cfg.vaspPotcarPath)
+            << "_calango_progress(1, 4)\n"
                "\n";
         break;
 
@@ -193,8 +202,16 @@ print(f'CALANGO_INFO 2D Brillouin-zone grid {_n}x{_n} '
 # ICHARG = 11 reads CHGCAR and never updates it, so no SCF runs
 # here. VASP opens 'CHGCAR' in the working directory and takes no
 # path for it, hence the copy.
+#
+# MainWindow::stageJob() copies the baseline into this job's own
+# directory as "baseline.CHGCAR" (for a remote run, whose only
+# filesystem is what got uploaded); prefer that staged copy over
+# the absolute path baked in at generation time, which resolves
+# only on the machine the script was generated on.
 )PY"
-            << "_baseline = r\"" << cfg.baselineDensityPath << "\"\n"
+            << "_baseline = (\"baseline.CHGCAR\" if os.path.exists("
+               "\"baseline.CHGCAR\")\n"
+            << "             else r\"" << cfg.baselineDensityPath << "\")\n"
             << R"PY(if not os.path.exists(_baseline):
     raise RuntimeError(
         f'The baseline charge density is gone: {_baseline}\n'
@@ -210,13 +227,39 @@ _calango_progress(2, 4)
             << "band_calc = Vasp(xc=\"PBE\", encut=" << cfg.ecutEv
             << ", icharg=11,\n"
                "                 isym=0, ismear=0, sigma=0.05,\n"
+               // Same PREC-must-match-the-baseline reasoning as
+               // ElectronicScriptGenerator.cpp's own VASP branch (Task 3,
+               // 2026-08-22): a mismatched grid is a hard VASP error, not
+               // a warning.
+            << "                 prec=\""
+            << AseScriptGenerator::vaspPrecString(cfg.gpaw.vaspPrec)
+            << "\",\n"
                "                 kpts=_kpts, reciprocal=True,\n";
         if (cfg.totalBands > 0)
             out << "                 nbands=" << cfg.totalBands << ",\n";
         out << "                 directory=\".\")\n"
                "atoms.calc = band_calc\n"
                "atoms.get_potential_energy()\n"
-               "efermi = float(atoms.calc.get_fermi_level())\n"
+               // Same reasoning as the 1D Electronic Structure module's own
+               // VASP baseline branch (ElectronicScriptGenerator.cpp): E_F
+               // from a run whose k-points are a 2D grid of individual
+               // diagonalizations, not a proper BZ-integration mesh, is not
+               // the VASP wiki's recommended source for ICHARG = 11 -- prefer
+               // the parent SCF's own single_point.json sidecar.
+               "efermi = None\n"
+               "try:\n"
+               "    with open(os.path.join(os.path.dirname(_baseline) or "
+               "'.', 'single_point.json')) as _fh:\n"
+               "        efermi = json.load(_fh).get('fermi_eV')\n"
+               "except Exception:\n"
+               "    pass\n"
+               "if efermi is None:\n"
+               "    efermi = float(atoms.calc.get_fermi_level())\n"
+               "    print('CALANGO_INFO no single_point.json fermi_eV "
+               "beside the baseline; using this NSCF pass\\'s own "
+               "(less reliable) Fermi level', flush=True)\n"
+               "else:\n"
+               "    efermi = float(efermi)\n"
                "_calango_progress(3, 4)\n"
                "\n";
         break;

@@ -56,6 +56,7 @@
 #include "gui/RandomNoiseViewer.hpp"
 #include "gui/RandomNoiseWizard.hpp"
 #include "gui/SimulationWizardBase.hpp"
+#include "gui/GeometryOptimizationWizard.hpp"
 #include "gui/MolecularDynamicsWizard.hpp"
 #include "gui/ThermodynamicIntegrationWizard.hpp"
 #include "gui/ThermodynamicIntegrationResults.hpp"
@@ -72,6 +73,7 @@
 #include "gui/TdbGeneratorDialog.hpp"
 #include "gui/HpcPanel.hpp"
 #include "gui/PreferencesDialog.hpp"
+#include "gui/SettingsManager.hpp"
 #include "gui/ShortcutRegistry.hpp"
 #include "gui/ViewportWidget.hpp"
 #include "gui/OpticsWizard.hpp"
@@ -94,6 +96,7 @@
 #include <QAbstractItemView>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QSettings>
 #include <QFile>
 #include <QLabel>
 #include <QComboBox>
@@ -106,6 +109,7 @@
 #include <QKeySequenceEdit>
 #include <QMainWindow>
 #include <QPlainTextEdit>
+#include <QScrollArea>
 #include <QSignalSpy>
 #include <QTabWidget>
 #include <QPushButton>
@@ -1031,6 +1035,120 @@ int main(int argc, char** argv)
                       QStringLiteral("atoms.calc.set(kpts=tuple(kpts)"))
                       && vaspScript.contains(QStringLiteral("gamma=True")),
                   "VASP sweeps KPOINTS, honoring the Γ toggle");
+        }
+    }
+
+    // Task 1 (session N+1): "Geometry Optimization Setup" with VASP
+    // selected had grown too tall for the screen once the internal-
+    // optimizer parameters (IBRION/NSW/EDIFFG/ISIF/SAXIS/LMAXMIX/baseline)
+    // joined the shared VASP settings group. The fix is structural
+    // (SimulationWizardBase::wrapInScrollArea(), applied to every stage
+    // page in buildUi(), not a VASP-only patch) — pinned here on the
+    // wizard that actually reported the bug, with the worst-case VASP
+    // configuration (internal relaxation driver, which is what surfaces
+    // the extra IBRION/ISIF/EDIFFG/NSW row on top of the always-shown
+    // fields) selected.
+    std::printf("Geometry Optimization Setup: VASP page fits the screen "
+               "(Task 1):\n");
+    {
+        calango::pybridge::PythonEngine python;
+        GeometryOptimizationWizard wizard;
+        check(true, "constructs");
+        // Unlike the Cutoff/K-points Convergence wizards above (one combo
+        // box, full stop), this one has several by Stage 2 (optimizer
+        // algorithm, cell filter, …) — found() by TYPE alone would as
+        // likely hit one of those as the actual engine combo, so identify
+        // it by what only it can offer: VASP as an item.
+        QComboBox* engine = nullptr;
+        for (QComboBox* combo : wizard.findChildren<QComboBox*>())
+            if (combo->findData(static_cast<int>(
+                    calango::core::CalculatorKind::Vasp)) >= 0) {
+                engine = combo;
+                break;
+            }
+        check(engine != nullptr, "has an engine combo that offers VASP");
+        if (engine)
+            engine->setCurrentIndex(engine->findData(
+                static_cast<int>(calango::core::CalculatorKind::Vasp)));
+        // The internal-relaxation driver is the worst case for height: it
+        // is what surfaces the IBRION/ISIF/EDIFFG/NSW row on top of every
+        // other VASP field (see SimulationWizardBase::updateVaspRows()).
+        QComboBox* driverCombo = nullptr;
+        for (QComboBox* combo : wizard.findChildren<QComboBox*>())
+            for (int i = 0; i < combo->count(); ++i)
+                if (combo->itemText(i).contains(
+                        QStringLiteral("internal relaxation"))) {
+                    driverCombo = combo;
+                    break;
+                }
+        check(driverCombo != nullptr, "has the relaxation-driver combo");
+        if (driverCombo)
+            driverCombo->setCurrentIndex(
+                static_cast<int>(calango::core::VaspRelaxDriver::Vasp));
+
+        wizard.show(); // realize the layout — sizes are 0 before this
+        // 900x640 is the wizard's own base size (SimulationWizardBase::
+        // buildUi()); the bound here is generous on top of that only for
+        // window-chrome slack, not for the VASP group's own content —
+        // which is exactly what must NOT reach this height any more.
+        check(wizard.height() <= 700,
+              "the dialog itself stays a fixed, screen-safe height instead "
+              "of growing to fit the VASP group's content");
+
+        // Identified by containing the ENGINE combo specifically (found
+        // above), not just "any" combo box — Stage 2 (Relaxation Settings)
+        // is wrapped too and has combo boxes of its own (the optimizer
+        // algorithm), so "the first scroll area with a combo box in it"
+        // would as likely match the wrong stage.
+        QScrollArea* calculatorScroll = nullptr;
+        for (QScrollArea* scroll : wizard.findChildren<QScrollArea*>()) {
+            if (!scroll->widget() || !engine)
+                continue;
+            for (QWidget* w = engine; w; w = w->parentWidget())
+                if (w == scroll->widget()) {
+                    calculatorScroll = scroll;
+                    break;
+                }
+            if (calculatorScroll)
+                break;
+        }
+        check(calculatorScroll != nullptr,
+              "the Calculator Settings page (holding the engine combo) is "
+              "wrapped in a scroll area");
+        // Concrete evidence, not just an inference: the page's OWN natural
+        // height (were it not scrolling) is what the dialog would have had
+        // to grow to before this fix — printed so a regression that erodes
+        // the margin again is visible here even if the 700px bound above
+        // still happens to hold.
+        if (calculatorScroll && calculatorScroll->widget())
+            std::printf(
+                "    VASP Calculator Settings page's own natural size: "
+                "%dx%d (wizard itself stays <= 700 tall regardless)\n",
+                calculatorScroll->widget()->minimumSizeHint().width(),
+                calculatorScroll->widget()->minimumSizeHint().height());
+
+        // The LAST row of the VASP group ("Extra INCAR tags") is the field
+        // most likely to have gone unreachable before this fix — find it by
+        // its distinctive placeholder text and confirm it is actually
+        // reachable through the scroll area, not merely constructed.
+        QWidget* extraIncarEdit = nullptr;
+        for (QPlainTextEdit* edit : wizard.findChildren<QPlainTextEdit*>())
+            if (edit->placeholderText().contains(QStringLiteral("NBANDS"))) {
+                extraIncarEdit = edit;
+                break;
+            }
+        check(extraIncarEdit != nullptr, "the Extra INCAR tags field exists");
+        if (extraIncarEdit && calculatorScroll) {
+            bool insideScrollArea = false;
+            for (QWidget* w = extraIncarEdit; w; w = w->parentWidget())
+                if (w == calculatorScroll->widget()) {
+                    insideScrollArea = true;
+                    break;
+                }
+            check(insideScrollArea,
+                  "and it is a descendant of the scrolled widget, so it "
+                  "stays reachable regardless of how tall the VASP group "
+                  "grows");
         }
     }
 
@@ -2690,7 +2808,8 @@ int main(int argc, char** argv)
         if (potcarEdit != edits.end()) {
             // Empty by default: specFromUi() must not export anything.
             (*potcarEdit)->clear();
-            const auto specEmpty = panel.specFromUi(QStringLiteral("job"));
+            const auto specEmpty = panel.specFromUi(
+                QStringLiteral("job"), calango::core::CalculatorKind::Vasp);
             check(specEmpty.setupLines.find("CALANGO_VASP_PP_PATH")
                       == std::string::npos,
                   "an empty POTCAR field exports nothing into setupLines");
@@ -2700,7 +2819,8 @@ int main(int argc, char** argv)
                 if (edit->placeholderText().contains(QStringLiteral("module load")))
                     edit->setPlainText(QStringLiteral("module load vasp"));
             (*potcarEdit)->setText(QStringLiteral("/cluster/pseudo/potcars"));
-            const auto specSet = panel.specFromUi(QStringLiteral("job"));
+            const auto specSet = panel.specFromUi(
+                QStringLiteral("job"), calango::core::CalculatorKind::Vasp);
             const QString setupSet = QString::fromStdString(specSet.setupLines);
             check(setupSet.contains(
                       QStringLiteral(
@@ -2753,11 +2873,65 @@ int main(int argc, char** argv)
         const auto plainEdits = panel.findChildren<QPlainTextEdit*>();
         const auto commandEdit = std::find_if(
             plainEdits.begin(), plainEdits.end(), [](const QPlainTextEdit* e) {
-                return e->toPlainText() == QStringLiteral("python3 run.py");
+                return e->placeholderText() == QStringLiteral("python3 run.py");
             });
         check(commandEdit != plainEdits.end(),
-              "the Command field defaults to \"python3 run.py\", matching "
-              "RemoteJobSpec's own default");
+              "the Command field is left BLANK by default, with "
+              "\"python3 run.py\" only as placeholder text -- a literal "
+              "default here (rather than blank) would defeat specFromUi()'s "
+              "\"blank = use the calculator-aware default\" resolution "
+              "below, which is exactly the bug this replaced (Task 2)");
+        if (commandEdit != plainEdits.end())
+            check((*commandEdit)->toPlainText().isEmpty(),
+                  "and its actual text is empty, not the placeholder string "
+                  "itself");
+
+        // -- GPAW cores reaching the REMOTE launch command (Task 2) --------
+        // This is the actual regression: RemoteJobSpec::command used to
+        // default to a hardcoded, calculator-blind "python3 run.py" --
+        // meaning a GPAW job submitted to a cluster with Nodes x
+        // Tasks/node > 1 silently ran as ONE serial process, exactly the
+        // "runs on 1 core despite cores=4" bug, just on the remote path
+        // (RunCommands.cpp already had the local "Run" tab right).
+        const auto shapeNodesSpin = std::find_if(
+            spins.begin(), spins.end(), [](const QSpinBox* s) {
+                return s->toolTip().contains(QStringLiteral("--nodes"));
+            });
+        const auto shapeTasksSpin = std::find_if(
+            spins.begin(), spins.end(), [](const QSpinBox* s) {
+                return s->toolTip().startsWith(
+                    QStringLiteral("Ranks (or cores) on each node"));
+            });
+        if (shapeNodesSpin != spins.end() && shapeTasksSpin != spins.end()
+            && commandEdit != plainEdits.end()) {
+            (*commandEdit)->clear(); // no per-cluster override
+            (*shapeNodesSpin)->setValue(2);
+            (*shapeTasksSpin)->setValue(2);
+            const auto gpawSpec = panel.specFromUi(
+                QStringLiteral("job"), calango::core::CalculatorKind::Gpaw);
+            const QString gpawCommand = QString::fromStdString(gpawSpec.command);
+            check(gpawCommand.contains(QStringLiteral("mpirun -n 4"))
+                      && gpawCommand.contains(QStringLiteral("gpaw python")),
+                  "a blank Command field resolves, for GPAW, to an "
+                  "mpirun-wrapped launch line whose rank count is Nodes x "
+                  "Tasks/node (2x2=4), not a bare serial \"python3 run.py\"");
+
+            // A solver-command engine (VASP) takes the OTHER branch of the
+            // same fix: the rank count belongs in the exported
+            // ASE_VASP_COMMAND, not on the job's own command line, which
+            // stays a plain interpreter invocation.
+            const auto vaspSpec = panel.specFromUi(
+                QStringLiteral("job"), calango::core::CalculatorKind::Vasp);
+            const QString vaspCommand = QString::fromStdString(vaspSpec.command);
+            const QString vaspSetup = QString::fromStdString(vaspSpec.setupLines);
+            check(!vaspCommand.contains(QStringLiteral("mpirun")),
+                  "...while for VASP (a solver-command engine) the job's "
+                  "own command line stays a plain interpreter invocation");
+            check(vaspSetup.contains(QStringLiteral(
+                      "export ASE_VASP_COMMAND=\"mpirun -np 4 vasp_std\"")),
+                  "and the rank count instead reaches ASE_VASP_COMMAND, "
+                  "exported ahead of the job's setup lines");
+        }
 
         // Hidden for PBS/SGE, shown for SLURM -- re-derived from the combo
         // rather than assumed, since "SLURM first" is a UI convention, not
@@ -2790,7 +2964,8 @@ int main(int argc, char** argv)
         // specFromUi() actually carries this through to RemoteJobSpec.
         if (nodeListEdit != edits.end()) {
             (*nodeListEdit)->setText(QStringLiteral("work1"));
-            const auto spec = panel.specFromUi(QStringLiteral("job"));
+            const auto spec = panel.specFromUi(
+                QStringLiteral("job"), calango::core::CalculatorKind::Gpaw);
             check(spec.nodeList == "work1",
                   "a typed Node list value reaches RemoteJobSpec via "
                   "specFromUi()");
@@ -2811,7 +2986,8 @@ int main(int argc, char** argv)
             (*extraDirectivesEdit)
                 ->setPlainText(QStringLiteral("#SBATCH --account=phys-2026\n"
                                               "#SBATCH --qos=high"));
-            const auto spec = panel.specFromUi(QStringLiteral("job"));
+            const auto spec = panel.specFromUi(
+                QStringLiteral("job"), calango::core::CalculatorKind::Gpaw);
             const QString extra = QString::fromStdString(spec.extraDirectives);
             check(extra.contains(QStringLiteral("--account=phys-2026"))
                       && extra.contains(QStringLiteral("--qos=high")),
@@ -2839,6 +3015,62 @@ int main(int argc, char** argv)
         check(walltimeEdit != edits.end()
                   && (*walltimeEdit)->text() == QStringLiteral("48:00:00"),
               "a new Scheduler tab defaults its walltime to 48:00:00");
+    }
+
+    // Preferences -> Simulation Files (Task 3): the default simulations
+    // folder and how "leave it configured" vs. "leave it blank" resolve.
+    std::printf("Preferences -> Simulation Files (Task 3):\n");
+    {
+        // defaultSimulationsDirectory() is a pure string computation --
+        // exercised directly, with NO key set, so this block never touches
+        // the real $HOME (simulationsDirectory() below is only ever
+        // exercised against an explicitly-configured scratch directory, for
+        // exactly that reason).
+        const QString expected =
+            QDir::homePath() + QStringLiteral("/calango_simulations");
+        check(SettingsManager::defaultSimulationsDirectory() == expected,
+              "the default is ~/calango_simulations, resolved through "
+              "QDir::homePath() -- the proper per-platform home-directory "
+              "API, never a literal \"~\" (which QDir/QFile never expand)");
+
+        QTemporaryDir sandbox;
+        check(sandbox.isValid(), "scratch directory created");
+        const QString customPath =
+            QDir(sandbox.path()).filePath(QStringLiteral("my_custom_runs"));
+        QSettings().setValue(
+            QLatin1String(SettingsManager::kSimulationsDir), customPath);
+        check(SettingsManager::simulationsDirectory() == customPath,
+              "an explicitly-configured path is used verbatim -- "
+              "new-default-only semantics: a user who already set their "
+              "own path is never redirected to the new default");
+        check(QDir(customPath).exists(),
+              "and it is created on first use, since it did not exist yet");
+
+        // Reset (Preferences' own "Reset" button just clears the key) falls
+        // back to the NEW default -- the one place this matters: an
+        // install that never touched this setting starts using
+        // ~/calango_simulations from here on, same as any other
+        // never-configured default. Not exercised via simulationsDirectory()
+        // itself (that would mkpath the real $HOME), but this is exactly
+        // what PreferencesDialog's placeholder/tooltip/status label and
+        // Reset button all already read live off
+        // defaultSimulationsDirectory() (PreferencesDialog.cpp) -- checked
+        // above.
+        QSettings().setValue(QLatin1String(SettingsManager::kSimulationsDir),
+                             QString());
+        PreferencesDialog dialog;
+        QLineEdit* simulationsEdit = nullptr;
+        for (QLineEdit* edit : dialog.findChildren<QLineEdit*>())
+            if (edit->placeholderText() == expected)
+                simulationsEdit = edit;
+        check(simulationsEdit != nullptr,
+              "the Simulation Files field's placeholder reads the new "
+              "default when nothing is configured");
+        check(simulationsEdit && simulationsEdit->text().isEmpty(),
+              "and the field itself is left blank -- not pre-filled with "
+              "the default text, so it round-trips as \"unconfigured\" "
+              "rather than freezing today's default the way commandEdit_ "
+              "used to (Task 2's HPC panel fix)");
     }
 
     // Preferences -> Hotkeys (Task 2): the table PreferencesDialog builds
@@ -3221,6 +3453,23 @@ int main(int argc, char** argv)
             panel.setTaskStatus(aborted, ProcessManagerPanel::Status::Failed);
             check(tree->topLevelItem(1)->text(3).isEmpty(),
                   "a task aborted while queued reports no walltime");
+
+            // taskStatus() (Task 3, 2026-08-22): the by-ID counterpart to
+            // rowStatus(), added so a baseline picker (MainWindow's
+            // gpawBaselines()/gpawDensityFiles()/vaspChargeDensityFiles()/
+            // espressoBaselines()) can filter OUT a crashed or still-
+            // running parent instead of only checking whether it left a
+            // plausible-looking file behind -- the real gap behind treating
+            // "a CHGCAR exists" as "the SCF that wrote it converged",
+            // found investigating proc_4's own diagnosis.
+            check(panel.taskStatus(id) == ProcessManagerPanel::Status::Completed,
+                  "taskStatus() reports the completed job's real status");
+            check(panel.taskStatus(aborted) == ProcessManagerPanel::Status::Failed,
+                  "and the failed one's, by the same ID it was registered "
+                  "under");
+            check(panel.taskStatus(9999) == ProcessManagerPanel::Status::Queued,
+                  "an unregistered ID reports Queued rather than crashing "
+                  "or fabricating a status");
         }
     }
 

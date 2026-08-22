@@ -98,6 +98,9 @@ protected:
     /// is selected — see SimulationWizardBase::preflightSecondary()'s own
     /// doc for why this is weaker than VASP's per-element check.
     bool preflightSecondary() override;
+    /// The selected baseline density file, for remote staging (see the base
+    /// class's own doc comment).
+    QString baselineDensityPathToStage() const override;
 
 private:
     /// Warn in-page when the selected structure is not a sheet: the k_z = 0

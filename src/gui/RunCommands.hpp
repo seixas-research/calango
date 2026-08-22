@@ -16,8 +16,12 @@ namespace calango::gui {
 ///
 ///   * **Script launchers** contain `{script}`. The template IS the process
 ///     command line — the ASE script itself runs under it. This is how a
-///     parallel GPAW job is started: `gpaw -P 4 python run.py` launches four
-///     MPI ranks that each execute the script.
+///     parallel GPAW job is started: `mpirun -n 4 gpaw python run.py`
+///     launches four MPI ranks that each execute the script. NOT `gpaw -P 4
+///     python run.py` — GPAW's own `-P`/`--parallel` flag is deprecated as
+///     of the version this was verified against (26.7.1b1) and prints a
+///     runtime warning recommending exactly the `mpirun`/`mpiexec` form
+///     used here (gpaw/cli/main.py's own `hook()`).
 ///
 ///   * **Solver commands** contain `{input}` / `{output}`. These are NOT the
 ///     process command line: for Quantum ESPRESSO or SIESTA the ASE script
@@ -29,7 +33,16 @@ namespace calango::gui {
 ///     ASE_SIESTA_COMMAND), and the job runs `{python} {script}`.
 ///
 /// resolve() applies that rule, so callers get one launch command line plus
-/// whatever environment the engine needs.
+/// whatever environment the engine needs. The classification is by ENGINE
+/// (`kind`, via defaultTemplate()'s own placeholders), never by scanning the
+/// literal command-line text for "{script}": a caller's `commandTemplate`
+/// argument is routinely an ALREADY-SUBSTITUTED string (displayCommand()
+/// below deliberately bakes every placeholder in, including {script}, so a
+/// wizard's editable "Running:" field shows something a user can read) —
+/// checking that string for a placeholder that has already been replaced
+/// away is always false, which is exactly the bug ("GPAW runs on 1 core
+/// despite cores=4" surviving its own fix, Task 1 2026-08-22) resolve()'s
+/// own comment documents in full.
 namespace RunCommands {
 
 /// Placeholders a template may use:

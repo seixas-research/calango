@@ -26,7 +26,10 @@ public:
     /// ~/.local/share/... — correct places for an application's own state, and
     /// the wrong place for a user's simulation output: buried, hidden by the
     /// file manager, and not where anyone looks for a trajectory they want to
-    /// keep. It now defaults to ~/My Simulations and is editable.
+    /// keep. It then defaulted to ~/My Simulations, and now (Task 3) to
+    /// ~/calango_simulations — always editable, and always resolved through
+    /// SettingsManager::defaultSimulationsDirectory(), never inlined here or
+    /// anywhere else, so it has exactly one place to change again.
     ///
     /// A SAVED project is unaffected: its jobs stay in .calango_tmp/ beside
     /// the .calproj, so a project remains self-contained and movable.
@@ -68,6 +71,25 @@ public:
     static constexpr auto kPseudopotentialsEspresso =
         "pseudopotentials/quantumEspresso";
     static constexpr auto kPseudopotentialsSiesta = "pseudopotentials/siesta";
+    /// The three VASP build flavors, each a separate compiled executable —
+    /// not a runtime flag ASE can pass to one binary. Empty means "let
+    /// ASE_VASP_COMMAND / PATH resolve the bare name", the same fallback
+    /// kPseudopotentialsVasp uses for VASP_PP_PATH.
+    ///   vasp_std -> everything except a Gamma-only k-mesh or spin-orbit.
+    ///   vasp_gam -> a single (Gamma-point) k-point run; a build without the
+    ///               k-point loop, offered as a speed optimization, never
+    ///               required (vasp_std also handles a Gamma-only mesh).
+    ///   vasp_ncl -> LSORBIT = .TRUE. (spin-orbit / non-collinear). REQUIRED,
+    ///               not an optimization — vasp_std cannot run a
+    ///               noncollinear calculation at all.
+    /// AseScriptGenerator.cpp's emitVasp() picks among them per run from
+    /// c.spinMode / c.kpts, exporting the choice as ASE_VASP_COMMAND itself
+    /// (see its own comment) rather than through a fixed Preferences
+    /// template — the same "resolved wherever the script executes" design
+    /// VASP_PP_PATH already uses, local or remote.
+    static constexpr auto kVaspExecutableStd = "vaspExecutables/std";
+    static constexpr auto kVaspExecutableGam = "vaspExecutables/gam";
+    static constexpr auto kVaspExecutableNcl = "vaspExecutables/ncl";
     /// Directory of CUSTOM GPAW LCAO basis-set files.
     ///
     /// Not a pseudopotential path, though it travels the same way. GPAW reads

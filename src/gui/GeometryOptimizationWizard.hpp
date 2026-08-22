@@ -50,6 +50,20 @@ protected:
     bool showsDispersionToggle() const override { return true; }
     bool settingsStageFirst() const override { return false; }
     bool taskHasIonicSteps() const override { return true; }
+    /// VASP's own internal relaxation route (IBRION/NSW/ISIF/EDIFFG, chosen
+    /// on the Calculator Settings page) makes this stage's optimizer
+    /// algorithm, ASE force criterion and cell filter/mask redundant — VASP
+    /// is the one taking the ionic steps, not ASE, so those controls
+    /// describe a loop that is never created. NSW is surfaced instead on the
+    /// VASP settings group itself (vaspNswSpin_); the cell-relaxation FLOOR
+    /// (relax cell y/n) is already fully covered by the ISIF combo there.
+    /// Per-atom geometry constraints ("Geometry constraints…", also on this
+    /// stage) become unreachable on this route in the process — noted as a
+    /// known limitation in FUTURE.md rather than solved here.
+    bool skipTaskSettingsStage() const override
+    {
+        return vaspInternalRelaxationSelected();
+    }
     bool showsGpawSymmetryToggle() const override { return true; }
     bool showsGpawDensityExport() const override { return true; }
     QString generateScript() const override;

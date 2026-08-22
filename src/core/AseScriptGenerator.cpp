@@ -311,22 +311,46 @@ constexpr const char* kJsonLoggerHelper =
     "import threading as _threading\n"
     "import warnings as _warnings\n"
     "\n"
+    "# Rank 0 only, everywhere below: an engine that parallelizes by running\n"
+    "# this SCRIPT under MPI (GPAW's own mode, RunCommands.hpp) runs this\n"
+    "# exact driver on every rank, not just once. Every other engine here is\n"
+    "# a single Python process (a solver-command engine shells out to an\n"
+    "# already-parallel BINARY; this script itself never forks), so the\n"
+    "# import below simply fails there and _calango_rank stays 0 -- the\n"
+    "# ImportError is the expected, unconditional case for anything that is\n"
+    "# not GPAW, not a symptom to react to.\n"
+    "try:\n"
+    "    from gpaw.mpi import world as _calango_mpi_world\n"
+    "    _calango_rank = _calango_mpi_world.rank\n"
+    "except Exception:\n"
+    "    _calango_rank = 0\n"
+    "\n"
     "_calango_lock = _threading.Lock()\n"
     "_calango_metrics = {\"metrics\": []}\n"
     "_calango_events = {\"log\": []}\n"
     "\n"
-    "_calango_warnings = _logging.getLogger(\"py.warnings\")\n"
-    "_calango_warnings.handlers = [_logging.FileHandler(\"warnings.log\",\n"
-    "                                                   mode=\"w\")]\n"
-    "_calango_warnings.propagate = False\n"
-    "_logging.captureWarnings(True)\n"
-    "# \"default\", not \"ignore\": every distinct warning is recorded once per\n"
-    "# location, which is what makes warnings.log useful for diagnosis.\n"
-    "_warnings.simplefilter(\"default\")\n"
+    "if _calango_rank == 0:\n"
+    "    _calango_warnings = _logging.getLogger(\"py.warnings\")\n"
+    "    _calango_warnings.handlers = [_logging.FileHandler(\"warnings.log\",\n"
+    "                                                       mode=\"w\")]\n"
+    "    _calango_warnings.propagate = False\n"
+    "    _logging.captureWarnings(True)\n"
+    "    # \"default\", not \"ignore\": every distinct warning is recorded once\n"
+    "    # per location, which is what makes warnings.log useful for\n"
+    "    # diagnosis.\n"
+    "    _warnings.simplefilter(\"default\")\n"
     "\n"
     "\n"
     "def _calango_write(path, data):\n"
-    "    \"\"\"Replace `path` atomically — a reader must never see half a file.\"\"\"\n"
+    "    \"\"\"Replace `path` atomically — a reader must never see half a\n"
+    "    file. Rank 0 only: every MPI rank runs this same script (see\n"
+    "    _calango_rank above), and more than one of them writing the SAME\n"
+    "    path races on the rename below -- one rank's `os.replace` can find\n"
+    "    the `.tmp` file another rank already consumed and renamed away,\n"
+    "    raising FileNotFoundError and aborting the whole run.\n"
+    "    \"\"\"\n"
+    "    if _calango_rank != 0:\n"
+    "        return\n"
     "    with open(path + \".tmp\", \"w\") as handle:\n"
     "        _json.dump(data, handle)\n"
     "    _os.replace(path + \".tmp\", path)\n"
@@ -535,14 +559,7 @@ bool vaspDrivesRelaxation(const CalculatorConfig& c)
 void emitVasp(std::ostringstream& out, const CalculatorConfig& c)
 {
     const auto pyBool = [](bool value) { return value ? "True" : "False"; };
-    const auto prec = [&] {
-        switch (c.vaspPrec) {
-        case VaspPrecision::Normal: return "Normal";
-        case VaspPrecision::Single: return "Single";
-        case VaspPrecision::Accurate: break;
-        }
-        return "Accurate";
-    }();
+    const std::string prec = AseScriptGenerator::vaspPrecString(c.vaspPrec);
     const auto algo = [&] {
         switch (c.vaspAlgo) {
         case VaspAlgo::Fast: return "Fast";
@@ -603,7 +620,8 @@ void emitVasp(std::ostringstream& out, const CalculatorConfig& c)
            "# ASE_VASP_COMMAND (or ASE's `command`), and the PAW datasets\n"
            "# below.\n"
            "import os\n"
-           "from ase.calculators.vasp import Vasp\n"
+        << (c.vaspChgcarBaselinePath.empty() ? "" : "import shutil\n")
+        << "from ase.calculators.vasp import Vasp\n"
            "\n";
 
     // PAW dataset resolution. The SAME script runs unmodified whether it is
@@ -618,62 +636,82 @@ void emitVasp(std::ostringstream& out, const CalculatorConfig& c)
     // ACTUALLY executing on. Neither set: ASE falls back to whatever
     // VASP_PP_PATH the environment already carries, exactly as before this
     // mechanism existed.
-    out << "_cluster_override = os.environ.get('CALANGO_VASP_PP_PATH', '').strip()\n";
-    if (!c.vaspPotcarPath.empty())
-        out << "_potcar_root = _cluster_override or r\"" << c.vaspPotcarPath << "\"\n";
-    else
-        out << "_potcar_root = _cluster_override\n";
-    out << "if _potcar_root:\n"
-           "    if _cluster_override:\n"
-           "        print(f'CALANGO_INFO POTCAR directory from the "
-           "per-cluster override: {_potcar_root}', flush=True)\n"
-           "    if not os.path.isdir(_potcar_root):\n"
-           "        raise RuntimeError(\n"
-           "            f'POTCAR directory not found: {_potcar_root}\\n'\n"
-           "            'Set it in the calculator settings (VASP -> POTCAR "
-           "directory),\\n'\n"
-           "            'or per-cluster in the HPC panel (Scheduler -> VASP "
-           "POTCAR directory).')\n"
-           // ASE looks for $VASP_PP_PATH/potpaw_PBE/<El>/POTCAR; an
-           // installation that keeps the element folders directly under the
-           // POTCAR directory gets a symlink shim so it resolves anyway.
-           "    _variant_dir = next(\n"
-           "        (_d for _d in ('potpaw_PBE', 'potpaw', 'potpaw_LDA')\n"
-           "         if os.path.isdir(os.path.join(_potcar_root, _d))), "
-           "None)\n"
-           "    if _variant_dir is None:\n"
-           "        _shim = os.path.abspath('_potcar_shim')\n"
-           "        os.makedirs(_shim, exist_ok=True)\n"
-           "        for _name in ('potpaw_PBE', 'potpaw_LDA', 'potpaw'):\n"
-           "            _link = os.path.join(_shim, _name)\n"
-           "            if not os.path.exists(_link):\n"
-           "                os.symlink(_potcar_root, _link)\n"
-           "        print(f'CALANGO_INFO flat POTCAR layout — shimmed via "
-           "{_shim}',\n"
-           "              flush=True)\n"
-           "        _potcar_root = _shim\n"
-           "        _variant_dir = 'potpaw_PBE'\n"
-           "    os.environ['VASP_PP_PATH'] = _potcar_root\n"
-           // Fail before VASP does, and name exactly which elements are
-           // missing, rather than a deep ASE traceback minutes into the
-           // queue — the directory existing is necessary but not sufficient,
-           // a library can easily be missing just one element's POTCAR.
-           "    _missing = [_el for _el in "
-           "dict.fromkeys(atoms.get_chemical_symbols())\n"
-           "                if not os.path.isfile(os.path.join(\n"
-           "                    _potcar_root, _variant_dir, _el, "
-           "'POTCAR'))]\n"
-           "    if _missing:\n"
-           "        raise RuntimeError(\n"
-           "            f'No POTCAR for {\", \".join(_missing)} under '\n"
-           "            f'{os.path.join(_potcar_root, _variant_dir)}\\n'\n"
-           "            'PAW variants (_sv/_pv/_d) and the LDA/PBE library "
-           "choice are not\\n'\n"
-           "            'auto-selected -- point the POTCAR directory at the "
-           "library that\\n'\n"
-           "            'already has the right variant for every "
-           "element.')\n"
-           "\n";
+    out << AseScriptGenerator::vaspPotcarResolutionSnippet(c.vaspPotcarPath);
+
+    // vasp_std / vasp_gam / vasp_ncl: three separate compiled executables
+    // (SettingsManager.hpp's kVaspExecutable* comment), not a runtime flag,
+    // so the right one has to be chosen and exported as ASE_VASP_COMMAND
+    // before Vasp() ever runs -- resolved the SAME way as POTCAR above
+    // (CALANGO_VASP_* read from the environment, local or remote), so this
+    // is correct whichever machine the script actually executes on, not
+    // just the one it was generated on.
+    //
+    // LSORBIT wins outright and is a HARD requirement, not an optimization:
+    // vasp_std cannot run a noncollinear calculation at all, and silently
+    // falling back to whatever ASE_VASP_COMMAND the launcher already set
+    // (vasp_std, by every default template) would run the wrong binary and
+    // produce a plausible-looking but wrong result -- exactly the class of
+    // bug this codebase does not let through quietly (CLAUDE.md).
+    // Gamma-only is the opposite case: vasp_gam is strictly an optimization
+    // (vasp_std also handles a single k-point, just slower), so an
+    // unconfigured CALANGO_VASP_GAM silently keeps whatever ASE_VASP_COMMAND
+    // is already set.
+    if (c.spinMode == SpinMode::NonCollinear) {
+        out << "_vasp_exe = os.environ.get('CALANGO_VASP_NCL', '').strip()\n"
+               "if not _vasp_exe:\n"
+               "    raise RuntimeError(\n"
+               "        'Spin-orbit coupling (LSORBIT) needs vasp_ncl -- "
+               "vasp_std cannot run a\\n'\n"
+               "        'noncollinear calculation at all. Set it in "
+               "Preferences -> External Files\\n'\n"
+               "        '(or the cluster profile\\'s own VASP executables) "
+               "before running.')\n"
+               "os.environ['ASE_VASP_COMMAND'] = _vasp_exe\n"
+               "\n";
+    } else {
+        const bool gammaOnly =
+            c.kpts[0] <= 1 && c.kpts[1] <= 1 && c.kpts[2] <= 1;
+        out << "_vasp_exe = os.environ.get('"
+            << (gammaOnly ? "CALANGO_VASP_GAM" : "CALANGO_VASP_STD")
+            << "', '').strip()\n"
+               "if _vasp_exe:\n"
+               "    os.environ['ASE_VASP_COMMAND'] = _vasp_exe\n"
+               "\n";
+    }
+
+    // A prior Single-point Calculation's CHGCAR, restarted non-self-
+    // consistently (ICHARG = 11) instead of converging this run's own SCF —
+    // the two-stage collinear -> SOC chain (docs/sphinx/source/simulations
+    // /calculators.md's VASP section) is the reason this exists on the
+    // ordinary Single-point path rather than only on the specialized
+    // Electronic Structure / 2D Bands baseline concept those already have.
+    // Same staged-copy / staged-path preference as those two
+    // (ElectronicScriptGenerator.cpp, TwoDBandsScriptGenerator.cpp): the
+    // job directory's own "baseline.CHGCAR" (MainWindow::stageJob()) is
+    // preferred over the absolute path baked in at generation time, which
+    // only ever resolves on the machine the script was generated on.
+    const bool vaspRestartsFromChgcar = !c.vaspChgcarBaselinePath.empty();
+    if (vaspRestartsFromChgcar) {
+        out << "# Non-self-consistent restart on a converged density.\n"
+               "#\n"
+               "# ICHARG = 11 reads CHGCAR and never updates it, so no SCF\n"
+               "# runs here. VASP opens 'CHGCAR' in the working directory\n"
+               "# and takes no path for it, hence the copy.\n"
+            << "_baseline = (\"baseline.CHGCAR\" if os.path.exists("
+               "\"baseline.CHGCAR\")\n"
+            << "             else r\"" << c.vaspChgcarBaselinePath << "\")\n"
+               "if not os.path.exists(_baseline):\n"
+               "    raise RuntimeError(\n"
+               "        f'The baseline charge density is gone: {_baseline}\\n'\n"
+               "        'ICHARG = 11 cannot converge one of its own — re-run "
+               "the '\n"
+               "        'Single-point Calculation that produced it.')\n"
+               "if os.path.abspath(_baseline) != os.path.abspath('CHGCAR'):\n"
+               "    shutil.copyfile(_baseline, 'CHGCAR')\n"
+               "print(f'CALANGO_INFO reusing the charge density from "
+               "{_baseline}', flush=True)\n"
+               "\n";
+    }
 
     out << "atoms.calc = Vasp(\n"
         << "    directory=\".\",\n"
@@ -688,8 +726,10 @@ void emitVasp(std::ostringstream& out, const CalculatorConfig& c)
         // without this misses Γ entirely, which a hexagonal cell and any
         // downstream band or Wannier step both care about.
         << "    gamma=" << pyBool(c.kptsGammaCentered) << ",  # "
-        << (c.kptsGammaCentered ? "Γ-centered" : "Monkhorst-Pack") << "\n"
-        << "    # Electronic minimization\n"
+        << (c.kptsGammaCentered ? "Γ-centered" : "Monkhorst-Pack") << "\n";
+    if (vaspRestartsFromChgcar)
+        out << "    icharg=11,  # fixed density, read from the CHGCAR above\n";
+    out << "    # Electronic minimization\n"
         << "    algo=\"" << algo << "\",\n"
         << "    nelm=" << c.vaspNelm << ",\n"
         << "    ediff=" << c.vaspEdiff << ",\n"
@@ -721,10 +761,54 @@ void emitVasp(std::ostringstream& out, const CalculatorConfig& c)
         out << "    # Spin. MAGMOM comes from the structure's initial moments,\n"
                "    # which ASE writes out of `atoms` for us.\n"
                "    ispin=2,\n";
-        if (c.spinMode == SpinMode::NonCollinear)
+        if (c.spinMode == SpinMode::NonCollinear) {
             out << "    lsorbit=True,\n";
+            // SAXIS: the quantization axis sigma_3 points along after
+            // normalization (VASP wiki, SAXIS; default (0,0,1), which is
+            // also this field's own default, so an unmodified SAXIS is
+            // still written explicitly rather than left to VASP's own
+            // default — a script that is exact about what it asked for).
+            out << "    saxis=(" << c.vaspSaxis[0] << ", " << c.vaspSaxis[1]
+                << ", " << c.vaspSaxis[2] << "),\n";
+        }
     } else {
         out << "    ispin=1,\n";
+    }
+    // LMAXMIX: 0 means "leave VASP's own default (2)" — see the field's own
+    // doc comment (CalculatorConfig.hpp) for when the wiki recommends
+    // raising it (ICHARG = 11 restarts, DFT+U band structures).
+    if (c.vaspLmaxmix > 0)
+        out << "    lmaxmix=" << c.vaspLmaxmix << ",\n";
+
+    // DFT+U (Task 2, 2026-08-22). ldau_luj is keyed by ELEMENT SYMBOL, not
+    // position: ASE's own create_input.py (set_ldau()) builds the
+    // positional LDAUL/LDAUU/LDAUJ arrays from it against the SAME
+    // per-species ordering it uses to write POSCAR itself, so this can
+    // never disagree with the actual species order — see
+    // core::VaspHubbardU's own doc comment for why that hand-off, not a
+    // C++/Python-string-built positional array, is the point. A species
+    // this dict does not mention gets ASE's own default, {'L': -1, 'U':
+    // 0.0, 'J': 0.0} (no correction) — every entry is still written
+    // explicitly below, one per species, so the generated script is
+    // self-documenting about what every element in the cell is getting.
+    if (c.vaspUseHubbardU && !c.vaspHubbardU.empty()) {
+        out << "    ldau=True,\n"
+            << "    ldautype="
+            << (c.vaspHubbardType == VaspHubbardType::Liechtenstein ? 1 : 2)
+            << ",\n"
+               // 1: the on-site occupancy matrix is written to OUTCAR —
+               // the minimum needed to sanity-check a DFT+U run actually
+               // converged to the intended occupation, at no extra
+               // computational cost (VASP wiki, LDAUPRINT).
+               "    ldauprint=1,\n"
+               "    ldau_luj={\n";
+        for (const VaspHubbardU& hubbard : c.vaspHubbardU) {
+            if (hubbard.element.empty())
+                continue;
+            out << "        \"" << hubbard.element << "\": {'L': " << hubbard.l
+                << ", 'U': " << hubbard.u << ", 'J': " << hubbard.j << "},\n";
+        }
+        out << "    },\n";
     }
 
     // Ionic steps are emitted ONLY when VASP is the one taking them. Writing
@@ -1821,10 +1905,26 @@ void emitVaspInternalRelaxation(std::ostringstream& out,
            "energy = atoms.get_potential_energy()\n"
            "_forces = _np.asarray(atoms.get_forces(), dtype=float)\n"
            "_force_norms = _np.linalg.norm(_forces, axis=1)\n"
-           "fmax_final = float(_force_norms.max()) if _force_norms.size else 0.0\n"
-        << "converged = bool(fmax_final <= " << c.fmax
-        << ")\n"
-           "write('optimized.extxyz', atoms)\n"
+           "fmax_final = float(_force_norms.max()) if _force_norms.size else 0.0\n";
+    // "converged" here has to be judged against the criterion VASP ACTUALLY
+    // used — EDIFFG, not the ASE-side fmax field. Under this route
+    // (skipTaskSettingsStage(), GeometryOptimizationWizard) the ASE optimizer
+    // stage that owns fmax_ is never shown, so that field sits at its
+    // untouched default and would silently misreport convergence against a
+    // number the user never set for this run. EDIFFG < 0 is VASP's own
+    // force-based convention (EDIFFG.md); EDIFFG > 0 means an energy
+    // criterion, which has no force threshold to compare fmax_final against
+    // at all, so "converged" simply reports what VASP itself decided.
+    const double fmaxTarget = c.vaspEdiffg < 0.0 ? -c.vaspEdiffg : c.fmax;
+    if (c.vaspEdiffg < 0.0) {
+        out << "converged = bool(fmax_final <= " << fmaxTarget << ")\n";
+    } else {
+        out << "# EDIFFG = " << c.vaspEdiffg << " > 0 is an ENERGY criterion "
+               "(EDIFFG.md) — VASP's own termination is the only signal, "
+               "there is no force threshold fmax_final is measured against.\n"
+               "converged = True\n";
+    }
+    out << "write('optimized.extxyz', atoms)\n"
            "print(f'CALANGO_RESULT converged={converged} "
            "energy_eV={energy:.6f}', flush=True)\n"
            "\n"
@@ -1838,7 +1938,7 @@ void emitVaspInternalRelaxation(std::ostringstream& out,
            "    'driver': 'vasp',\n"
            "    'converged': converged,\n"
            "    'steps': len(_frames),\n"
-        << "    'fmax_target_eV_per_A': " << c.fmax
+        << "    'fmax_target_eV_per_A': " << fmaxTarget
         << ",\n"
            "    'fmax_final_eV_per_A': fmax_final,\n"
            "    'energy_eV': float(energy),\n"
@@ -2772,6 +2872,86 @@ std::string AseScriptGenerator::gpawWaveFunctionHelperScript()
         "                                         periodic=True)\n";
 }
 
+std::string AseScriptGenerator::vaspPrecString(VaspPrecision prec)
+{
+    switch (prec) {
+    case VaspPrecision::Normal:
+        return "Normal";
+    case VaspPrecision::Single:
+        return "Single";
+    case VaspPrecision::Accurate:
+        break;
+    }
+    return "Accurate";
+}
+
+std::string AseScriptGenerator::vaspPotcarResolutionSnippet(
+    const std::string& potcarPath)
+{
+    // See this method's own header doc comment for why it exists and what
+    // it fixes (Task 3, 2026-08-22: proc_4, a NiO band structure, failed
+    // here). Requires `atoms` already defined and `import os` already
+    // done — every caller emits both first.
+    std::ostringstream out;
+    out << "_cluster_override = os.environ.get('CALANGO_VASP_PP_PATH', '').strip()\n";
+    if (!potcarPath.empty())
+        out << "_potcar_root = _cluster_override or r\"" << potcarPath << "\"\n";
+    else
+        out << "_potcar_root = _cluster_override\n";
+    out << "if _potcar_root:\n"
+           "    if _cluster_override:\n"
+           "        print(f'CALANGO_INFO POTCAR directory from the "
+           "per-cluster override: {_potcar_root}', flush=True)\n"
+           "    if not os.path.isdir(_potcar_root):\n"
+           "        raise RuntimeError(\n"
+           "            f'POTCAR directory not found: {_potcar_root}\\n'\n"
+           "            'Set it in the calculator settings (VASP -> POTCAR "
+           "directory),\\n'\n"
+           "            'or per-cluster in the HPC panel (Scheduler -> VASP "
+           "POTCAR directory).')\n"
+           // ASE looks for $VASP_PP_PATH/potpaw_PBE/<El>/POTCAR; an
+           // installation that keeps the element folders directly under the
+           // POTCAR directory gets a symlink shim so it resolves anyway.
+           "    _variant_dir = next(\n"
+           "        (_d for _d in ('potpaw_PBE', 'potpaw', 'potpaw_LDA')\n"
+           "         if os.path.isdir(os.path.join(_potcar_root, _d))), "
+           "None)\n"
+           "    if _variant_dir is None:\n"
+           "        _shim = os.path.abspath('_potcar_shim')\n"
+           "        os.makedirs(_shim, exist_ok=True)\n"
+           "        for _name in ('potpaw_PBE', 'potpaw_LDA', 'potpaw'):\n"
+           "            _link = os.path.join(_shim, _name)\n"
+           "            if not os.path.exists(_link):\n"
+           "                os.symlink(_potcar_root, _link)\n"
+           "        print(f'CALANGO_INFO flat POTCAR layout — shimmed via "
+           "{_shim}',\n"
+           "              flush=True)\n"
+           "        _potcar_root = _shim\n"
+           "        _variant_dir = 'potpaw_PBE'\n"
+           "    os.environ['VASP_PP_PATH'] = _potcar_root\n"
+           // Fail before VASP does, and name exactly which elements are
+           // missing, rather than a deep ASE traceback minutes into the
+           // queue — the directory existing is necessary but not sufficient,
+           // a library can easily be missing just one element's POTCAR.
+           "    _missing = [_el for _el in "
+           "dict.fromkeys(atoms.get_chemical_symbols())\n"
+           "                if not os.path.isfile(os.path.join(\n"
+           "                    _potcar_root, _variant_dir, _el, "
+           "'POTCAR'))]\n"
+           "    if _missing:\n"
+           "        raise RuntimeError(\n"
+           "            f'No POTCAR for {\", \".join(_missing)} under '\n"
+           "            f'{os.path.join(_potcar_root, _variant_dir)}\\n'\n"
+           "            'PAW variants (_sv/_pv/_d) and the LDA/PBE library "
+           "choice are not\\n'\n"
+           "            'auto-selected -- point the POTCAR directory at the "
+           "library that\\n'\n"
+           "            'already has the right variant for every "
+           "element.')\n"
+           "\n";
+    return out.str();
+}
+
 std::string AseScriptGenerator::generate(const CalculatorConfig& config,
                                          const std::string& structureFile)
 {
@@ -2828,8 +3008,24 @@ std::string AseScriptGenerator::generate(const CalculatorConfig& config,
                "              \"zero — this is the non-magnetic seed, used as \"\n"
                "              \"set. A spin-polarized SCF started from it \"\n"
                "              \"normally converges back to the non-magnetic \"\n"
-               "              \"solution.\", flush=True)\n"
-               "else:\n"
+               "              \"solution.\", flush=True)\n";
+        if (nc)
+            // Edit Structure only ever sets a SCALAR per-atom moment (see
+            // GpawElectronicRows.cpp's own "applied along +z" tooltip) — so
+            // a structure that carries real, per-atom moments still arrives
+            // here as shape (N,), not (N,3). Left alone, ASE's Vasp writer
+            // sees a scalar array and writes the COLLINEAR MAGMOM format
+            // even with LSORBIT/ISPIN=2 requested (VASP wiki, MAGMOM: the
+            // noncollinear form needs exactly 3 values per atom); GPAW's own
+            // spinor initialization is just as literal about the shape it
+            // is handed. Converted the same "+z" way the uniform fallback
+            // below already is, so a real moment survives as its z-component
+            // instead of being silently reinterpreted.
+            out << "    atoms.set_initial_magnetic_moments(\n"
+                   "        _np.column_stack(\n"
+                   "            [_np.zeros_like(_seeded), "
+                   "_np.zeros_like(_seeded), _seeded]))\n";
+        out << "else:\n"
                "    # No column at all: nothing was ever set. A spin-polarized\n"
                "    # run seeded with all-zero moments converges straight back\n"
                "    # to the non-magnetic solution, which looks like \"this\n"

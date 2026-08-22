@@ -26,6 +26,9 @@ QJsonObject ClusterPreset::toJson() const
         {QStringLiteral("parallelEnvironment"), parallelEnvironment},
         {QStringLiteral("setupLines"), setupLines},
         {QStringLiteral("vaspPotcarPath"), vaspPotcarPath},
+        {QStringLiteral("vaspStdPath"), vaspStdPath},
+        {QStringLiteral("vaspGamPath"), vaspGamPath},
+        {QStringLiteral("vaspNclPath"), vaspNclPath},
         {QStringLiteral("cpusPerTask"), cpusPerTask},
         {QStringLiteral("gpusPerNode"), gpusPerNode},
         {QStringLiteral("nodeList"), nodeList},
@@ -66,6 +69,9 @@ ClusterPreset ClusterPreset::fromJson(const QJsonObject& json)
         str("parallelEnvironment", preset.parallelEnvironment);
     preset.setupLines = str("setupLines", preset.setupLines);
     preset.vaspPotcarPath = str("vaspPotcarPath", preset.vaspPotcarPath);
+    preset.vaspStdPath = str("vaspStdPath", preset.vaspStdPath);
+    preset.vaspGamPath = str("vaspGamPath", preset.vaspGamPath);
+    preset.vaspNclPath = str("vaspNclPath", preset.vaspNclPath);
     // account/qos removed (Task 3): an older preset's "account"/"qos" keys,
     // if present, are simply never read here — not an error, just ignored,
     // exactly the tolerant-fallback contract the comment above describes.
@@ -89,6 +95,9 @@ bool ClusterPreset::operator==(const ClusterPreset& other) const
         && parallelEnvironment == other.parallelEnvironment
         && setupLines == other.setupLines
         && vaspPotcarPath == other.vaspPotcarPath
+        && vaspStdPath == other.vaspStdPath
+        && vaspGamPath == other.vaspGamPath
+        && vaspNclPath == other.vaspNclPath
         && cpusPerTask == other.cpusPerTask
         && gpusPerNode == other.gpusPerNode && nodeList == other.nodeList
         && extraDirectives == other.extraDirectives

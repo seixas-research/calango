@@ -402,6 +402,17 @@ ProcessManagerPanel::Status ProcessManagerPanel::rowStatus(int row) const
         tree_->topLevelItem(row)->data(0, kStatusRole).toInt());
 }
 
+ProcessManagerPanel::Status ProcessManagerPanel::taskStatus(int id) const
+{
+    const QTreeWidgetItem* item = itemForId(id);
+    // A removed/never-registered task is neither running nor completed —
+    // Queued is the same "nothing to report" default rowStatus() uses for
+    // an out-of-range row, for the same reason.
+    if (!item)
+        return Status::Queued;
+    return static_cast<Status>(item->data(0, kStatusRole).toInt());
+}
+
 void ProcessManagerPanel::refreshWalltime(QTreeWidgetItem* item) const
 {
     if (!item)

@@ -5,8 +5,10 @@
 #include <QCheckBox>
 
 #include "core/AseScriptGenerator.hpp"
+#include "gui/GpawMpiPreflight.hpp"
 #include "gui/GuiUtils.hpp"
 #include "gui/HubbardParametersDialog.hpp"
+#include "gui/RunCommands.hpp"
 #include "gui/SimulationWizardBase.hpp"
 #include "python_bridge/AseBridge.hpp"
 #include "python_bridge/NebBuilder.hpp"
@@ -24,6 +26,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSettings>
@@ -687,6 +690,27 @@ QString NebDialog::buildNebScript() const
 
 void NebDialog::doRun()
 {
+    // GPAW-MPI pre-flight (Task 2): a NEB run is not run through
+    // SimulationWizardBase (this is a plain QDialog), so it does not pick
+    // up preflightGpawMpi() there and needs its own copy of the same check
+    // -- an interpolated band is exactly the kind of run "Cores" > 1 is
+    // meant for, and this dialog offers GPAW like any other engine. See
+    // gui/GpawMpiPreflight.hpp.
+    if (calculatorKind() == core::CalculatorKind::Gpaw) {
+        const int cores = RunCommands::cores();
+        if (cores > 1) {
+            const auto result = checkGpawMpi(pythonExecutable(), cores);
+            if (!result.ok) {
+                QMessageBox::warning(
+                    this, tr("GPAW parallel launch"),
+                    tr("%1\n\nNothing was launched. Lower Cores to 1 in "
+                       "Preferences → Run, or point the Environment field "
+                       "above at an MPI-enabled GPAW build.")
+                        .arg(result.errorMessage));
+                return;
+            }
+        }
+    }
     // Interpolate now if the user did not preview first.
     if (band_.empty() && !computeBand())
         return;

@@ -8,15 +8,18 @@
 
 #include "gui/CondaEnvs.hpp"
 #include "gui/EnginePresets.hpp"
+#include "gui/GpawMpiPreflight.hpp"
 #include "gui/PythonHighlighter.hpp"
 #include "gui/RunCommands.hpp"
 #include "gui/ScriptStaging.hpp"
 #include "gui/VaspPotcarPreflight.hpp"
 #include "python_bridge/PythonEngine.hpp"
 
+#include <QAbstractItemView>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QCoreApplication>
+#include <QGuiApplication>
 #include <QDir>
 #include <QFileInfo>
 #include <QDoubleSpinBox>
@@ -36,12 +39,19 @@
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QScreen>
+#include <QScrollArea>
 #include <QSettings>
+#include <QSignalBlocker>
 #include <QSpinBox>
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QStringList>
+#include <QTableWidget>
+#include <QHeaderView>
 #include <QVBoxLayout>
+
+#include <algorithm>
 
 namespace calango::gui {
 
@@ -67,10 +77,42 @@ const auto kDftbSlakoKey = QStringLiteral("jobs/dftbSlakoDir");
 
 SimulationWizardBase::SimulationWizardBase(QWidget* parent) : QDialog(parent) {}
 
+QWidget* SimulationWizardBase::wrapInScrollArea(QWidget* page)
+{
+    auto* scroll = new QScrollArea(this);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    // Vertical only: this exists for pages that grow too TALL, not too
+    // wide, and a page deliberately laid out wide (ElectronicBandsWizard's
+    // two-column split, built for exactly this same reason) must keep
+    // reporting that width upward — QScrollArea's own minimumSizeHint is
+    // independent of its content by design (the entire point: embedding
+    // arbitrarily tall content must never force the container, and by
+    // extension this dialog, to grow), which silently ate the width signal
+    // along with the height one until this explicit setMinimumWidth put it
+    // back. Horizontal scrolling stays off outright, not just unneeded —
+    // a horizontally-scrolled settings row is a worse fix than the
+    // overflow this replaces.
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scroll->setWidget(page);
+    scroll->setMinimumWidth(page->minimumSizeHint().width());
+    return scroll;
+}
+
 void SimulationWizardBase::buildUi()
 {
     setWindowTitle(wizardTitle());
-    resize(900, 640);
+    // Fixed at 900x640 (comfortably inside a 1440x900 laptop screen), but
+    // capped further on a genuinely small display — the same screen-aware
+    // idiom MainWindow::showDependencyLicenses() uses. Content taller than
+    // this scrolls (see wrapInScrollArea()); it no longer pushes the
+    // dialog itself past the available screen the way a VASP-heavy
+    // Calculator Settings page once did.
+    const QScreen* screen = this->screen() ? this->screen()
+                                           : QGuiApplication::primaryScreen();
+    const QSize available = screen ? screen->availableGeometry().size()
+                                   : QSize(1440, 900);
+    resize(900, std::min(640, available.height() * 85 / 100));
 
     auto* root = new QVBoxLayout(this);
     headerLabel_ = new QLabel(this);
@@ -87,29 +129,34 @@ void SimulationWizardBase::buildUi()
     // controls the calculator page owns, so a wizard that places its settings
     // page later also gets it constructed later.
     showsCalculatorStage_ = showsCalculatorStage();
-    if (hasSettingsStage_ && settingsFirst_)
-        stack_->addWidget(buildSettingsPage());
+    if (hasSettingsStage_ && settingsFirst_) {
+        stack_->addWidget(wrapInScrollArea(buildSettingsPage()));
+        taskSettingsStageIndex_ = stack_->count() - 1;
+    }
     // The engine is selected at the top of the Calculator Settings stage; the
     // Conda environment is resolved silently from Preferences (no env stage).
     // The page is always constructed (the shared config accessors read its
     // widgets), but a wizard that inherits its calculator from a baseline
     // (MLWF) drops it from the stack for a strict 2-stage flow.
     QWidget* calculatorPage = buildCalculatorPage();
+    QWidget* calculatorScroll = wrapInScrollArea(calculatorPage);
     if (showsCalculatorStage_)
-        stack_->addWidget(calculatorPage);
+        stack_->addWidget(calculatorScroll);
     else
-        calculatorPage->hide();
+        calculatorScroll->hide();
     // Optional extra task stage between Calculator Settings and the subclass's
     // own page (Phonon: displacement settings, then the q-path).
     hasSecondSettingsStage_ = !secondSettingsHeader().isEmpty();
     if (hasSecondSettingsStage_) {
         if (QWidget* second = buildSecondSettingsPage())
-            stack_->addWidget(second);
+            stack_->addWidget(wrapInScrollArea(second));
         else
             hasSecondSettingsStage_ = false; // no content — drop the stage
     }
-    if (hasSettingsStage_ && !settingsFirst_)
-        stack_->addWidget(buildSettingsPage());
+    if (hasSettingsStage_ && !settingsFirst_) {
+        stack_->addWidget(wrapInScrollArea(buildSettingsPage()));
+        taskSettingsStageIndex_ = stack_->count() - 1;
+    }
     stack_->addWidget(buildReviewPage());
     reviewStage_ = stack_->count() - 1;
     root->addWidget(stack_, 1);
@@ -137,13 +184,15 @@ void SimulationWizardBase::buildUi()
     connect(exportButton_, &QPushButton::clicked, this,
             &SimulationWizardBase::exportScript);
     connect(runLocalButton_, &QPushButton::clicked, this, [this] {
-        if (!preflightVaspPotcar() || !preflightSecondary())
+        if (!preflightVaspPotcar() || !preflightVaspNcl() || !preflightSecondary()
+            || !preflightGpawMpi() || !preflightVaspHubbardConsistency())
             return;
         action_ = Action::RunLocal;
         accept();
     });
     connect(runRemoteButton_, &QPushButton::clicked, this, [this] {
-        if (!preflightVaspPotcar() || !preflightSecondary())
+        if (!preflightVaspPotcar() || !preflightVaspNcl() || !preflightSecondary()
+            || !preflightVaspHubbardConsistency())
             return;
         action_ = Action::RunRemote;
         accept();
@@ -768,6 +817,19 @@ QWidget* SimulationWizardBase::buildVaspGroup(QWidget* parent)
         refreshPreview();
     });
 
+    // NSW — surfaced here rather than only on Geometry Optimization's own
+    // Stage 2 "Max steps" field, because that stage is exactly what
+    // skipTaskSettingsStage() bypasses for this route (see its own doc
+    // comment): without a copy here, NSW would be unreachable once VASP is
+    // driving. 200 matches the ASE-side field's own default.
+    vaspNswSpin_ = new QSpinBox(vaspGroup_);
+    vaspNswSpin_->setRange(0, 10000);
+    vaspNswSpin_->setValue(200);
+    vaspNswSpin_->setToolTip(
+        tr("NSW — the maximum number of ionic steps VASP itself takes "
+           "before giving up, whatever EDIFFG says. The equivalent of "
+           "Geometry Optimization's own \"Max steps\" field, which this "
+           "route does not use."));
     vaspIonicRow_ = new QWidget(vaspGroup_);
     auto* ionicLayout = new QHBoxLayout(vaspIonicRow_);
     ionicLayout->setContentsMargins(0, 0, 0, 0);
@@ -776,6 +838,8 @@ QWidget* SimulationWizardBase::buildVaspGroup(QWidget* parent)
     ionicLayout->addWidget(vaspIsifCombo_);
     ionicLayout->addWidget(new QLabel(tr("EDIFFG"), vaspIonicRow_));
     ionicLayout->addWidget(vaspEdiffgSpin_);
+    ionicLayout->addWidget(new QLabel(tr("NSW"), vaspIonicRow_));
+    ionicLayout->addWidget(vaspNswSpin_);
     form->addRow(tr("IBRION:"), vaspIonicRow_);
 
     // -- Output -------------------------------------------------------------
@@ -841,17 +905,146 @@ QWidget* SimulationWizardBase::buildVaspGroup(QWidget* parent)
     parallelLayout->addStretch(1);
     form->addRow(tr("NCORE:"), parallelRow);
 
+    // -- Spin-orbit coupling extras ------------------------------------------
+    // Shown regardless of the Spin Configurations combo above (a different
+    // group, owned by GpawElectronicRows) rather than wired to it — SAXIS
+    // is simply unused by the generated script unless Non-Collinear is
+    // selected there, exactly as its own tooltip says.
+    auto* saxisRow = new QWidget(vaspGroup_);
+    auto* saxisLayout = new QHBoxLayout(saxisRow);
+    saxisLayout->setContentsMargins(0, 0, 0, 0);
+    const double saxisDefault[3] = {0.0, 0.0, 1.0};
+    for (int axis = 0; axis < 3; ++axis) {
+        vaspSaxisSpin_[axis] = new QDoubleSpinBox(saxisRow);
+        vaspSaxisSpin_[axis]->setRange(-1.0, 1.0);
+        vaspSaxisSpin_[axis]->setDecimals(3);
+        vaspSaxisSpin_[axis]->setSingleStep(0.1);
+        vaspSaxisSpin_[axis]->setValue(saxisDefault[axis]);
+        saxisLayout->addWidget(vaspSaxisSpin_[axis]);
+    }
+    vaspSaxisSpin_[0]->setToolTip(
+        tr("SAXIS — the global spin-quantization axis; sigma_3 points along "
+           "this direction once normalized (VASP wiki, SAXIS). Only written, "
+           "and only meaningful, when Spin Configurations above is set to "
+           "Non-Collinear — unused otherwise."));
+    form->addRow(tr("SAXIS (x, y, z):"), saxisRow);
+
+    vaspLmaxmixSpin_ = new QSpinBox(vaspGroup_);
+    vaspLmaxmixSpin_->setRange(0, 6);
+    vaspLmaxmixSpin_->setSpecialValueText(tr("auto (VASP's own default, 2)"));
+    vaspLmaxmixSpin_->setValue(0);
+    vaspLmaxmixSpin_->setToolTip(
+        tr("LMAXMIX — the highest l mixed by Broyden/Pulay charge mixing. "
+           "The VASP wiki recommends raising this to twice the highest l in "
+           "the pseudopotential for a fixed-density (ICHARG = 11) restart — "
+           "bands, PDOS, or the SOC workflow's second stage — and to 4 (d) "
+           "or 6 (f) for a DFT+U band structure specifically."));
+    form->addRow(tr("LMAXMIX:"), vaspLmaxmixSpin_);
+    connect(vaspLmaxmixSpin_, &QSpinBox::valueChanged, this,
+            [this] { vaspLmaxmixEdited_ = true; });
+
+    // -- DFT+U (LDAU) ---------------------------------------------------
+    // See SimulationWizardBase.hpp's own note on why this is a separate
+    // section/model from GPAW's hubbardButton_ above, and why the table's
+    // rows are fixed (one per structure species) rather than user-add/
+    // removable.
+    vaspHubbardCheck_ =
+        new QCheckBox(tr("Enable DFT+U (LDAU)"), vaspGroup_);
+    vaspHubbardCheck_->setToolTip(
+        tr("On-site Coulomb correction for narrow d/f bands a semilocal "
+           "functional over-delocalizes (VASP wiki, LDAU) — the same "
+           "physics motivation as GPAW's own Hubbard parameters… button "
+           "above, expressed the way VASP wants it: LDAUL/LDAUU/LDAUJ "
+           "arrays, one entry per POSCAR species, rather than a `setups=` "
+           "string."));
+    form->addRow(vaspHubbardCheck_);
+
+    vaspHubbardTypeCombo_ = new QComboBox(vaspGroup_);
+    // Order matches core::VaspHubbardType.
+    vaspHubbardTypeCombo_->addItem(
+        tr("Dudarev (LDAUTYPE = 2) — only U − J (U_eff) matters"));
+    vaspHubbardTypeCombo_->addItem(
+        tr("Liechtenstein (LDAUTYPE = 1) — U and J independently meaningful"));
+    vaspHubbardTypeCombo_->setToolTip(
+        tr("LDAUTYPE (VASP wiki). Dudarev is the default and the far more "
+           "common choice in the literature: it needs only ONE physically "
+           "meaningful number per species, U_eff = U − J, so the usual "
+           "convention is J = 0 with U set directly to U_eff. "
+           "Liechtenstein keeps U and J independently meaningful, which "
+           "is what an exchange-splitting fit specifically wants — U and "
+           "J stay two separate columns below either way, so switching "
+           "this combo never discards a stored J."));
+    form->addRow(tr("Type:"), vaspHubbardTypeCombo_);
+    connect(vaspHubbardTypeCombo_, &QComboBox::currentIndexChanged, this,
+            [this] { refreshPreview(); });
+
+    vaspHubbardTable_ = new QTableWidget(0, 3, vaspGroup_);
+    vaspHubbardTable_->setHorizontalHeaderLabels(
+        {tr("l"), tr("U (eV)"), tr("J (eV)")});
+    vaspHubbardTable_->verticalHeader()->setVisible(true);
+    vaspHubbardTable_->horizontalHeader()->setSectionResizeMode(
+        QHeaderView::Stretch);
+    vaspHubbardTable_->setSelectionMode(QAbstractItemView::NoSelection);
+    vaspHubbardTable_->setEditTriggers(QAbstractItemView::AllEditTriggers);
+    disableTypeToEdit(vaspHubbardTable_);
+    // Capped rather than left to grow with the species count: a handful of
+    // rows is the common case (an oxide's transition metal plus maybe a
+    // second one), and an uncapped table on a page that already scrolls
+    // would rather show 3 rows and a scrollbar of its own than push every
+    // row below it off screen.
+    vaspHubbardTable_->setMaximumHeight(140);
+    vaspHubbardTable_->setToolTip(
+        tr("One row per element in the structure — auto-populated, and "
+           "never a free-form list: VASP's LDAUL/LDAUU/LDAUJ arrays are "
+           "positional, exactly one entry per POSCAR species, so a row for "
+           "an element the cell does not contain would have no array slot "
+           "to occupy at all. l = -1 (the default) means no correction for "
+           "that species."));
+    form->addRow(tr("Species:"), vaspHubbardTable_);
+
+    connect(vaspHubbardCheck_, &QCheckBox::toggled, this, [this](bool on) {
+        vaspHubbardTypeCombo_->setEnabled(on);
+        vaspHubbardTable_->setEnabled(on);
+        refreshVaspHubbardLmaxmixAuto();
+        refreshPreview();
+    });
+    populateVaspHubbardTable();
+
+    // -- Restart from a converged CHGCAR (ICHARG = 11) -----------------------
+    // The SOC two-stage chain's second stage: an ordinary Single-point
+    // Calculation reusing a prior, collinear one's density instead of
+    // converging its own SCF — see CalculatorConfig::vaspChgcarBaselinePath.
+    // Populated by the host (setVaspChgcarBaselines()); empty by default, so
+    // every wizard with this group keeps its pre-existing "fresh SCF"
+    // behaviour unless a baseline is actually chosen.
+    vaspBaselineCombo_ = new QComboBox(vaspGroup_);
+    vaspBaselineCombo_->addItem(tr("None — converge here"), QString());
+    vaspBaselineCombo_->setToolTip(
+        tr("Restart non-self-consistently (ICHARG = 11) from a completed "
+           "VASP Single-point Calculation's CHGCAR, instead of converging "
+           "this run's own SCF.\n\n"
+           "The SOC workflow's second stage: run collinear first (writes "
+           "CHGCAR), then a second Single-point WITH Non-Collinear spin "
+           "selected above restarts from it here."));
+    form->addRow(tr("Restart from CHGCAR:"), vaspBaselineCombo_);
+
     // -- Escape hatch -------------------------------------------------------
     vaspExtraIncarEdit_ = new QPlainTextEdit(vaspGroup_);
     vaspExtraIncarEdit_->setMaximumHeight(70);
     vaspExtraIncarEdit_->setPlaceholderText(
-        QStringLiteral("LDAU = .TRUE.\nLDAUU = 4.0 0.0\nNBANDS = 64"));
+        QStringLiteral("NBANDS = 64\nAMIX = 0.1\nIVDW = 12"));
     vaspExtraIncarEdit_->setToolTip(
         tr("Extra INCAR tags, one per line, applied verbatim on top of "
            "everything above.\n\n"
            "No dialog can cover 300 INCAR flags, and a wizard that tries "
-           "becomes a ceiling. Anything typed here is passed straight to the "
-           "calculator and is not validated."));
+           "becomes a ceiling. Anything typed here is passed straight to "
+           "the calculator and is not validated — including against the "
+           "DFT+U section above: this is applied AFTER everything above "
+           "(via atoms.calc.set(), not a second constructor argument, so "
+           "it never crashes), which means LDAU/LDAUTYPE/LDAUL/LDAUU/"
+           "LDAUJ/LDAUPRINT typed here SILENTLY OVERRIDES an enabled "
+           "DFT+U section's own values with no warning either way. Use "
+           "the dedicated section for DFT+U instead of typing it here."));
     form->addRow(tr("Extra INCAR tags:"), vaspExtraIncarEdit_);
 
     for (QComboBox* combo : {vaspXcCombo_, vaspPrecCombo_, vaspAlgoCombo_,
@@ -866,9 +1059,17 @@ QWidget* SimulationWizardBase::buildVaspGroup(QWidget* parent)
             [this] { refreshPreview(); });
     connect(vaspEdiffgSpin_, &QDoubleSpinBox::valueChanged, this,
             [this] { refreshPreview(); });
-    for (QSpinBox* spin : {vaspNcoreSpin_, vaspKparSpin_})
+    connect(vaspNswSpin_, &QSpinBox::valueChanged, this,
+            [this] { refreshPreview(); });
+    for (QSpinBox* spin : {vaspNcoreSpin_, vaspKparSpin_, vaspLmaxmixSpin_})
         connect(spin, &QSpinBox::valueChanged, this,
                 [this] { refreshPreview(); });
+    for (QDoubleSpinBox* spin :
+         {vaspSaxisSpin_[0], vaspSaxisSpin_[1], vaspSaxisSpin_[2]})
+        connect(spin, &QDoubleSpinBox::valueChanged, this,
+                [this] { refreshPreview(); });
+    connect(vaspBaselineCombo_, &QComboBox::currentIndexChanged, this,
+            [this] { refreshPreview(); });
     for (QCheckBox* box : {vaspLchargCheck_, vaspLwaveCheck_, vaspLaechgCheck_,
                            vaspLorbitCheck_})
         connect(box, &QCheckBox::toggled, this, [this] { refreshPreview(); });
@@ -876,6 +1077,87 @@ QWidget* SimulationWizardBase::buildVaspGroup(QWidget* parent)
             [this] { refreshPreview(); });
 
     return vaspGroup_;
+}
+
+void SimulationWizardBase::populateVaspHubbardTable()
+{
+    if (!vaspHubbardTable_)
+        return;
+    const QStringList elements = calculatorElements();
+    vaspHubbardTable_->setRowCount(elements.size());
+    for (int row = 0; row < elements.size(); ++row) {
+        vaspHubbardTable_->setVerticalHeaderItem(
+            row, new QTableWidgetItem(elements.at(row)));
+
+        auto* lCombo = new QComboBox(vaspHubbardTable_);
+        // itemData is the literal LDAUL value — see core::VaspHubbardU::l.
+        lCombo->addItem(tr("-1 (none)"), -1);
+        lCombo->addItem(tr("1 (p)"), 1);
+        lCombo->addItem(tr("2 (d)"), 2);
+        lCombo->addItem(tr("3 (f)"), 3);
+        connect(lCombo, &QComboBox::currentIndexChanged, this, [this] {
+            refreshVaspHubbardLmaxmixAuto();
+            refreshPreview();
+        });
+        vaspHubbardTable_->setCellWidget(row, 0, lCombo);
+
+        auto* uSpin = new QDoubleSpinBox(vaspHubbardTable_);
+        uSpin->setRange(0.0, 20.0);
+        uSpin->setDecimals(2);
+        uSpin->setSingleStep(0.5);
+        uSpin->setSuffix(QStringLiteral(" eV"));
+        connect(uSpin, &QDoubleSpinBox::valueChanged, this, [this] {
+            refreshVaspHubbardLmaxmixAuto();
+            refreshPreview();
+        });
+        vaspHubbardTable_->setCellWidget(row, 1, uSpin);
+
+        auto* jSpin = new QDoubleSpinBox(vaspHubbardTable_);
+        jSpin->setRange(0.0, 20.0);
+        jSpin->setDecimals(2);
+        jSpin->setSingleStep(0.5);
+        jSpin->setSuffix(QStringLiteral(" eV"));
+        connect(jSpin, &QDoubleSpinBox::valueChanged, this,
+                [this] { refreshPreview(); });
+        vaspHubbardTable_->setCellWidget(row, 2, jSpin);
+    }
+    vaspHubbardTable_->setEnabled(
+        vaspHubbardCheck_ && vaspHubbardCheck_->isChecked());
+    if (vaspHubbardTypeCombo_)
+        vaspHubbardTypeCombo_->setEnabled(
+            vaspHubbardCheck_ && vaspHubbardCheck_->isChecked());
+}
+
+void SimulationWizardBase::refreshVaspHubbardLmaxmixAuto()
+{
+    if (!vaspHubbardTable_ || !vaspLmaxmixSpin_ || vaspLmaxmixEdited_)
+        return; // the user already set LMAXMIX by hand — never fight that
+    int target = 0;
+    if (vaspHubbardCheck_ && vaspHubbardCheck_->isChecked()) {
+        for (int row = 0; row < vaspHubbardTable_->rowCount(); ++row) {
+            auto* lCombo = qobject_cast<QComboBox*>(
+                vaspHubbardTable_->cellWidget(row, 0));
+            auto* uSpin = qobject_cast<QDoubleSpinBox*>(
+                vaspHubbardTable_->cellWidget(row, 1));
+            // U == 0 requests no actual correction for this species (the
+            // same "inert" reading ASE's own ldau_luj default entry
+            // gives it), so LMAXMIX has nothing to answer for it even if
+            // l was set to something other than -1.
+            if (!lCombo || !uSpin || uSpin->value() <= 0.0)
+                continue;
+            switch (lCombo->currentData().toInt()) {
+            case 3: target = std::max(target, 6); break;
+            case 2: target = std::max(target, 4); break;
+            default: break;
+            }
+        }
+    }
+    // blockSignals around the programmatic set: vaspLmaxmixSpin_'s own
+    // valueChanged is wired to set vaspLmaxmixEdited_ = true, which would
+    // otherwise mistake this auto-adjustment for the user override it
+    // exists to detect.
+    const QSignalBlocker blocker(vaspLmaxmixSpin_);
+    vaspLmaxmixSpin_->setValue(target);
 }
 
 void SimulationWizardBase::updateVaspRows()
@@ -902,10 +1184,7 @@ void SimulationWizardBase::updateVaspRows()
     // IBRION / ISIF / EDIFFG describe VASP's own relaxation, so they are shown
     // only when VASP is the one relaxing. Under the ASE driver they are not
     // merely irrelevant — writing them is the bug.
-    const bool vaspDrives = vaspDriverCombo_
-        && vaspDriverCombo_->currentIndex()
-            == static_cast<int>(core::VaspRelaxDriver::Vasp);
-    setRowVisible(vaspIonicRow_, ionic && vaspDrives);
+    setRowVisible(vaspIonicRow_, vaspInternalRelaxationSelected());
 
     // Re-read the dataset path every time this group is shown rather than
     // caching it at construction: Preferences can be opened and changed while
@@ -925,6 +1204,34 @@ void SimulationWizardBase::updateVaspRows()
     }
 }
 
+bool SimulationWizardBase::vaspInternalRelaxationSelected() const
+{
+    return selectedCalculator() == core::CalculatorKind::Vasp
+        && taskHasIonicSteps() && vaspDriverCombo_
+        && vaspDriverCombo_->currentIndex()
+            == static_cast<int>(core::VaspRelaxDriver::Vasp);
+}
+
+int SimulationWizardBase::vaspNsw() const
+{
+    return vaspNswSpin_ ? vaspNswSpin_->value() : 200;
+}
+
+void SimulationWizardBase::setVaspChgcarBaselines(
+    const QList<QPair<QString, QString>>& baselines)
+{
+    if (!vaspBaselineCombo_)
+        return;
+    for (const auto& [label, path] : baselines)
+        vaspBaselineCombo_->addItem(label, path);
+}
+
+QString SimulationWizardBase::baselineDensityPathToStage() const
+{
+    return vaspBaselineCombo_ ? vaspBaselineCombo_->currentData().toString()
+                              : QString();
+}
+
 bool SimulationWizardBase::preflightVaspPotcar()
 {
     if (selectedCalculator() != core::CalculatorKind::Vasp)
@@ -941,6 +1248,64 @@ bool SimulationWizardBase::preflightVaspPotcar()
            "(HPC panel → Scheduler → VASP POTCAR directory) that lives on "
            "a machine this check cannot see; that path is validated when "
            "the job actually runs, the same way this one was checked here.")
+            .arg(result.errorMessage));
+    return false;
+}
+
+bool SimulationWizardBase::preflightVaspNcl()
+{
+    if (selectedCalculator() != core::CalculatorKind::Vasp)
+        return true;
+    // spinMode lives on GpawElectronicRows (a per-subclass member,
+    // GpawElectronicWizard::electronic_), not on this base class — probed
+    // through the same virtual accessor emitVasp()'s own caller path uses
+    // indirectly (electronicRows()), rather than duplicating the spin combo
+    // here. A wizard with no such rows (electronicRows() == nullptr) simply
+    // cannot select Non-Collinear at all, so nothing to check.
+    core::CalculatorConfig probe;
+    if (GpawElectronicRows* rows = electronicRows())
+        rows->applyTo(probe);
+    if (probe.spinMode != core::SpinMode::NonCollinear)
+        return true;
+    const QString nclPath =
+        QSettings()
+            .value(QLatin1String(SettingsManager::kVaspExecutableNcl))
+            .toString()
+            .trimmed();
+    if (!nclPath.isEmpty())
+        return true;
+    QMessageBox::warning(
+        this, tr("VASP spin-orbit executable"),
+        tr("Spin-orbit coupling (Non-Collinear spin) needs vasp_ncl — "
+           "vasp_std cannot run a noncollinear calculation at all — and "
+           "none is configured.\n\n"
+           "Nothing was launched. Set it in Preferences → External Files → "
+           "VASP executables. This is a LOCAL check — a remote job's "
+           "cluster profile may configure its own vasp_ncl path that lives "
+           "on a machine this check cannot see; the generated script "
+           "refuses at runtime just the same if that is missing too."));
+    return false;
+}
+
+bool SimulationWizardBase::preflightGpawMpi()
+{
+    // Run (Local) only: the remote path does not read this Preferences
+    // "Cores" setting at all — a remote job's rank count is the HPC panel's
+    // own Nodes x Tasks/node, checked (and resolved) entirely inside
+    // HpcPanel::specFromUi(), against a cluster this process cannot probe.
+    if (selectedCalculator() != core::CalculatorKind::Gpaw)
+        return true;
+    const int cores = RunCommands::cores();
+    if (cores <= 1)
+        return true; // nothing to parallelize
+    const auto result = checkGpawMpi(pythonExecutable(), cores);
+    if (result.ok)
+        return true;
+    QMessageBox::warning(
+        this, tr("GPAW parallel launch"),
+        tr("%1\n\nNothing was launched. Lower Cores to 1 in Preferences → "
+           "Run, or point Preferences → Python at an MPI-enabled GPAW "
+           "build.")
             .arg(result.errorMessage));
     return false;
 }
@@ -2883,6 +3248,47 @@ core::CalculatorConfig SimulationWizardBase::baseCalculatorConfig() const
         c.vaspKpar = vaspKparSpin_->value();
         c.vaspExtraIncar =
             vaspExtraIncarEdit_->toPlainText().trimmed().toStdString();
+        if (vaspSaxisSpin_[0]) {
+            for (int axis = 0; axis < 3; ++axis)
+                c.vaspSaxis[axis] = vaspSaxisSpin_[axis]->value();
+        }
+        if (vaspLmaxmixSpin_)
+            c.vaspLmaxmix = vaspLmaxmixSpin_->value();
+        if (vaspHubbardCheck_ && vaspHubbardTable_) {
+            c.vaspUseHubbardU = vaspHubbardCheck_->isChecked();
+            c.vaspHubbardType = static_cast<core::VaspHubbardType>(
+                vaspHubbardTypeCombo_->currentIndex());
+            c.vaspHubbardU.clear();
+            // Read EVERY row, not just the ones the user actually
+            // corrected — a species with l=-1/U=0/J=0 is written to the
+            // generated script's ldau_luj dict as an explicit "no
+            // correction" entry (Task 2's own spec), which also means the
+            // generator never needs its own species list to fill in the
+            // ones this table left untouched.
+            const QStringList elements = calculatorElements();
+            for (int row = 0; row < vaspHubbardTable_->rowCount()
+                              && row < elements.size();
+                 ++row) {
+                auto* lCombo = qobject_cast<QComboBox*>(
+                    vaspHubbardTable_->cellWidget(row, 0));
+                auto* uSpin = qobject_cast<QDoubleSpinBox*>(
+                    vaspHubbardTable_->cellWidget(row, 1));
+                auto* jSpin = qobject_cast<QDoubleSpinBox*>(
+                    vaspHubbardTable_->cellWidget(row, 2));
+                if (!lCombo || !uSpin || !jSpin)
+                    continue;
+                core::VaspHubbardU entry;
+                entry.element = elements.at(row).toStdString();
+                entry.l = lCombo->currentData().toInt();
+                entry.u = uSpin->value();
+                entry.j = jSpin->value();
+                c.vaspHubbardU.push_back(entry);
+            }
+        }
+        if (vaspBaselineCombo_) {
+            c.vaspChgcarBaselinePath =
+                vaspBaselineCombo_->currentData().toString().toStdString();
+        }
     }
 
     c.orcaMethod = orcaMethodCombo_->currentText().trimmed().toStdString();
@@ -3044,6 +3450,11 @@ void SimulationWizardBase::goNext()
 {
     if (stage_ < reviewStage_) {
         ++stage_;
+        // Step past the task-settings stage entirely when the live driver
+        // choice says it does not apply — see skipTaskSettingsStage().
+        if (stage_ == taskSettingsStageIndex_ && stage_ < reviewStage_
+            && skipTaskSettingsStage())
+            ++stage_;
         if (stage_ == reviewStage_) {
             refreshPreview();    // (re)generate on arriving at the review stage
             refreshRunCommand(); // and re-resolve for the engine now selected
@@ -3056,6 +3467,11 @@ void SimulationWizardBase::goBack()
 {
     if (stage_ > 0) {
         --stage_;
+        // Symmetric skip on the way back, so Back from Review lands on
+        // Calculator Settings rather than bouncing off the hidden stage.
+        if (stage_ == taskSettingsStageIndex_ && stage_ > 0
+            && skipTaskSettingsStage())
+            --stage_;
         updateStage();
     }
 }
@@ -3167,6 +3583,19 @@ QString SimulationWizardBase::calculatorProvenanceJson() const
     // job finishes — the ONLY thing tying a completed job directory back to
     // this run's CalculatorConfig, since nothing else survives past launch.
     o.insert(QStringLiteral("compress_density_hdf5"), c.compressDensityToHdf5);
+    // DFT+U, VASP only (Task 2, 2026-08-22): GPAW's own restart (a full
+    // .gpw) cannot diverge from whatever produced it -- the SAME calculator
+    // object, U included, comes back out. VASP's ICHARG=11/SOC-stage-2
+    // restart is structurally different: CHGCAR carries only the density,
+    // and the child script builds a BRAND NEW Vasp(...) object with its own
+    // independent kwargs, so its LDAU settings CAN silently disagree with
+    // whatever actually produced the density it is reading -- this is the
+    // one comparable fact a later preflightVaspHubbardConsistency() needs.
+    // Empty means "no +U", which is itself a fact worth comparing against
+    // (a +U parent feeding a bare child is exactly the mismatch this
+    // exists to catch).
+    if (c.calculator == core::CalculatorKind::Vasp)
+        o.insert(QStringLiteral("vasp_hubbard"), vaspHubbardSummary(c));
     return QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact));
 }
 
@@ -3193,7 +3622,80 @@ SimulationWizardBase::readCalculatorProvenance(const QString& jobDir)
     ic.symmetryOff = o.value(QStringLiteral("symmetry_off")).toBool();
     ic.pythonExecutable = o.value(QStringLiteral("python")).toString();
     ic.condaEnv = o.value(QStringLiteral("conda_env")).toString();
+    // Absent for a non-VASP baseline, or one saved before Task 2 added
+    // this key — QJsonObject::value() on a missing key already gives the
+    // right "no +U recorded" default (an empty string), so no separate
+    // contains() check is needed.
+    ic.vaspHubbard = o.value(QStringLiteral("vasp_hubbard")).toString();
     return ic;
+}
+
+QString SimulationWizardBase::vaspHubbardSummary(
+    const core::CalculatorConfig& config)
+{
+    if (!config.vaspUseHubbardU || config.vaspHubbardU.empty())
+        return QString();
+    QStringList parts;
+    for (const core::VaspHubbardU& hubbard : config.vaspHubbardU) {
+        // U <= 0 requests no actual correction for this species (same
+        // reading as ASE's own ldau_luj default entry — see
+        // core::VaspHubbardU's own doc comment), so it is left OUT of the
+        // comparable string entirely: "not configured" and "configured at
+        // U=0" must compare equal, both meaning no correction.
+        if (hubbard.u <= 0.0)
+            continue;
+        parts << QStringLiteral("%1:l=%2,U=%3,J=%4")
+                     .arg(QString::fromStdString(hubbard.element))
+                     .arg(hubbard.l)
+                     .arg(hubbard.u, 0, 'f', 2)
+                     .arg(hubbard.j, 0, 'f', 2);
+    }
+    if (parts.isEmpty())
+        return QString();
+    parts.sort(); // order-independent: table row order must not matter
+    return (config.vaspHubbardType == core::VaspHubbardType::Liechtenstein
+                ? QStringLiteral("Liechtenstein|")
+                : QStringLiteral("Dudarev|"))
+        + parts.join(QLatin1Char(';'));
+}
+
+bool SimulationWizardBase::preflightVaspHubbardConsistency()
+{
+    if (selectedCalculator() != core::CalculatorKind::Vasp)
+        return true;
+    const QString baselinePath = baselineDensityPathToStage();
+    if (baselinePath.isEmpty())
+        return true; // no baseline selected -- nothing to compare against
+    const auto parent = readCalculatorProvenance(
+        QFileInfo(baselinePath).absolutePath());
+    // No provenance at all (an older run, or one from outside Calango), or
+    // a non-VASP baseline (a mixed-engine chain is its own, separately
+    // reported inconsistency -- not this check's job): nothing comparable.
+    if (!parent || parent->engineKind != static_cast<int>(core::CalculatorKind::Vasp))
+        return true;
+
+    const QString childHubbard = vaspHubbardSummary(baseCalculatorConfig());
+    if (parent->vaspHubbard == childHubbard)
+        return true;
+
+    const QString parentText = parent->vaspHubbard.isEmpty()
+        ? tr("no +U")
+        : parent->vaspHubbard;
+    const QString childText =
+        childHubbard.isEmpty() ? tr("no +U") : childHubbard;
+    const auto answer = QMessageBox::warning(
+        this, tr("DFT+U mismatch"),
+        tr("This baseline's charge density came from a run with %1 — this "
+           "one is configured with %2.\n\n"
+           "The child restarts the baseline's DENSITY, not its INCAR: a "
+           "different (or missing) DFT+U correction here computes bands/"
+           "DOS/SOC against a self-consistent density that used a "
+           "different Hamiltonian, silently — no error, just physics "
+           "that does not actually correspond to what gets reported.\n\n"
+           "Continue anyway?")
+            .arg(parentText, childText),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    return answer == QMessageBox::Yes;
 }
 
 std::optional<SimulationWizardBase::InheritedCalculator>

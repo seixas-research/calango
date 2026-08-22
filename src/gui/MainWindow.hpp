@@ -16,7 +16,6 @@
 
 #include <deque>
 #include <functional>
-#include "core/ElectronPhononAnalysis.hpp"
 
 #include <map>
 #include <set>
@@ -60,17 +59,6 @@ class ViewportWidget;
 class VisualEffectsPanel;
 class FloorPanel;
 class OrchestrationWindow;
-
-/// What the electron-phonon worker thread hands back to the GUI thread.
-///
-/// A struct rather than a bare result because the failure carries a message
-/// worth showing: a run can produce perfectly good matrix elements and still
-/// have no Fermi surface to integrate over.
-struct ElectronPhononOutcome {
-    bool ok = false;
-    calango::core::ElectronPhononResult result;
-    QString error;
-};
 
 /// Application shell and MVC "Controller" with a tabbed multi-document
 /// workspace: each tab is a Document (structure + optional trajectory +
@@ -259,12 +247,6 @@ private Q_SLOTS:
     /// WavefunctionsResultsViewer summary table.
     void openWavefunctionsResults(const QString& directory);
     /// Open the phonon band structure + PhDOS viewer for a finished job dir.
-    /// Analyse a finished electron-phonon run and report lambda/tau.
-    ///
-    /// The generated script stops at the raw arrays; the Fermi-surface
-    /// integration happens here, on tetrahedra. Runs off the GUI thread —
-    /// |g|^2 reaches tens of gigabytes on a production mesh.
-    void openElectronPhononResults(const QString& directory);
     void openPhononResults(const QString& directory);
     /// Analysis → "Vibrational Mode Analysis…": animate a phonon branch's
     /// eigenvector on the viewport. A standalone module — `directory` is the
@@ -494,8 +476,6 @@ private Q_SLOTS:
     void showXrd();
     void openNanoBuilder();
     void openPhononBuilder();
-    /// Simulation → "Electron-Phonon Coupling…" (gpaw.elph). Periodic only.
-    void openElectronPhonon();
     /// Modules → "CALPHAD…": load a .tdb and choose the system.
     void openCalphad();
     void openEciFit();
@@ -974,6 +954,19 @@ private:
     /// cannot be inherited by a later one (and neither can its bound records).
     int nextWorkspaceId_ = 0;
     QString lastJobDir_;
+    /// The calculator and requested MPI rank count of the job lastJobDir_
+    /// belongs to — captured at launch time, mirroring lastJobDir_ itself
+    /// (both are set together in launchJob(), read together in
+    /// onJobFinished()), so onJobFinished() can check a GPAW run's OWN
+    /// reported world size against what was actually asked for (Task 1,
+    /// 2026-08-22: "make silent-serial impossible" — a pre-flight check can
+    /// only verify that parallelism is POSSIBLE before a run starts, not
+    /// that the launch command that was actually built and executed used
+    /// it). Their default values here are never read: onJobFinished()'s
+    /// existing `!lastJobDir_.isEmpty()` guard already keeps every
+    /// no-job-has-run-yet path away from them.
+    core::CalculatorKind lastJobKind_ = core::CalculatorKind::Gpaw;
+    int lastJobRequestedCores_ = 1;
     /// Unsaved-changes flag: set by every workspace mutation (undoable
     /// edits, document add/close, job runs), cleared by project
     /// save/load. Drives the quit confirmation in closeEvent().
@@ -1067,6 +1060,8 @@ private:
         QString pythonExecutable;
         QString commandLine;    ///< resolved launch command
         QMap<QString, QString> environment;
+        core::CalculatorKind kind = core::CalculatorKind::Gpaw;
+        int requestedCores = 1; ///< see lastJobRequestedCores_ below
         /// Open a live trajectory tab when this one starts (MD/relaxation).
         bool expectFrames = false;
         /// Geometry the live tab is seeded from, captured at submission for
@@ -1125,6 +1120,14 @@ private:
     /// stageJob (set by runSimulationWizard); consumed and cleared there. Lets
     /// the MLWF wizard inherit a completed baseline's engine + parameters.
     QString pendingCalculatorProvenance_;
+    /// A baseline charge-density file (GPAW .gpw / VASP CHGCAR) staged
+    /// alongside the next stageJob, under a fixed name (baseline.gpw /
+    /// baseline.CHGCAR) — set by runSimulationWizard() from the wizard's
+    /// own baselineDensityPathToStage(); consumed and cleared in stageJob().
+    /// Exists so a REMOTE job's baseline resolves on the cluster too: the
+    /// path baked into the generated script by AseScriptGenerator.cpp at
+    /// generation time is only ever valid on THIS machine.
+    QString pendingBaselineDensityPath_;
     /// Non-modal NEB builder window (owned via WA_DeleteOnClose; nulled on close).
     NebDialog* nebDialog_ = nullptr;
     jobs::JobRunner* jobRunner_ = nullptr;

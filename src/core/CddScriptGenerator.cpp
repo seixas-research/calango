@@ -29,9 +29,6 @@ std::string cddExternalEngine(const CddRunConfig& c)
             "import subprocess\n"
             "from ase.calculators.vasp import Vasp, VaspChargeDensity\n"
             "\n";
-        if (!c.calculator.vaspPotcarPath.empty())
-            out += "os.environ['VASP_PP_PATH'] = r\""
-                + c.calculator.vaspPotcarPath + "\"\n";
         out +=
             "\n"
             "def _read_vasp_density(directory):\n"
@@ -70,6 +67,9 @@ std::string cddExternalEngine(const CddRunConfig& c)
             "\n"
             "\n"
             "atoms, rho_ab = _read_vasp_density(baseline_dir)\n"
+        + AseScriptGenerator::vaspPotcarResolutionSnippet(
+              c.calculator.vaspPotcarPath)
+        +
             "_ngx, _ngy, _ngz = rho_ab.shape\n"
             "print('CALANGO_INFO parent grid %dx%dx%d' % rho_ab.shape,\n"
             "      flush=True)\n"

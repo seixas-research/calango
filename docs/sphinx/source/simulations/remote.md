@@ -214,6 +214,48 @@ when the job actually runs, by the same in-script check described above.
 
 ---
 
+## VASP executable flavors
+
+The same three-tier resolution as POTCAR above (per-cluster override, then
+the local Preferences default, then whatever the environment already has)
+applies to *which VASP binary runs* — see {ref}`vasp-electronic-structure-chgcar`
+and {doc}`/simulations/calculators`'s own VASP section for `vasp_std` /
+`vasp_gam` / `vasp_ncl` and what each is for. The Scheduler tab's three
+{guilabel}`VASP vasp_std` / `vasp_gam` / `vasp_ncl` fields export
+`CALANGO_VASP_STD` / `CALANGO_VASP_GAM` / `CALANGO_VASP_NCL` ahead of
+{guilabel}`Setup`, exactly like `CALANGO_VASP_PP_PATH` does; the generated
+script reads whichever one this specific run needs and sets
+`ASE_VASP_COMMAND` from it. `vasp_ncl` is the one flavor that is not an
+optimization: a spin-orbit run refuses to start, locally, without one
+configured somewhere, and refuses again at runtime on the cluster itself if
+neither the per-cluster nor the local field was actually set.
+
+## Baseline density staging (CHGCAR / .gpw)
+
+A run chained from a prior Single-point's charge density — the Electronic
+Structure / 2D Bands baseline combo, or VASP's own {guilabel}`Restart from
+CHGCAR` (the spin-orbit two-stage chain) — needs that file on whichever
+machine actually runs it, exactly the POTCAR problem again but for a file
+Calango itself produced rather than a licensed library. `MainWindow`
+copies it into the job directory under a fixed name (`baseline.CHGCAR` /
+`baseline.gpw`) when the job is staged, so a **remote** submission uploads
+it along with `run.py` and `structure.extxyz` the same way it already
+uploads everything else in that directory — no separate transfer step. The
+generated script checks for that staged copy first and falls back to the
+absolute path baked in at generation time (correct for a local run; only
+by coincidence correct for a remote one, exactly like POTCAR's own
+fallback tier). A VASP baseline's Fermi level travels the same way, via a
+`single_point.json` sidecar copied alongside the CHGCAR — see
+{doc}`/simulations/calculators`'s "Fermi level" note.
+
+This covers the Electronic Structure, 2D Bands, and Single-point-restart
+chains. **Wannierization's own baseline (a whole directory, not one file —
+see {doc}`/electronic/wannier`) is not staged this way yet**: a remote
+Wannier run chained from a local baseline directory needs that directory to
+already exist on the cluster by some other means.
+
+---
+
 ## Submitting and monitoring
 
 There is no separate "remote" dialog: every calculator wizard offers

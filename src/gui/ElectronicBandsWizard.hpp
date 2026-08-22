@@ -27,12 +27,15 @@ namespace calango::gui {
 
 /// Simulation → "Electronic Structure…": a bands + PDOS wizard built on a
 /// mandatory prior single-point (SCF) baseline. The run restarts from the
-/// baseline's saved charge density (.gpw) and evaluates the bands / PDOS
-/// non-self-consistently, so the plane-wave cutoff, XC functional and mode are
-/// inherited from that baseline and hidden. Stages: Calculator Settings (engine
-/// + PDOS k-mesh / energy points / smearing) → k-Path Definition (embedded
-/// Brillouin-zone builder) → ASE script review. The engine choice maps to the
-/// electronic backend: GPAW → GPAW, Quantum ESPRESSO → Espresso, etc.
+/// baseline's saved charge density (.gpw or, for VASP, CHGCAR via ICHARG=11)
+/// and evaluates the bands / PDOS non-self-consistently, so the plane-wave
+/// cutoff, XC functional and mode are inherited from that baseline and
+/// hidden. Stages: Calculator Settings (own engineCombo_ + PDOS k-mesh /
+/// energy points / smearing — showsEngineAndDftControls() stays off, so the
+/// standard chrome is not what is on screen here) → k-Path Definition
+/// (embedded Brillouin-zone builder) → ASE script review. The engine choice
+/// maps to the electronic backend: GPAW → GPAW, VASP → Vasp, Quantum
+/// ESPRESSO → Espresso, SIESTA → Siesta.
 class ElectronicBandsWizard : public SimulationWizardBase {
     Q_OBJECT
 
@@ -78,6 +81,9 @@ protected:
     bool inheritsCalculatorFromBaseline() const override { return true; }
     /// Rescale the PDOS k-mesh default to 2× the (baseline) SCF k-grid.
     void calculatorKgridChanged() override;
+    /// The selected baseline density file, for remote staging (see the base
+    /// class's own doc comment).
+    QString baselineDensityPathToStage() const override;
 
 private:
     /// Set the PDOS k-mesh spinboxes to 2× the SCF k-grid along each
@@ -110,6 +116,10 @@ private:
     std::shared_ptr<const core::Structure> structure_;
 
     class EmbeddedKPathEditor* kpath_ = nullptr;
+    /// This wizard's own engine picker — see the class doc for why it is
+    /// not the standard one (showsEngineAndDftControls() stays off). Same
+    /// pattern as TwoDBandsWizard::engineCombo_.
+    QComboBox* engineCombo_ = nullptr;
     QComboBox* baselineCombo_ = nullptr; ///< charge-density baseline selector
     /// "Spin Configurations" — the spin treatment of the BAND evaluation, as
     /// opposed to the collinear polarization of the SCF, which is inherited

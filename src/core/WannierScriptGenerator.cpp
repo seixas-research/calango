@@ -156,12 +156,20 @@ std::string generateVaspWannier90Script(const WannierConfig& cfg)
            "\n"
         << AseScriptGenerator::jsonLoggerPreamble()
         << "atoms = read('structure.extxyz')\n"
-           "_calango_progress(1, 4)\n"
+        << AseScriptGenerator::vaspPotcarResolutionSnippet(
+               cfg.calculator.vaspPotcarPath)
+        << "_calango_progress(1, 4)\n"
            "\n";
 
     const CalculatorConfig& c = cfg.calculator;
     const std::string kpts = std::to_string(c.kpts[0]) + ", "
         + std::to_string(c.kpts[1]) + ", " + std::to_string(c.kpts[2]);
+    // PREC must match whatever wrote the CHGCAR this reads (the baseline's
+    // own SCF, or -- the no-baseline branch below -- this script's OWN
+    // `scf` object): a mismatched FFT grid is a hard VASP error at the
+    // ICHARG=11 `bands` pass below, same class of bug as
+    // ElectronicScriptGenerator.cpp's own fix (Task 3/4, 2026-08-22).
+    const std::string vaspPrec = AseScriptGenerator::vaspPrecString(c.vaspPrec);
 
     if (!cfg.baselineDir.empty()) {
         out << "# Reuse the baseline's converged charge density (CHGCAR).\n"
@@ -195,6 +203,7 @@ std::string generateVaspWannier90Script(const WannierConfig& cfg)
             << c.planeWaveCutoffEv << ",\n"
                "           kpts=(" << kpts
             << "), ismear=0, sigma=0.05,\n"
+            << "           prec=\"" << vaspPrec << "\",\n"
                "           lcharg=True, directory=\".\")\n"
                "atoms.calc = scf\n"
                "atoms.get_potential_energy()\n"
@@ -233,6 +242,7 @@ std::string generateVaspWannier90Script(const WannierConfig& cfg)
         << "bands = Vasp(xc=\"" << c.vaspXc << "\", encut="
         << c.planeWaveCutoffEv << ", icharg=11,\n"
            "             ismear=0, sigma=0.05, isym=0,\n"
+        << "             prec=\"" << vaspPrec << "\",\n"
            "             lwannier90=True, lwannier90_run=True,\n"
            "             directory=\".\", kpts=(" << kpts << "))\n"
            "atoms.calc = bands\n"

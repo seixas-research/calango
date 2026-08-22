@@ -420,6 +420,19 @@ enum class VaspRelaxDriver {
 /// VASP PREC. Enum order is the combo order in the VASP settings group.
 enum class VaspPrecision { Normal, Accurate, Single };
 
+/// VASP LDAUTYPE — which DFT+U flavor. Enum order matches the literal
+/// LDAUTYPE integer each maps to only by coincidence (Dudarev=2,
+/// Liechtenstein=1 — see toString()/the generator, verified against the
+/// VASP wiki's own LDAUTYPE page): do not assume static_cast<int> gives the
+/// right INCAR value. Dudarev is the default -- it needs only ONE physically
+/// meaningful number per species (U_eff = U − J) and is markedly more
+/// common in the literature; Liechtenstein keeps U and J independently
+/// meaningful, which is the case an on-site exchange splitting fit
+/// specifically wants. LDAUTYPE=4 (Liechtenstein without exchange
+/// splitting) is out of scope -- neither convention this codebase's UI
+/// offers needs it.
+enum class VaspHubbardType { Dudarev, Liechtenstein };
+
 // ---------------------------------------------------------------------------
 // Quantum ESPRESSO
 // ---------------------------------------------------------------------------
@@ -730,6 +743,38 @@ struct HubbardU {
     bool scale = false;
 };
 
+/// One VASP DFT+U correction: LDAUL/LDAUU/LDAUJ for one chemical element.
+///
+/// Positional array ordering (LDAUL="2 -1", LDAUU="7.00 0.00", one number
+/// per POSCAR species, IN POSCAR SPECIES ORDER) is NOT built here or in the
+/// generator's own C++/Python string assembly — that is exactly the classic
+/// "table row order vs. structure species order" bug a reordered table (or
+/// a species the table lists in a different order than the structure
+/// happens to) would otherwise introduce silently. Instead this whole
+/// vector is handed to ASE's Vasp calculator as its own `ldau_luj={...}`
+/// dict, KEYED BY ELEMENT SYMBOL — ASE's create_input.py builds the
+/// positional arrays from that dict internally, against the SAME per-
+/// species ordering it uses to write POSCAR itself, so the two can never
+/// disagree (verified against
+/// .venv/lib/python3.14/site-packages/ase/calculators/vasp/
+/// create_input.py's own set_ldau()).
+struct VaspHubbardU {
+    std::string element;  ///< chemical symbol, e.g. "Ni"
+    /// LDAUL — the orbital angular momentum quantum number the correction
+    /// acts on: -1 (no correction — VASP wiki's own stated meaning), 1 (p),
+    /// 2 (d), 3 (f).
+    int l = -1;
+    double u = 0.0;  ///< LDAUU, eV
+    /// LDAUJ, eV. Only independently meaningful under
+    /// VaspHubbardType::Liechtenstein — under the default Dudarev type only
+    /// U − J (U_eff) matters, per the VASP wiki's own LDAUTYPE page; the
+    /// usual Dudarev convention is J = 0 and U set directly to U_eff. Kept
+    /// as its own field rather than folded away, since ASE's ldau_luj dict
+    /// always wants both and switching LDAUTYPE later should not silently
+    /// reinterpret a stored value.
+    double j = 0.0;
+};
+
 /// One "hold these degrees of freedom still" rule for a relaxation, emitted as
 /// an ASE constraint object.
 ///
@@ -1017,6 +1062,30 @@ struct CalculatorConfig {
     /// No UI can cover 300 INCAR flags; this is the escape hatch that stops
     /// the wizard from being a ceiling.
     std::string vaspExtraIncar;
+    /// SAXIS — the global spin-quantization axis (VASP wiki: sigma_3 points
+    /// along this direction after normalization; default (0,0,1)). Only
+    /// meaningful, and only written, when `spinMode == SpinMode::NonCollinear`
+    /// — a scalar or collinear run has no spinor space to orient.
+    double vaspSaxis[3] = {0.0, 0.0, 1.0};
+    /// LMAXMIX — the maximum l quantum number mixed by Broyden/Pulay charge
+    /// mixing. 0 means "leave VASP's own default (2)". The VASP wiki
+    /// recommends raising this to twice the highest l in the pseudopotential
+    /// for an ICHARG = 11 non-self-consistent restart (bands/PDOS/SOC off a
+    /// baseline CHGCAR) and, separately, to 4 (d) / 6 (f) for DFT+U band
+    /// structures — the wizard defaults it from the structure's heaviest
+    /// element when a baseline is selected, but the field stays a plain
+    /// override so a user who knows better is never fought.
+    int vaspLmaxmix = 0;
+    /// A prior VASP single point's CHGCAR, restarted non-self-consistently
+    /// (ICHARG = 11) instead of converging this run's own SCF. Unlike
+    /// ElectronicConfig/TwoDBandsConfig's own baselineDensityPath (a
+    /// bands/PDOS-only concept), this lives on the SHARED CalculatorConfig
+    /// because the SOC workflow's second stage is an ordinary Single-point
+    /// Calculation, not a specialized analysis task — see AseScriptGenerator
+    /// .cpp's emitVasp() and docs/sphinx/source/simulations/calculators.md's
+    /// VASP section for the two-stage collinear -> SOC chain this exists for.
+    /// Empty means "converge a fresh SCF here", the pre-existing behaviour.
+    std::string vaspChgcarBaselinePath;
 
     // -- GPAW (DFT) ---------------------------------------------------------
     // planeWaveCutoffEv above is the PW() cutoff; gpawGridSpacing is the FD
@@ -1120,6 +1189,23 @@ struct CalculatorConfig {
     /// they are the user's to justify.
     bool useHubbardU = false;
     std::vector<HubbardU> hubbardU;
+
+    /// DFT+U for VASP — a SEPARATE model from the GPAW one above (Task 2,
+    /// 2026-08-22): VASP's LDAUL/LDAUU/LDAUJ are per-species arrays with
+    /// their own l/U/J shape and an LDAUTYPE choice GPAW's `setups=` string
+    /// has no equivalent of, so reusing HubbardU/useHubbardU across both
+    /// engines would either lose LDAUTYPE or force GPAW's dialog to grow a
+    /// field it has no use for. `vaspUseHubbardU` gates the whole block the
+    /// same way `useHubbardU` does for GPAW.
+    bool vaspUseHubbardU = false;
+    VaspHubbardType vaspHubbardType = VaspHubbardType::Dudarev;
+    std::vector<VaspHubbardU> vaspHubbardU;
+    // LMAXMIX (auto 4 for d-shell / 6 for f-shell DFT+U species) reuses the
+    // EXISTING vaspLmaxmix field declared below (see its own doc comment,
+    // which already documented this exact DFT+U case before this feature
+    // existed) rather than a second one -- SimulationWizardBase's Hubbard
+    // section widens that field's auto-set logic to also consider whichever
+    // species carry a Hubbard correction, not just an ICHARG=11 baseline.
 
     // -- Dispersion --------------------------------------------------------
     /// Wrap the configured calculator in ASE's DFTD4 calculator, adding

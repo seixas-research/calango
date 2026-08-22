@@ -5,6 +5,8 @@
 
 #include <QDialog>
 
+#include <QList>
+#include <QPair>
 #include <QString>
 #include <QStringList>
 
@@ -24,6 +26,7 @@ class QPushButton;
 class QRadioButton;
 class QSpinBox;
 class QStackedWidget;
+class QTableWidget;
 class QVBoxLayout;
 
 namespace calango::gui {
@@ -64,6 +67,31 @@ public:
     /// inherit the calculator from a completed baseline without re-prompting.
     QString calculatorProvenanceJson() const;
 
+    /// The absolute path to a prior run's charge-density baseline (GPAW
+    /// .gpw, VASP CHGCAR) this run's generated script reads non-self-
+    /// consistently, or empty when the wizard has no such concept or none is
+    /// selected. The host (MainWindow::stageJob()) copies this file into the
+    /// job directory under a fixed name (baseline.gpw / baseline.CHGCAR) so
+    /// a REMOTE job can find it too — the generated script prefers that
+    /// staged copy over the absolute path baked in at generation time, which
+    /// only ever resolves on the machine the script was generated on.
+    /// Overridden by the wizards that carry their OWN baseline combo
+    /// (Electronic Structure, 2D Bands); the base implementation covers
+    /// every other wizard generically via vaspBaselineCombo_ — the VASP
+    /// settings group's own "Restart from a converged CHGCAR" row (the SOC
+    /// workflow's second stage; see CalculatorConfig::vaspChgcarBaselinePath)
+    /// — returning empty when that combo does not exist or has no
+    /// selection.
+    virtual QString baselineDensityPathToStage() const;
+
+    /// Populate the VASP group's "Restart from a converged CHGCAR" combo
+    /// (completed VASP Single-point runs; label, absolute CHGCAR path) —
+    /// the SOC workflow's second stage. A no-op before the VASP group is
+    /// built or when it has none (a wizard whose calculatorAllowed() never
+    /// admits VASP has no such combo to fill). Always includes a leading
+    /// "None — converge here" entry (empty path) so the field is opt-in.
+    void setVaspChgcarBaselines(const QList<QPair<QString, QString>>& baselines);
+
     /// The inheritance-relevant calculator description read back from a job
     /// directory's `calculator.json`. Empty optional when the file is absent or
     /// unreadable (e.g. a baseline produced by an older Calango release).
@@ -78,11 +106,41 @@ public:
         bool symmetryOff = false;
         QString pythonExecutable;  ///< interpreter the baseline ran under
         QString condaEnv;          ///< engine's env preset string (may be empty)
+        /// VASP DFT+U, as vaspHubbardSummary()'s own comparable string —
+        /// empty means "no +U". GPAW carries no equivalent field: its own
+        /// restart (a full .gpw) cannot diverge from whatever produced it,
+        /// so there is nothing here to compare for that engine (Task 2,
+        /// 2026-08-22 — see vaspHubbardSummary()'s own doc comment).
+        QString vaspHubbard;
         /// One-line, human-readable description for the inheritance note.
         QString summary() const;
     };
     static std::optional<InheritedCalculator> readCalculatorProvenance(
         const QString& jobDir);
+
+    /// A single-line, ORDER-INDEPENDENT string encoding of a VASP DFT+U
+    /// configuration ("Dudarev|Ni:l=2,U=6.00,J=0.00") — comparable with
+    /// == across two configs built from independently-ordered tables,
+    /// which is the whole point: two SimulationWizardBase instances (a
+    /// completed parent's saved provenance, and the child currently open)
+    /// never share a QTableWidget, only whatever ends up in this string.
+    /// A species with no actual correction (U <= 0) is left out entirely,
+    /// so "not configured" and "configured at U=0" compare equal — both
+    /// mean no correction, per core::VaspHubbardU's own doc comment. Empty
+    /// means "+U is off (or nothing survives the U<=0 filter)".
+    static QString vaspHubbardSummary(const core::CalculatorConfig& config);
+    /// Warns (does not hard-refuse — this is a physics judgment call, not
+    /// a guaranteed failure) when the selected VASP baseline's own DFT+U
+    /// settings (read from ITS calculator.json) disagree with this run's
+    /// own — an Electronic Structure/2D Bands ICHARG=11 child or the SOC
+    /// workflow's stage 2, restarting a CHGCAR whose SCF used different
+    /// LDAU settings (or none) than what THIS script is about to write,
+    /// silently computing inconsistent physics with no error at all (Task
+    /// 2's own "chaining consistency" requirement). A no-op (returns true)
+    /// for every calculator other than VASP, and when no baseline is
+    /// selected (baselineDensityPathToStage() empty) or its provenance is
+    /// unreadable — nothing to compare against either way.
+    bool preflightVaspHubbardConsistency();
 
     /// Shared body of a baseline picker's change handler: read the provenance
     /// sidecar next to the selected .gpw (the combo's currentData) and render
@@ -188,6 +246,16 @@ protected:
     /// A wizard that returns false should merge its task controls into the
     /// calculator-settings page via buildCalculatorExtras().
     virtual bool hasTaskSettingsStage() const { return true; }
+
+    /// Navigationally skip the task-settings stage RIGHT NOW, without
+    /// removing it from the stack. Unlike hasTaskSettingsStage() (resolved
+    /// once at construction, before an engine is even selected), this is
+    /// re-evaluated on every Next/Back click, so it can depend on a live
+    /// control — Geometry Optimization uses it for VASP's own internal
+    /// relaxation route (IBRION/NSW/ISIF/EDIFFG), where the ASE-side
+    /// optimizer/force-criterion/cell-filter stage would otherwise sit
+    /// between two pages that do not use it.
+    virtual bool skipTaskSettingsStage() const { return false; }
 
     /// An optional SECOND task stage, inserted between Calculator Settings and
     /// the settings page, giving a 4-stage flow. The Phonon wizard uses it to
@@ -329,6 +397,17 @@ protected:
     /// a denser mesh from the (baseline) SCF sampling.
     int calculatorKpoint(int axis) const;
 
+    /// True right now when VASP is selected, the task has ionic steps, and
+    /// the "Relaxation driver" combo is set to VASP's own internal route —
+    /// the live predicate updateVaspRows() shows/hides IBRION/ISIF/EDIFFG
+    /// with, exposed so a subclass (Geometry Optimization's
+    /// skipTaskSettingsStage()) can make the same decision without
+    /// duplicating the combo/task/calculator check.
+    bool vaspInternalRelaxationSelected() const;
+    /// NSW under VASP's own internal relaxation route (vaspNswSpin_). Only
+    /// meaningful when vaspInternalRelaxationSelected() is true.
+    int vaspNsw() const;
+
     /// Calculator kind + backend knobs (DFT cutoff/k-points, MACE, ORCA) from
     /// Stages 2–3; the subclass adds its task fields to build the final config.
     core::CalculatorConfig baseCalculatorConfig() const;
@@ -371,12 +450,45 @@ private:
     void applySuggestedParameters();
 
     QWidget* buildCalculatorPage();
+    /// Wrap `page` in a QScrollArea (resizable, frameless — same idiom as
+    /// NebDialog's own settings scroll and HpcPanel's Scheduler tab) before
+    /// it goes into `stack_`. Applied uniformly to every stage page in
+    /// buildUi() rather than only the Calculator Settings page that
+    /// prompted this: a QStackedLayout's own sizeHint/minimumSize is the
+    /// MAX across every page it holds (a standing Qt quirk, not specific to
+    /// this dialog), so an unwrapped tall page would otherwise force the
+    /// dialog itself to grow regardless of which page happens to be
+    /// showing. Each page gets its OWN scroll area rather than one wrapping
+    /// the whole stack, precisely so a short page's viewport stays sized to
+    /// ITS OWN content and never inherits a scrollbar from a tall sibling
+    /// page's — the QScrollArea this returns reports a content-independent
+    /// minimumSizeHint, which is what actually keeps that from happening.
+    /// A page whose content already fits shows no scrollbar at all — this
+    /// is a no-op wrapper for it, not a restructuring.
+    QWidget* wrapInScrollArea(QWidget* page);
     QWidget* buildMaceGroup(QWidget* parent);
     /// The "VASP settings" group — the primary INCAR tags plus the POTCAR
     /// directory. Shown only when VASP is the selected engine.
     QWidget* buildVaspGroup(QWidget* parent);
     /// Show the ionic-relaxation row only for the tasks that have ionic steps.
     void updateVaspRows();
+    /// (Re)build vaspHubbardTable_'s rows from calculatorElements() — one
+    /// FIXED row per structure species (see the table's own doc comment for
+    /// why rows are never user-add/removable here, unlike GPAW's dialog).
+    /// Called once, from buildVaspGroup() itself; calculatorElements() is
+    /// stable for the wizard's whole lifetime (the structure a wizard opens
+    /// on is fixed at construction), so there is no later trigger that
+    /// would need to call this again.
+    void populateVaspHubbardTable();
+    /// Raise LMAXMIX to 4 (any enabled row's l == 2) or 6 (l == 3), the
+    /// LARGER if both are present — the VASP wiki's own DFT+U guidance —
+    /// UNLESS vaspLmaxmixEdited_ says the user already set it by hand.
+    /// Connected to every control that can change which species carry a
+    /// correction: the enable checkbox and each row's own l/U spin boxes
+    /// (U specifically, not J: a species with l>=0 but U==0 requests no
+    /// actual correction, matching ASE's own ldau_luj default entry, so
+    /// LMAXMIX has nothing to answer for it).
+    void refreshVaspHubbardLmaxmixAuto();
     /// Local approximation of the check the generated script performs at
     /// runtime (AseScriptGenerator.cpp, emitVasp()) — catches "no POTCAR
     /// library configured" and "the configured library is missing one of
@@ -385,6 +497,14 @@ private:
     /// dialog) for every calculator other than VASP. See
     /// gui/VaspPotcarPreflight.hpp for what it can and cannot see.
     bool preflightVaspPotcar();
+    /// The same shape of check as preflightVaspPotcar(), for vasp_ncl: a
+    /// Non-Collinear (spin-orbit) run with no vasp_ncl configured in
+    /// Preferences → External Files → VASP executables is refused before
+    /// anything is staged — vasp_std cannot run a noncollinear calculation
+    /// at all, so this is not an optimization to skip. A no-op (returns
+    /// true) for every calculator other than VASP, and for VASP runs that
+    /// are not Non-Collinear.
+    bool preflightVaspNcl();
     /// A second, independent preflight check run alongside
     /// preflightVaspPotcar(), for anything the concrete wizard wants
     /// checked before Run (Local)/Run (Remote) that is not the VASP POTCAR
@@ -397,6 +517,18 @@ private:
     /// established per-element preflight anywhere else in this application
     /// to reuse — see FUTURE.md for that as a follow-up.
     virtual bool preflightSecondary() { return true; }
+    /// Run (Local)-only preflight (Task 2): GPAW parallelized by running the
+    /// SCRIPT under mpirun (RunCommands.hpp), so "Cores" (Preferences →
+    /// Run) > 1 needs BOTH an MPI-enabled GPAW build and an mpirun/mpiexec
+    /// launcher to actually parallelize — either missing means the run
+    /// would silently execute on 1 core, or worse, as N redundant
+    /// independent serial copies of the same calculation. A no-op (returns
+    /// true) for every calculator other than GPAW and for Cores <= 1. See
+    /// gui/GpawMpiPreflight.hpp. Not run for Run (Remote): a remote job's
+    /// rank count is the HPC panel's own Nodes x Tasks/node, resolved and
+    /// checked entirely inside HpcPanel::specFromUi() against a cluster
+    /// this process cannot probe.
+    bool preflightGpawMpi();
     /// The "Quantum ESPRESSO settings" group — the dual cutoff (ecutwfc /
     /// ecutrho), input_dft, occupations + smearing, conv_thr.
     QWidget* buildEspressoGroup(QWidget* parent);
@@ -467,6 +599,11 @@ private:
     bool hasSecondSettingsStage_ = false;
     bool showsCalculatorStage_ = true; ///< resolved from showsCalculatorStage()
     int reviewStage_ = 3;          ///< index of the final (review) stage
+    /// Index of the task-settings stage in `stack_`, or -1 when
+    /// hasTaskSettingsStage() is false. goNext()/goBack() step over this
+    /// index when skipTaskSettingsStage() is live-true, without touching the
+    /// stack itself — see skipTaskSettingsStage()'s own doc comment.
+    int taskSettingsStageIndex_ = -1;
     bool manuallyEdited_ = false;
     bool updatingPreview_ = false;
 
@@ -668,7 +805,55 @@ private:
     QComboBox* vaspIbrionCombo_ = nullptr;
     QComboBox* vaspIsifCombo_ = nullptr;
     QDoubleSpinBox* vaspEdiffgSpin_ = nullptr;
+    /// NSW under VASP's own internal relaxation route — surfaced here,
+    /// beside IBRION/ISIF/EDIFFG, because the ASE-side "Max steps" field
+    /// (Geometry Optimization's own Stage 2) is exactly the stage this route
+    /// skips (see skipTaskSettingsStage()). Read only when
+    /// vaspInternalRelaxationSelected() is true; the ASE route keeps using
+    /// its own max-steps field unchanged.
+    QSpinBox* vaspNswSpin_ = nullptr;
     QWidget* vaspIonicRow_ = nullptr;
+    /// "Restart from a converged CHGCAR" — the SOC two-stage chain's second
+    /// stage (an ordinary Single-point Calculation reusing a first,
+    /// collinear one's density via ICHARG = 11). Populated by the host
+    /// (mirroring ElectronicBandsWizard::setDensityBaselines()); the base
+    /// class's own baselineDensityPathToStage() reads it generically. Empty
+    /// selection ("None — converge here") means the pre-existing behaviour:
+    /// a fresh SCF.
+    QComboBox* vaspBaselineCombo_ = nullptr;
+    /// SAXIS — only written when Spin Configurations above is set to
+    /// Non-Collinear; shown whenever the VASP group itself is, with a
+    /// tooltip saying so, rather than adding cross-widget visibility wiring
+    /// to a group owned by a different helper (GpawElectronicRows).
+    QDoubleSpinBox* vaspSaxisSpin_[3] = {nullptr, nullptr, nullptr};
+    /// LMAXMIX — 0 means "leave VASP's own default"; see
+    /// CalculatorConfig::vaspLmaxmix's own doc comment. Auto-raised to 4/6
+    /// when Hubbard U turns on a d/f-shell species (see
+    /// refreshVaspLmaxmixAuto()) UNLESS vaspLmaxmixEdited_ says the user has
+    /// already set it by hand — the same "auto until the user overrides it"
+    /// shape as SimulationWizardBase::runCommandEdited_.
+    QSpinBox* vaspLmaxmixSpin_ = nullptr;
+    bool vaspLmaxmixEdited_ = false;
+
+    // -- DFT+U (LDAU), VASP (Task 2, 2026-08-22) -----------------------------
+    // A separate model and a separate section from GPAW's own hubbardButton_/
+    // HubbardParametersDialog above: VASP's LDAUL/LDAUU/LDAUJ arrays and its
+    // LDAUTYPE choice have no GPAW equivalent, and the two engines' data
+    // shapes (CalculatorConfig::hubbardU vs. ::vaspHubbardU) are kept
+    // deliberately separate for the same reason. Inline in the VASP group
+    // itself (species/l/U/J is small enough not to need a modal dialog the
+    // way GPAW's free-form add/remove table does), one FIXED row per
+    // structure species — never user-add/removable, since an LDAUL/LDAUU/
+    // LDAUJ entry for an element the cell does not contain is not merely
+    // inert (GPAW's own case) but has no POSCAR-species slot to occupy at
+    // all.
+    QCheckBox* vaspHubbardCheck_ = nullptr;
+    QComboBox* vaspHubbardTypeCombo_ = nullptr;
+    /// Columns: l (QSpinBox, -1..3), U (QDoubleSpinBox, eV), J (QDoubleSpinBox,
+    /// eV) — the vertical header carries the (read-only) species symbol.
+    /// One row per calculatorElements() entry, built once and never resized;
+    /// see the class's own note on why rows are never added/removed here.
+    QTableWidget* vaspHubbardTable_ = nullptr;
     QCheckBox* vaspLwaveCheck_ = nullptr;
     QCheckBox* vaspLchargCheck_ = nullptr;
     QCheckBox* vaspLaechgCheck_ = nullptr;

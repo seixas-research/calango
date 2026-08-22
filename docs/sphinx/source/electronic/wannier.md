@@ -161,6 +161,67 @@ isosurface in the viewport.
 
 ---
 
+## VASP: via VASP's own Wannier90 library, not `ase.dft.wannier`
+
+`ase.dft.wannier.Wannier` cannot be driven from a VASP ground state at all —
+`Wannier.new_Z()` calls `calc.get_wannier_localization_matrix(...)`
+unconditionally, and that method is a GPAW-only addition to ASE's calculator
+interface. VASP is not left refused, though: it has its own native
+interface to the Wannier90 *library*, linked into the VASP binary itself.
+`LWANNIER90 = .TRUE.` switches it on; `LWANNIER90_RUN = .TRUE.` makes VASP
+run the linked library to full completion internally — disentanglement and
+Marzari–Vanderbilt localization both happen **inside VASP**, not in Calango
+or in `ase.dft.wannier` — writing `wannier90.wout` (centres, spreads) and,
+with `write_hr = true` in the generated `.win` file, `wannier90_hr.dat` (the
+real-space Hamiltonian; copied to `wannier_hr.dat`, the same name the GPAW
+path uses).
+
+Selecting VASP in the Wannierization wizard's engine picker takes this
+route automatically. It needs symmetry off (`ISYM = 0`, always, on this
+node's own pass — independent of whatever the baseline's own symmetry
+setting was, since CHGCAR carries no k-specific symmetry state to inherit)
+and a converged baseline CHGCAR (or a fresh SCF, same fixed-density restart
+`ICHARG = 11` the Electronic Structure chain uses). Calango's own code
+parses the resulting `wannier90.wout` — via ASE's `ase.io.wannier90
+.read_wout_all()`, not a hand-rolled parser — into the identical
+`wannier.json` schema the GPAW path writes (`total_spread`, `centers`,
+`spreads`, `hr`, `cell`, …; `functional_value` is `None` — VASP does not
+expose a running Ω the way ASE's iterative minimizer does; `cubes: []` —
+VASP's Wannier90 library does not write real-space Wannier functions the
+way `ase.dft.wannier`'s `write_cube()` does, so no orbital isosurface is
+available on this route). The Wannier Functions viewer, Wannier
+Interpolation, and `WannierRunLoader`'s downstream consumers (Boltzmann
+Transport, Berry Phase, cRPA) need no VASP-specific branch as a result —
+they key only on `wannier.json` + `wannier_hr.dat`, whichever engine wrote
+them.
+
+**Validated without a VASP license** (none is available in the environment
+this was built and tested in): `generated_script_lint` byte-compiles the
+generated script and confirms every name it reads is assigned in the same
+file; a dedicated preflight test asserts the generated Python's actual
+content (no `ase.dft.wannier` import anywhere on this route, `isym=0`, the
+CHGCAR-reuse branch, the `.win` file's exact keys, the zero-centres
+refusal). The wout-parsing step specifically — the one genuinely new,
+input-format-specific code on this route — is checked against a
+wannier90.wout-**format**-correct fixture for bulk fcc Cu (the same s + 5d
+model, and the same tolerance band, as the GPAW-side Cu regression test
+below), reproducing spreads at the expected literature scale and carrying
+them through to the same `wannier.json` construction the generated script
+itself uses (`cu_wannier_vasp_fixture` in the test suite). What this
+proves: the real parser (ASE's own) and the JSON schema construction are
+correct against a genuinely wannier90-shaped file. What it does **not**
+prove, and could not without a VASP binary: that `LWANNIER90_RUN` itself
+converges correctly end to end on a real system — a real VASP run has
+never executed against this code path.
+
+**Not (yet) SOC-aware.** `generateVaspWannier90Script()` never sets
+`LSORBIT` — pointing this route at a CHGCAR from a noncollinear
+Single-point (see {doc}`/simulations/calculators`'s spin-orbit section)
+restarts it as collinear, which is very likely wrong rather than merely
+suboptimal.
+
+---
+
 ## Wannier interpolation
 
 {menuselection}`Wannier Functions --> Wannier Interpolation…` starts from a

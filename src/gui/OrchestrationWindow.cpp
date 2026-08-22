@@ -7,6 +7,7 @@
 #include "gui/CalculatorParameters.hpp"
 #include "gui/OrchestrationDocument.hpp"
 #include "gui/EnginePresets.hpp"
+#include "gui/GpawMpiPreflight.hpp"
 #include "gui/GuiUtils.hpp"
 #include "gui/MaceTrainerDialog.hpp"
 #include "gui/ProcessManagerPanel.hpp"
@@ -7021,6 +7022,29 @@ bool OrchestrationWindow::startNode(OrchestrationNodeItem* node)
         : (pythonResolver_ ? pythonResolver_(node->engine()) : QString());
     context.scriptFile = QStringLiteral("run.py");
     context.cores = RunCommands::cores();
+
+    // GPAW-MPI pre-flight (Task 2): the canvas has no remote branch --
+    // every launch here is local -- so this is the ONLY point in the
+    // Orchestration path that can catch "cores>1 requested but this GPAW
+    // build has no MPI support / no mpirun can be found" before a job is
+    // launched that would silently run on 1 core (or worse, N redundant
+    // serial copies of the same calculation — see GpawMpiPreflight.hpp).
+    // Caught here rather than earlier alongside configurationProblem(): that
+    // check runs on every canvas refresh and must stay a cheap, synchronous
+    // read of node state, not a subprocess probe.
+    if (node->engine() == core::CalculatorKind::Gpaw) {
+        const auto mpiCheck =
+            checkGpawMpi(context.pythonExecutable, context.cores);
+        if (!mpiCheck.ok) {
+            node->setStatus(OrchestrationNodeItem::Status::Failed);
+            finishProvenance(node, record, -1, staged);
+            recordOutcome(node, mpiCheck.errorMessage);
+            refuse(tr("%1 was not started: %2\n\nNothing was launched.")
+                       .arg(node->title(), mpiCheck.errorMessage));
+            return false;
+        }
+    }
+
     const RunCommands::Resolved resolved = RunCommands::resolve(
         node->engine(), context, node->configuredRunCommand());
 

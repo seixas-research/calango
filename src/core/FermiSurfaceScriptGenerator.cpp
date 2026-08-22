@@ -51,6 +51,24 @@ if not os.path.exists(_mj):
         'from a completed MLWF localization — point this at one.')
 _meta = json.load(open(_mj))
 
+# A VASP-sourced wannier.json (engine='VASP', gpw=None -- see
+# WannierScriptGenerator.cpp's generateVaspWannier90Script) has no
+# restartable GPAW wavefunction at all: this script re-localizes via
+# ase.dft.wannier.Wannier from a live GPAW object, which a VASP MLWF run
+# never produced (its localization ran entirely inside VASP's own linked
+# Wannier90 library instead). Left unguarded this falls through to the
+# .gpw search below, finds nothing, and reports the generic "recorded no
+# path" message -- true of the field, not the actual reason, and not
+# actionable (Task 4, 2026-08-22; mirrors the identical guard
+# WannierScriptGenerator.cpp's Wannier Interpolation path already has).
+if _meta.get('engine') == 'VASP':
+    raise RuntimeError(
+        'The MLWF run in ' + _base + ' used VASP\'s own Wannier90 library, '
+        'not ase.dft.wannier -- the Fermi surface is not implemented for '
+        'that route yet (see FUTURE.md). Its wannier90_hr.dat / '
+        'wannier_hr.dat already holds H(R); interpolating a Fermi surface '
+        'from it would need a reader for that instead of a GPAW restart.')
+
 _gpw_path = _meta.get('gpw')
 if not (_gpw_path and os.path.exists(_gpw_path)):
     _found = sorted(glob.glob(os.path.join(_base, '*.gpw')))

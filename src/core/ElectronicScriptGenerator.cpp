@@ -206,10 +206,18 @@ std::string generateElectronicScript(const ElectronicConfig& c)
             // Non-self-consistent (NSCF) run off a converged baseline density:
             // load the .gpw the Single-Point Calculation saved and evaluate the
             // band dispersion + PDOS at fixed charge density. No inline SCF.
-            out << "# NSCF band structure from a fixed baseline charge density\n"
+            //
+            // MainWindow::stageJob() copies the baseline into this job's own
+            // directory as "baseline.gpw" (for a remote run, whose only
+            // filesystem is what got uploaded); prefer that staged copy over
+            // the absolute path baked in at generation time, which resolves
+            // only on the machine the script was generated on.
+            out << "import os\n"
+                   "# NSCF band structure from a fixed baseline charge density\n"
                    "# (produced by a prior Single-Point Calculation).\n"
-                << "calc = GPAW(\"" << c.baselineDensityPath
-                << "\", txt=\"gpaw_bands.txt\")\n"
+                << "_baseline = (\"baseline.gpw\" if os.path.exists(\"baseline.gpw\")\n"
+                << "             else r\"" << c.baselineDensityPath << "\")\n"
+                   "calc = GPAW(_baseline, txt=\"gpaw_bands.txt\")\n"
                    "atoms = calc.get_atoms()\n"
                    "efermi = float(calc.get_fermi_level())\n"
                    "_calango_progress(2, 4)\n"
@@ -582,7 +590,23 @@ std::string generateElectronicScript(const ElectronicConfig& c)
                "import os\n"
                "import shutil\n"
                "\n"
+            << AseScriptGenerator::vaspPotcarResolutionSnippet(
+                   c.vaspPotcarPath)
             << "kgrid = " << c.scfKpts << "\n";
+        // PREC sets VASP's FFT grid density for a given ENCUT; every
+        // Vasp() call below that reads a CHGCAR via ICHARG=11 (the
+        // baseline-restart bands pass, the self-contained pair, and the
+        // PDOS pass further down) MUST use the SAME prec as whichever run
+        // wrote that CHGCAR, or VASP refuses it outright ("dimensions on
+        // CHGCAR file are different") — the second bug found alongside
+        // proc_4's POTCAR failure (Task 3, 2026-08-22). One shared value
+        // for the whole case block: a baseline's CHGCAR always comes from
+        // emitVasp() (AseScriptGenerator.cpp), which always sets this
+        // explicitly, and the self-contained pair/PDOS pass share a CHGCAR
+        // written earlier in this SAME script — so every restart in this
+        // case block needs to agree with the ONE value the user configured.
+        const std::string vaspPrec =
+            AseScriptGenerator::vaspPrecString(c.gpaw.vaspPrec);
         if (!c.baselineDensityPath.empty()) {
             // The whole point of the baseline: no SCF here at all. VASP reads
             // the converged density from the CHGCAR of a prior single point
@@ -596,8 +620,16 @@ std::string generateElectronicScript(const ElectronicConfig& c)
                    "# ICHARG = 11 reads CHGCAR and never updates it, so no SCF\n"
                    "# runs here. VASP opens 'CHGCAR' in the working directory\n"
                    "# and takes no path for it, hence the copy.\n"
-                << "_baseline = r\"" << c.baselineDensityPath
-                << "\"\n"
+                   "#\n"
+                   "# MainWindow::stageJob() copies the baseline into this\n"
+                   "# job's own directory as \"baseline.CHGCAR\" (for a remote\n"
+                   "# run, whose only filesystem is what got uploaded);\n"
+                   "# prefer that staged copy over the absolute path baked in\n"
+                   "# at generation time, which resolves only on the machine\n"
+                   "# the script was generated on.\n"
+                << "_baseline = (\"baseline.CHGCAR\" if os.path.exists("
+                   "\"baseline.CHGCAR\")\n"
+                << "             else r\"" << c.baselineDensityPath << "\")\n"
                    "if not os.path.exists(_baseline):\n"
                    "    raise RuntimeError(\n"
                    "        f'The baseline charge density is gone: {_baseline}\\n'\n"
@@ -614,6 +646,20 @@ std::string generateElectronicScript(const ElectronicConfig& c)
                 << "bands = Vasp(xc=\"PBE\", encut=" << c.ecutEv
                 << ", icharg=11,\n"
                    "             ismear=0, sigma=0.05,\n"
+                   // PREC sets VASP's FFT grid density for a given ENCUT;
+                   // an ICHARG=11 restart reading a CHGCAR written under a
+                   // DIFFERENT prec gets a mismatched grid and VASP refuses
+                   // it outright ("dimensions on CHGCAR file are
+                   // different"). The baseline always comes from
+                   // emitVasp() (AseScriptGenerator.cpp), which always sets
+                   // this explicitly — matching it here, rather than
+                   // leaving VASP's own PREC=Normal default in place, is
+                   // what makes a CHGCAR baseline usable at all (Task 3,
+                   // 2026-08-22 — the second bug found alongside proc_4's
+                   // POTCAR failure).
+                   "             prec=\""
+                << AseScriptGenerator::vaspPrecString(c.gpaw.vaspPrec)
+                << "\",\n"
                    // bandpath.kpts, not bandpath itself, and reciprocal=True:
                    // ASE's Vasp writer needs a plain array (a BandPath object
                    // has no __format__, so passing it raw crashes at
@@ -625,7 +671,30 @@ std::string generateElectronicScript(const ElectronicConfig& c)
                    "             reciprocal=True)\n"
                    "atoms.calc = bands\n"
                    "atoms.get_potential_energy()\n"
-                   "efermi = float(atoms.calc.get_fermi_level())\n"
+                   // The Fermi level of a run whose k-points are a 1D PATH
+                   // (not a zone-filling mesh) is not a meaningful occupation
+                   // count -- the VASP wiki's own ICHARG = 11 page recommends
+                   // the prior self-consistent run's E_F instead. That run's
+                   // single_point.json (AseScriptGenerator.cpp's single-point
+                   // summary) sits beside the CHGCAR it wrote; prefer its
+                   // "fermi_eV" and fall back to this pass's own (potentially
+                   // unreliable) get_fermi_level() only when that sidecar is
+                   // missing or predates this field (an older run, or a
+                   // CHGCAR sourced from outside Calango).
+                   "efermi = None\n"
+                   "try:\n"
+                   "    with open(os.path.join(os.path.dirname(_baseline) or "
+                   "'.', 'single_point.json')) as _fh:\n"
+                   "        efermi = json.load(_fh).get('fermi_eV')\n"
+                   "except Exception:\n"
+                   "    pass\n"
+                   "if efermi is None:\n"
+                   "    efermi = float(atoms.calc.get_fermi_level())\n"
+                   "    print('CALANGO_INFO no single_point.json fermi_eV "
+                   "beside the baseline; using this NSCF pass\\'s own "
+                   "(less reliable) Fermi level', flush=True)\n"
+                   "else:\n"
+                   "    efermi = float(efermi)\n"
                    "bs = atoms.calc.band_structure()\n"
                    "bs._reference = efermi\n"
                    "_calango_progress(3, 4)\n";
@@ -634,6 +703,7 @@ std::string generateElectronicScript(const ElectronicConfig& c)
                    "# the band pass reuses ITS density (ICHARG = 11).\n"
                 << "scf = Vasp(xc=\"PBE\", encut=" << c.ecutEv << ",\n"
                    "           kpts=(kgrid, kgrid, kgrid), ismear=0, sigma=0.05,\n"
+                << "           prec=\"" << vaspPrec << "\",\n"
                    "           lcharg=True, directory=\".\")\n"
                    "atoms.calc = scf\n"
                    "atoms.get_potential_energy()\n"
@@ -644,6 +714,7 @@ std::string generateElectronicScript(const ElectronicConfig& c)
                 << "bands = Vasp(xc=\"PBE\", encut=" << c.ecutEv
                 << ", icharg=11,\n"
                    "             ismear=0, sigma=0.05,\n"
+                << "             prec=\"" << vaspPrec << "\",\n"
                    "             directory=\".\", kpts=bandpath.kpts,\n"
                    "             reciprocal=True)\n"
                    "atoms.calc = bands\n"
@@ -651,6 +722,99 @@ std::string generateElectronicScript(const ElectronicConfig& c)
                    "bs = atoms.calc.band_structure()\n"
                    "bs._reference = efermi\n"
                    "_calango_progress(3, 4)\n";
+        }
+        if (c.pdos) {
+            // LORBIT = 11: lm-decomposed PROCAR + DOSCAR (VASP wiki,
+            // LORBIT). RWIGS is deliberately absent -- it is IGNORED for
+            // LORBIT >= 10, which projects onto the PAW projector functions
+            // directly rather than a user-chosen sphere radius, so there is
+            // no per-element setting to collect here at all.
+            //
+            // A separate pass, not a reuse of `bands`: DOSCAR/vasprun.xml's
+            // partial DOS wants a proper zone-filling k-mesh (pdosKpts), not
+            // the 1D band path `bands` was just diagonalized on. CHGCAR is
+            // already on disk from whichever branch above ran -- ICHARG = 11
+            // never rewrites it, so this reads the same converged density.
+            out << "\n"
+                   "# Projected DOS (LORBIT = 11), on the same fixed density.\n"
+                << "dos_calc = Vasp(xc=\"PBE\", encut=" << c.ecutEv
+                << ", icharg=11,\n"
+                   "                ismear=0, sigma=0.05, lorbit=11,\n"
+                << "                prec=\"" << vaspPrec << "\",\n"
+                << "                kpts=(" << c.pdosKpts[0] << ", "
+                << c.pdosKpts[1] << ", " << c.pdosKpts[2] << "),\n"
+                   "                directory=\".\")\n"
+                   "atoms.calc = dos_calc\n"
+                   "atoms.get_potential_energy()\n"
+                   "try:\n"
+                   "    import xml.etree.ElementTree as _ET\n"
+                   "\n"
+                   "    _partial = _ET.parse(\"vasprun.xml\").getroot().find(\n"
+                   "        \".//dos/partial/array\")\n"
+                   "    if _partial is None:\n"
+                   "        raise RuntimeError(\n"
+                   "            \"vasprun.xml has no <dos><partial> block \"\n"
+                   "            \"(LORBIT did not take effect?)\")\n"
+                   "    _fields = [_f.text.strip()\n"
+                   "               for _f in _partial.findall(\"field\")]\n"
+                   "    _symbols = atoms.get_chemical_symbols()\n"
+                   "    _pdos_energies = None\n"
+                   "    _projections = {}\n"
+                   "    for _ion, _ion_set in enumerate(\n"
+                   "            _partial.find(\"set\").findall(\"set\")):\n"
+                   "        _symbol = (_symbols[_ion] if _ion < len(_symbols)\n"
+                   "                   else \"?\")\n"
+                   "        for _spin_set in _ion_set.findall(\"set\"):\n"
+                   "            _rows = [[float(_v) for _v in _r.text.split()]\n"
+                   "                     for _r in _spin_set.findall(\"r\")]\n"
+                   "            if _pdos_energies is None:\n"
+                   "                _pdos_energies = [_row[0] for _row in _rows]\n"
+                   "            for _col, _field in enumerate(_fields):\n"
+                   "                if _field == \"energy\":\n"
+                   "                    continue\n"
+                   "                # Every VASP partial-DOS field name for\n"
+                   "                # p/d/f starts with its shell letter\n"
+                   "                # (py/pz/px, dxy/.../dx2, f-3/...); s is\n"
+                   "                # already just \"s\" -- summed over m and\n"
+                   "                # spin, matching the GPAW branch's own\n"
+                   "                # per-element-per-shell aggregation.\n"
+                   "                _key = f\"{_symbol} {_field[0]}\"\n"
+                   "                _curve = _projections.setdefault(\n"
+                   "                    _key, [0.0] * len(_rows))\n"
+                   "                for _i, _row in enumerate(_rows):\n"
+                   "                    _curve[_i] += _row[_col]\n"
+                   "    if _pdos_energies and _projections:\n"
+                   "        _n = len(_pdos_energies)\n"
+                   "        _bin = ((_pdos_energies[-1] - _pdos_energies[0])\n"
+                   "                / (_n - 1)) if _n > 1 else 0.0\n"
+                   "        pdos = {\n"
+                   "            \"energies\": [float(_v) for _v in _pdos_energies],\n"
+                   "            \"efermi\": float(efermi),\n"
+                   "            # Already a finished curve on VASP's own\n"
+                   "            # ISMEAR/SIGMA-smeared grid, not a raw\n"
+                   "            # histogram Calango can re-bin -- so no sigma\n"
+                   "            # slider applies (BandPdosWindow.cpp reads\n"
+                   "            # \"broadened\", not the literal string\n"
+                   "            # \"vasp\", to decide that).\n"
+                   "            \"broadened\": True,\n"
+                   "            \"integration\": \"vasp\",\n"
+                   "            \"bin_width\": float(_bin),\n"
+                   "            \"projections\": {\n"
+                   "                _k: [float(_v) for _v in _v]\n"
+                   "                for _k, _v in _projections.items()},\n"
+                   "        }\n"
+                   "        print(f\"CALANGO_INFO pdos channels: \"\n"
+                   "              f\"{sorted(_projections)} ({_n} points, \"\n"
+                   "              f\"VASP's own DOSCAR/vasprun.xml grid)\",\n"
+                   "              flush=True)\n"
+                   "    else:\n"
+                   "        print(\"CALANGO_INFO no PDOS projections were "
+                   "produced\",\n"
+                   "              flush=True)\n"
+                   "except Exception as _e:\n"
+                   "    print(f\"CALANGO_WARN could not parse the projected "
+                   "DOS from \"\n"
+                   "          f\"vasprun.xml ({_e!r})\", flush=True)\n";
         }
         break;
     }

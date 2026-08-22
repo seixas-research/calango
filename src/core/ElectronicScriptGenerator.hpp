@@ -112,6 +112,15 @@ struct ElectronicConfig {
     /// (calc.fixed_density) instead of re-running the SCF cycle inline. Empty
     /// keeps the legacy self-contained SCF+NSCF script.
     std::string baselineDensityPath;
+    /// The configured VASP POTCAR directory (`base.vaspPotcarPath`, from the
+    /// same Stage-3 calculator config `ecutEv`/`scfKpts` above come from).
+    /// Only read by the Vasp backend — see
+    /// AseScriptGenerator::vaspPotcarResolutionSnippet(), which this feeds.
+    /// Added Task 3, 2026-08-22: the Vasp branch used to read NO configured
+    /// path at all (a bare `os.environ['VASP_PP_PATH']` one-liner relying
+    /// purely on whatever the launcher's raw environment already carried),
+    /// which is the exact bug behind proc_4's failure.
+    std::string vaspPotcarPath;
     /// Re-diagonalize the band energies with spin-orbit coupling included
     /// (GPAW's `gpaw.spinorbit.soc_eigenstates`, applied non-perturbatively to
     /// the converged states along the path).

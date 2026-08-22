@@ -31,6 +31,8 @@
 #include <QTabWidget>
 #include <QVBoxLayout>
 
+#include <array>
+
 namespace calango::gui {
 
 // The "Rendering" page is gone. Its two useful choices moved to where the work
@@ -399,6 +401,94 @@ QWidget* PreferencesDialog::buildExternalFilesTab()
                 });
     }
     layout->addWidget(externalFilesTable_, 1);
+
+    // VASP's three build flavors — separate COMPILED EXECUTABLES, not a
+    // runtime flag, so each gets its own path field rather than a row in
+    // the directory table above (a file, not a directory, and each one
+    // needs its own existence check rather than the shared browse-a-
+    // directory behaviour that table's rows share).
+    auto* vaspGroup = new QGroupBox(tr("VASP executables"), page);
+    auto* vaspForm = new QFormLayout(vaspGroup);
+    struct ExeRow {
+        const char* key;
+        QString label;
+        QString bareName;
+        QString tip;
+        QLineEdit** edit;
+        QLabel** status;
+    };
+    const std::array<ExeRow, 3> exeRows = {{
+        {SettingsManager::kVaspExecutableStd, tr("vasp_std:"),
+         QStringLiteral("vasp_std"),
+         tr("The standard build. Used for everything except a Gamma-only "
+            "k-mesh (vasp_gam, optional) or spin-orbit / non-collinear "
+            "(vasp_ncl, required)."),
+         &vaspStdEdit_, &vaspStdStatus_},
+        {SettingsManager::kVaspExecutableGam, tr("vasp_gam:"),
+         QStringLiteral("vasp_gam"),
+         tr("The Gamma-point-only build. AseScriptGenerator.cpp offers it "
+            "automatically for a single-k-point run — never required, since "
+            "vasp_std also handles a Gamma-only mesh, just slower. Leave "
+            "blank to always use vasp_std instead."),
+         &vaspGamEdit_, &vaspGamStatus_},
+        {SettingsManager::kVaspExecutableNcl, tr("vasp_ncl:"),
+         QStringLiteral("vasp_ncl"),
+         tr("The non-collinear / spin-orbit build. REQUIRED for any run "
+            "with LSORBIT = .TRUE. — vasp_std cannot run a noncollinear "
+            "calculation at all, so a spin-orbit run with this unset is "
+            "refused before it starts (see the SOC wizard's pre-flight)."),
+         &vaspNclEdit_, &vaspNclStatus_},
+    }};
+    for (const ExeRow& spec : exeRows) {
+        const QString key = QLatin1String(spec.key);
+        auto* row = new QWidget(vaspGroup);
+        auto* rowLayout = new QHBoxLayout(row);
+        rowLayout->setContentsMargins(0, 0, 0, 0);
+        auto* edit = new QLineEdit(row);
+        edit->setText(QSettings().value(key).toString());
+        edit->setPlaceholderText(
+            tr("blank = resolve \"%1\" on PATH").arg(spec.bareName));
+        edit->setToolTip(spec.tip);
+        rowLayout->addWidget(edit, 1);
+        auto* browse = new QPushButton(tr("Browse…"), row);
+        rowLayout->addWidget(browse);
+        auto* status = new QLabel(row);
+        status->setMinimumWidth(90);
+        rowLayout->addWidget(status);
+        vaspForm->addRow(spec.label, row);
+        *spec.edit = edit;
+        *spec.status = status;
+
+        const auto refreshStatus = [edit, status] {
+            const QString path = edit->text().trimmed();
+            if (path.isEmpty()) {
+                status->setText(QString());
+            } else if (QFileInfo(path).isExecutable()) {
+                status->setText(
+                    QStringLiteral("<span style='color:#3c9a3c;'>%1</span>")
+                        .arg(QObject::tr("found")));
+            } else {
+                status->setText(
+                    QStringLiteral("<span style='color:#d9534f;'>%1</span>")
+                        .arg(QObject::tr("not found")));
+            }
+        };
+        refreshStatus();
+        connect(edit, &QLineEdit::textChanged, this,
+                [key, refreshStatus](const QString& text) {
+                    QSettings().setValue(key, text.trimmed());
+                    refreshStatus();
+                });
+        connect(browse, &QPushButton::clicked, this,
+                [this, edit, label = spec.label] {
+                    const QString chosen = QFileDialog::getOpenFileName(
+                        this, label, edit->text().trimmed());
+                    if (!chosen.isEmpty())
+                        edit->setText(chosen);
+                });
+    }
+    layout->addWidget(vaspGroup);
+
     return page;
 }
 

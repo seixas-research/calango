@@ -23,7 +23,6 @@
 #include "core/UnfoldingScriptGenerator.hpp"
 #include "core/XasScriptGenerator.hpp"
 #include "core/ElectronicScriptGenerator.hpp"
-#include "core/ElectronPhononScriptGenerator.hpp"
 #include "core/GwScriptGenerator.hpp"
 #include "core/KpointsConvergenceScriptGenerator.hpp"
 #include "core/NonlinearOpticsScriptGenerator.hpp"
@@ -70,6 +69,16 @@ void check(bool condition, const std::string& what)
 bool contains(const std::string& haystack, const std::string& needle)
 {
     return haystack.find(needle) != std::string::npos;
+}
+
+std::size_t countOccurrences(const std::string& haystack,
+                             const std::string& needle)
+{
+    std::size_t count = 0;
+    for (std::size_t pos = haystack.find(needle); pos != std::string::npos;
+         pos = haystack.find(needle, pos + needle.size()))
+        ++count;
+    return count;
 }
 
 void checkContains(const std::string& script, const std::string& needle,
@@ -234,28 +243,18 @@ int main(int argc, char** argv)
             dumpText("bands_2d_siesta.py", generateTwoDBandsScript(siesta2d));
         }
 
-        // Electron-phonon coupling: the three-stage gpaw.elph workflow. Worth
-        // byte-compiling because its body is generated Python doing real array
-        // work — the k+q map, the ordering guard and the manifest — rather
-        // than keyword plumbing. (The alpha^2F sums it used to contain now
-        // live in C++, where ElectronPhononAnalysisTest pins them against a
-        // closed form.)
+        // 1D Electronic Structure (bands + PDOS), VASP with a baseline: the
+        // most novel code in the module (LORBIT = 11 vasprun.xml parsing,
+        // the single_point.json Fermi-level sidecar lookup, the staged-vs-
+        // baked-in baseline path) had no --dump coverage at all before this
+        // — only substring assertions, which cannot catch a NameError the
+        // way generated_script_lint's name-checker does.
         {
-            ElectronPhononConfig epc;
-            epc.calculator = gpawConfig();
-            dumpText("electron_phonon.py",
-                     generateElectronPhononScript(epc));
-            // A second, deliberately small variant the aluminium benchmark
-            // RUNS end to end. Its meshes are the smallest that still produce
-            // a meaningful lambda, chosen so the integration test is minutes
-            // rather than hours — see au/al benchmark notes.
-            ElectronPhononConfig small = epc;
-            small.basis = "sz(dzp)";
-            small.kGrid[0] = small.kGrid[1] = small.kGrid[2] = 6;
-            small.qGrid[0] = small.qGrid[1] = small.qGrid[2] = 2;
-            small.supercell[0] = small.supercell[1] = small.supercell[2] = 2;
-            dumpText("electron_phonon_small.py",
-                     generateElectronPhononScript(small));
+            ElectronicConfig vaspBands;
+            vaspBands.backend = ElectronicBackend::Vasp;
+            vaspBands.kpath = "GXWKG";
+            vaspBands.baselineDensityPath = "/jobs/proc_1/CHGCAR";
+            dumpText("bands_vasp_pdos.py", generateElectronicScript(vaspBands));
         }
 
         // Cluster expansion WITH a design matrix — the path the ECI fitter
@@ -2419,6 +2418,40 @@ int main(int argc, char** argv)
         checkContains(relaxed, "isif=3",
                       "and a variable-cell run is raised to ISIF = 3");
 
+        // The TASK-level structure (emitVaspInternalRelaxation), not just
+        // the calculator's own INCAR tags: no ASE optimizer is ever created
+        // on this route -- every ionic step happens inside the one VASP
+        // call, so wrapping it in an ASE loop would relax it a second time.
+        check(!contains(relaxed, "from ase.optimize import"),
+              "no ASE optimizer is imported on VASP's internal route");
+        checkContains(relaxed, "# ASE creates no optimizer here.",
+                      "and the script says so, not just omits the import");
+        checkContains(relaxed, "geometry_optimization.json",
+                      "the same result file the ASE route writes, so the "
+                      "viewer needs no per-route branch");
+
+        // "converged" is judged against EDIFFG (what VASP actually
+        // enforced), not the ASE-side fmax field -- that field's own stage
+        // is exactly what skipTaskSettingsStage() bypasses for this route
+        // (GeometryOptimizationWizard.hpp), so it would otherwise compare
+        // against a number the user never set for this run.
+        relax.vaspEdiffg = -0.02;
+        const std::string forceBased =
+            AseScriptGenerator::generate(relax, "s.extxyz");
+        checkContains(forceBased, "converged = bool(fmax_final <= 0.02)",
+                      "a negative (force) EDIFFG becomes the reported "
+                      "convergence threshold directly");
+        CalculatorConfig energyBased = relax;
+        energyBased.vaspEdiffg = 0.001; // positive = an ENERGY criterion
+        const std::string energyReport =
+            AseScriptGenerator::generate(energyBased, "s.extxyz");
+        checkContains(energyReport, "converged = True",
+                      "a positive (energy) EDIFFG has no force threshold to "
+                      "compare against, so VASP's own termination is trusted "
+                      "outright");
+        check(!contains(energyReport, "converged = bool(fmax_final <="),
+              "and the force-threshold form does not also appear");
+
         // The mechanism itself (the CALANGO_VASP_PP_PATH-override check, the
         // dir-exists guard, the flat-layout shim, the per-element check) is
         // emitted UNCONDITIONALLY now — it has to run wherever the script
@@ -2472,6 +2505,109 @@ int main(int argc, char** argv)
                       "choice are not",
                       "with an honest note that variant selection is not "
                       "automatic");
+    }
+
+    std::printf("VASP DFT+U (LDAU, Task 2):\n");
+    {
+        CalculatorConfig base;
+        base.calculator = CalculatorKind::Vasp;
+        base.task = TaskKind::SinglePoint;
+        base.vaspPotcarPath = "/opt/vasp/POTCARs";
+
+        // -- Disabled: nothing is written at all -----------------------
+        {
+            CalculatorConfig off = base;
+            off.vaspUseHubbardU = false;
+            off.vaspHubbardU.push_back({"Ni", 2, 6.0, 0.0});
+            const std::string script =
+                AseScriptGenerator::generate(off, "s.extxyz");
+            check(!contains(script, "ldau="),
+                  "vaspUseHubbardU=false writes nothing, even with a "
+                  "populated table -- the toggle gates the WHOLE block, "
+                  "matching GPAW's own useHubbardU");
+        }
+
+        // -- Dudarev (the default): LDAUTYPE=2, one entry per species,
+        // including the explicit no-correction ones -----------------------
+        CalculatorConfig dudarev = base;
+        dudarev.vaspUseHubbardU = true;
+        dudarev.vaspHubbardType = VaspHubbardType::Dudarev;
+        dudarev.vaspHubbardU = {
+            {"Ni", 2, 6.5, 0.0},   // the corrected species
+            {"O", -1, 0.0, 0.0},  // explicit no-correction (task's own spec)
+        };
+        const std::string dudarevScript =
+            AseScriptGenerator::generate(dudarev, "s.extxyz");
+        checkContains(dudarevScript, "ldau=True", "LDAU is switched on");
+        checkContains(dudarevScript, "ldautype=2",
+                      "Dudarev maps to LDAUTYPE = 2 (VASP wiki)");
+        checkContains(dudarevScript, "ldauprint=1",
+                      "LDAUPRINT=1 writes the occupancy matrix to OUTCAR "
+                      "-- the minimum needed to check a +U run actually "
+                      "converged to the intended occupation");
+        checkContains(dudarevScript, "\"Ni\": {'L': 2, 'U': 6.5, 'J': 0}",
+                      "the corrected species carries its l/U/J");
+        checkContains(dudarevScript, "\"O\": {'L': -1, 'U': 0, 'J': 0}",
+                      "and the UN-corrected species is still written "
+                      "explicitly, l=-1/U=0/J=0, not silently omitted "
+                      "(the task's own \"one entry per species including "
+                      "the no-correction defaults\" requirement)");
+        checkContains(dudarevScript, "ldau_luj={",
+                      "handed to ASE as ITS OWN ldau_luj kwarg, keyed by "
+                      "element -- not a positional array Calango's own "
+                      "C++/Python string-building assembles by hand");
+
+        // -- Liechtenstein: LDAUTYPE=1 ------------------------------------
+        CalculatorConfig liechtenstein = dudarev;
+        liechtenstein.vaspHubbardType = VaspHubbardType::Liechtenstein;
+        checkContains(AseScriptGenerator::generate(liechtenstein, "s.extxyz"),
+                      "ldautype=1",
+                      "Liechtenstein maps to LDAUTYPE = 1 (VASP wiki), not "
+                      "the enum's own declaration order (Dudarev=0, "
+                      "Liechtenstein=1 -- static_cast<int> would give the "
+                      "WRONG VASP value here)");
+
+        // -- LMAXMIX: written only when explicitly set (>0); the wizard's
+        // own auto-4/6 logic lives in SimulationWizardBase, not here, but
+        // the generator's OWN contract (a plain passthrough of whatever
+        // the config carries) is what the wizard's auto-set relies on -----
+        CalculatorConfig withLmaxmix = dudarev;
+        withLmaxmix.vaspLmaxmix = 4;
+        checkContains(AseScriptGenerator::generate(withLmaxmix, "s.extxyz"),
+                      "lmaxmix=4",
+                      "an explicit LMAXMIX (4, for the d-shell Ni "
+                      "correction above) is written verbatim");
+        check(!contains(dudarevScript, "lmaxmix="),
+              "and is NOT written at all when left at 0 (\"auto\", VASP's "
+              "own default) -- dudarevScript above never set it");
+
+        // -- THE positional-ordering test: species-table REORDER must not
+        // change which correction lands on which element (Task 2's own
+        // explicit "species-reorder test locking the positional-ordering
+        // correctness" requirement). ldau_luj is keyed by SYMBOL, so this
+        // is provable directly: build the SAME two corrections in the
+        // OPPOSITE vector order and check the OUTPUT still pairs each
+        // element with ITS OWN values, not the other one's -- the exact
+        // failure mode "ordering by table row instead of structure
+        // species order" produces (swapped corrections, not a crash, so
+        // nothing but a check like this one catches it).
+        CalculatorConfig reordered = base;
+        reordered.vaspUseHubbardU = true;
+        reordered.vaspHubbardType = VaspHubbardType::Dudarev;
+        reordered.vaspHubbardU = {
+            {"O", -1, 0.0, 0.0},  // same two entries, REVERSED order
+            {"Ni", 2, 6.5, 0.0},
+        };
+        const std::string reorderedScript =
+            AseScriptGenerator::generate(reordered, "s.extxyz");
+        checkContains(reorderedScript,
+                      "\"Ni\": {'L': 2, 'U': 6.5, 'J': 0}",
+                      "reordering the INPUT vector still pairs Ni with "
+                      "ITS OWN correction (l=2, U=6.5) -- not O's");
+        checkContains(reorderedScript, "\"O\": {'L': -1, 'U': 0, 'J': 0}",
+                      "and O still carries its own (l=-1, no correction), "
+                      "not Ni's -- a keyed dict cannot swap them the way a "
+                      "positional array built in the wrong order would");
     }
 
     std::printf("Unfolding commensurability guard:\n");
@@ -2772,6 +2908,63 @@ int main(int argc, char** argv)
                       "and both mark it fractional, not Cartesian");
         checkContains(reused, "reciprocal=True",
                       "in both the fresh-SCF and baseline-reuse band passes");
+
+        // Remote staging: MainWindow::stageJob() copies the baseline into
+        // this job's own directory as "baseline.CHGCAR"; the script must
+        // prefer that staged copy over the absolute path baked in at
+        // generation time, which only ever resolves on the machine the
+        // script was generated on.
+        checkContains(reused, "\"baseline.CHGCAR\" if os.path.exists(",
+                      "the staged copy is checked before the baked-in "
+                      "absolute path");
+
+        // Fermi level: the VASP wiki's own ICHARG = 11 page recommends the
+        // prior self-consistent run's E_F, not this NSCF pass's own
+        // (potentially unreliable, since its k-points are a 1D path rather
+        // than a proper BZ-integration mesh) get_fermi_level(). The parent
+        // Single-point's single_point.json sidecar (AseScriptGenerator.cpp)
+        // sits beside the CHGCAR and is preferred; this pass's own Fermi
+        // level is only a fallback.
+        checkContains(reused, "single_point.json",
+                      "the baseline's own single_point.json sidecar is "
+                      "consulted for the Fermi level");
+        checkContains(reused, "if efermi is None:\n"
+                              "    efermi = float(atoms.calc.get_fermi_level())",
+                      "falling back to this NSCF pass's own Fermi level only "
+                      "when that sidecar is missing");
+        // The fresh-SCF path has its own real SCF right here, on a proper
+        // Monkhorst-Pack mesh, so its Fermi level needs no sidecar lookup.
+        check(!contains(fresh, "single_point.json"),
+              "a fresh SCF trusts its own (properly meshed) Fermi level "
+              "directly, with no sidecar to consult");
+
+        // PDOS defaults on; LORBIT = 11 needs no RWIGS (VASP wiki: ignored
+        // for LORBIT >= 10, which projects onto the PAW projector functions
+        // directly rather than a user-chosen sphere radius).
+        checkContains(reused, "lorbit=11",
+                      "PDOS defaults on and asks for the lm-decomposed "
+                      "PROCAR/DOSCAR");
+        check(!contains(reused, "rwigs="),
+              "and never sets RWIGS -- LORBIT >= 10 ignores it entirely");
+        checkContains(reused, "dos/partial/array",
+                      "the projected DOS is parsed out of vasprun.xml's own "
+                      "<dos><partial> block");
+        checkContains(reused, "\"broadened\": True",
+                      "and marked as an already-broadened curve (VASP's own "
+                      "ISMEAR/SIGMA), not a raw histogram the viewer may "
+                      "re-bin");
+        checkContains(reused, "_key = f\"{_symbol} {_field[0]}\"",
+                      "aggregated by element + shell letter, matching the "
+                      "GPAW branch's own per-element-per-shell channels");
+
+        // PDOS off: no LORBIT, no vasprun.xml parsing at all.
+        ElectronicConfig noPdos = nscf;
+        noPdos.pdos = false;
+        const std::string noPdosScript = generateElectronicScript(noPdos);
+        check(!contains(noPdosScript, "lorbit=11"),
+              "PDOS off means no second Vasp() pass with LORBIT = 11");
+        check(!contains(noPdosScript, "dos/partial/array"),
+              "and no vasprun.xml parsing to go with it");
     }
 
     std::printf("SIESTA and Quantum ESPRESSO electronic structure "
@@ -2998,6 +3191,187 @@ int main(int argc, char** argv)
         checkContains(AseScriptGenerator::generate(gpawRelax, "s.extxyz"),
                       "from ase.optimize import",
                       "the driver choice does not leak into other engines");
+    }
+
+    std::printf("VASP executable flavor selection (Task 5):\n");
+    {
+        // Everyday case: collinear or unpolarized, a real (non-Gamma-only)
+        // mesh -- vasp_std, and CALANGO_VASP_GAM/NCL are never consulted at
+        // all, so an unconfigured Preferences field for either is silently
+        // fine.
+        CalculatorConfig std_;
+        std_.calculator = CalculatorKind::Vasp;
+        std_.kpts[0] = 4; std_.kpts[1] = 4; std_.kpts[2] = 4;
+        const std::string stdScript =
+            AseScriptGenerator::generate(std_, "s.extxyz");
+        checkContains(stdScript, "CALANGO_VASP_STD",
+                      "a real mesh, unpolarized: vasp_std is the flavor");
+        check(!contains(stdScript, "CALANGO_VASP_GAM")
+                  && !contains(stdScript, "CALANGO_VASP_NCL"),
+              "and neither of the other two flavor variables appears at "
+              "all");
+
+        // Gamma-only: vasp_gam offered, but softly -- no raise if it is not
+        // configured, since vasp_std also handles a single k-point.
+        CalculatorConfig gam = std_;
+        gam.kpts[0] = 1; gam.kpts[1] = 1; gam.kpts[2] = 1;
+        const std::string gamScript =
+            AseScriptGenerator::generate(gam, "s.extxyz");
+        checkContains(gamScript, "CALANGO_VASP_GAM",
+                      "a Gamma-only mesh offers vasp_gam");
+        check(!contains(gamScript, "if not _vasp_exe:"),
+              "but does not require it -- no hard check on _vasp_exe the "
+              "way spin-orbit's does below (the script still has its own "
+              "unrelated POTCAR-directory raise, which is fine)");
+
+        // Spin-orbit: vasp_ncl is REQUIRED, hard-checked in the generated
+        // script itself, not merely offered -- the one flavor that is not
+        // an optimization.
+        CalculatorConfig soc = std_;
+        soc.spinMode = SpinMode::NonCollinear;
+        const std::string socScript =
+            AseScriptGenerator::generate(soc, "s.extxyz");
+        checkContains(socScript, "CALANGO_VASP_NCL",
+                      "spin-orbit needs vasp_ncl specifically");
+        checkContains(socScript,
+                      "if not _vasp_exe:\n"
+                      "    raise RuntimeError(",
+                      "and REFUSES to run at all without it -- vasp_std "
+                      "cannot do a noncollinear calculation, so silently "
+                      "falling back would run the wrong binary");
+        checkContains(socScript, "saxis=(0, 0, 1)",
+                      "SAXIS is written explicitly with its own default, "
+                      "not left to VASP's own default");
+        check(!contains(stdScript, "saxis=")
+                  && !contains(gamScript, "saxis="),
+              "and SAXIS never appears for a collinear/unpolarized run");
+
+        // A custom SAXIS value survives.
+        CalculatorConfig customSaxis = soc;
+        customSaxis.vaspSaxis[0] = 1.0;
+        customSaxis.vaspSaxis[1] = 0.0;
+        customSaxis.vaspSaxis[2] = 0.0;
+        checkContains(AseScriptGenerator::generate(customSaxis, "s.extxyz"),
+                      "saxis=(1, 0, 0)", "an in-plane SAXIS is honored");
+
+        // LMAXMIX: 0 (the default) means "say nothing, VASP's own default
+        // applies"; a nonzero value is written.
+        check(!contains(stdScript, "lmaxmix="),
+              "LMAXMIX 0 (default) is not written at all");
+        CalculatorConfig dftUBands = std_;
+        dftUBands.vaspLmaxmix = 4;
+        checkContains(AseScriptGenerator::generate(dftUBands, "s.extxyz"),
+                      "lmaxmix=4",
+                      "a nonzero LMAXMIX (e.g. 4 for a DFT+U d-element band "
+                      "structure, per the VASP wiki) is written");
+    }
+
+    std::printf("VASP SOC two-stage chain (Task 5): CHGCAR restart on the "
+               "ordinary Single-point path:\n");
+    {
+        // Stage 1: collinear, writes CHGCAR (the default). Nothing new here
+        // -- pinned so the "stage 2 restarts from stage 1" claim below has
+        // an actual stage 1 to point at.
+        CalculatorConfig stage1;
+        stage1.calculator = CalculatorKind::Vasp;
+        stage1.task = TaskKind::SinglePoint;
+        stage1.spinMode = SpinMode::Collinear;
+        stage1.spinPolarized = true;
+        const std::string stage1Script =
+            AseScriptGenerator::generate(stage1, "s.extxyz");
+        checkContains(stage1Script, "lcharg=True",
+                      "stage 1 writes its CHGCAR by default");
+        check(!contains(stage1Script, "icharg=11"),
+              "and converges its own SCF -- no baseline was selected");
+
+        // Stage 2: Non-Collinear + a baseline CHGCAR -- the SOC single point
+        // reusing stage 1's density instead of converging its own.
+        CalculatorConfig stage2 = stage1;
+        stage2.spinMode = SpinMode::NonCollinear;
+        stage2.vaspChgcarBaselinePath = "/jobs/proc_1/CHGCAR";
+        const std::string stage2Script =
+            AseScriptGenerator::generate(stage2, "s.extxyz");
+        checkContains(stage2Script, "icharg=11,  # fixed density",
+                      "stage 2 restarts non-self-consistently");
+        checkContains(stage2Script, "lsorbit=True",
+                      "with spin-orbit coupling on");
+        checkContains(stage2Script,
+                      "\"baseline.CHGCAR\" if os.path.exists("
+                      "\"baseline.CHGCAR\")",
+                      "and prefers a remotely-staged copy over the "
+                      "absolute path baked in at generation time (same "
+                      "staging fix as the Electronic Structure chain, "
+                      "Task 3)");
+        checkContains(stage2Script, "import shutil",
+                      "shutil is imported for the CHGCAR copy -- it is NOT "
+                      "imported when no baseline is selected (stage 1's "
+                      "script above has no shutil import to begin with, "
+                      "and nothing here should regress that)");
+        check(!contains(stage1Script, "import shutil"),
+              "confirming stage 1's own script really has no shutil "
+              "import (only a baseline restart needs one)");
+
+        // A single point never takes ionic steps, restart or not.
+        checkContains(stage2Script, "nsw=0",
+                      "the SOC single point still takes no ionic steps");
+
+        // No baseline selected + Non-Collinear: still valid, just a fresh
+        // SOC SCF (e.g. a standalone SOC run, not part of the two-stage
+        // chain) -- ICHARG = 11 must not appear without a baseline to
+        // restart from.
+        CalculatorConfig standaloneSoc = stage1;
+        standaloneSoc.spinMode = SpinMode::NonCollinear;
+        const std::string standaloneScript =
+            AseScriptGenerator::generate(standaloneSoc, "s.extxyz");
+        check(!contains(standaloneScript, "icharg=11"),
+              "no baseline selected means no ICHARG = 11, even with SOC on");
+        checkContains(standaloneScript, "lsorbit=True",
+                      "but spin-orbit itself is unaffected by the absence "
+                      "of a baseline");
+    }
+
+    std::printf("Non-collinear MAGMOM: scalar structure moments become a "
+               "3-vector (Task 5):\n");
+    {
+        // The bug this pins: a structure with REAL per-atom moments (set in
+        // Edit Structure, arriving as a scalar `initial_magmoms` column)
+        // stayed scalar even with Non-Collinear selected, so ASE's Vasp
+        // writer wrote the COLLINEAR MAGMOM format despite LSORBIT/ISPIN=2
+        // being requested. Only the "structure carries no moments at all"
+        // uniform fallback got the (N,3) treatment before this fix.
+        CalculatorConfig nc;
+        nc.calculator = CalculatorKind::Vasp;
+        nc.spinMode = SpinMode::NonCollinear;
+        const std::string script =
+            AseScriptGenerator::generate(nc, "s.extxyz");
+        checkContains(script,
+                      "    atoms.set_initial_magnetic_moments(\n"
+                      "        _np.column_stack(\n"
+                      "            [_np.zeros_like(_seeded), "
+                      "_np.zeros_like(_seeded), _seeded]))\n",
+                      "a structure WITH real moments gets them converted "
+                      "to (N,3), placed along z, inside the "
+                      "atoms.has('initial_magmoms') branch");
+
+        // Collinear does NOT get this treatment -- a scalar MAGMOM is
+        // exactly right there, and converting it would be the bug in the
+        // other direction.
+        CalculatorConfig collinear = nc;
+        collinear.spinMode = SpinMode::Collinear;
+        check(!contains(AseScriptGenerator::generate(collinear, "s.extxyz"),
+                        "column_stack"),
+              "a collinear run never converts to a vector -- the scalar "
+              "column stays scalar");
+
+        // GPAW gets the same fix: this lives in the SHARED preamble
+        // (AseScriptGenerator::generate()), not inside emitVasp()
+        // specifically, so GPAW's own noncollinear support benefits too.
+        CalculatorConfig gpawNc = nc;
+        gpawNc.calculator = CalculatorKind::Gpaw;
+        checkContains(AseScriptGenerator::generate(gpawNc, "s.extxyz"),
+                      "column_stack",
+                      "GPAW non-collinear also converts real structure "
+                      "moments to (N,3) -- the fix is calculator-agnostic");
     }
 
     std::printf("GPAW density exports:\n");
@@ -3876,6 +4250,7 @@ int main(int argc, char** argv)
         // check that generateWannierScript() actually dispatches VASP to it.
         WannierConfig vasp;
         vasp.calculator.calculator = CalculatorKind::Vasp;
+        vasp.calculator.vaspPotcarPath = "/opt/vasp/POTCARs";
         vasp.nWannier = 8;
         const std::string fresh = generateWannierScript(vasp);
         checkContains(fresh, "lwannier90_run=True",
@@ -3883,6 +4258,19 @@ int main(int argc, char** argv)
                       "completion");
         checkContains(fresh, "num_wann = 8",
                       "with the requested Wannier count");
+        // Task 4 (2026-08-22): the sweep for this task found VASP
+        // Wannierization had NEITHER of Task 3's two fixes at all -- no
+        // POTCAR flat-layout shim, no PREC on the ICHARG=11 `bands` pass
+        // that restarts its OWN just-written CHGCAR (the no-baseline
+        // branch exercised by `vasp` above).
+        checkContains(fresh, "os.environ['VASP_PP_PATH'] = _potcar_root",
+                      "the POTCAR directory is resolved (Task 3's shim), "
+                      "not left to a bare, unset VASP_PP_PATH");
+        checkContains(fresh, "prec=\"Accurate\"",
+                      "and PREC is written explicitly on the ICHARG=11 "
+                      "restart -- VASP's own default (Normal) would not "
+                      "match the grid the `scf` object just above wrote "
+                      "its CHGCAR at");
 
         WannierConfig vaspBaseline;
         vaspBaseline.calculator.calculator = CalculatorKind::Vasp;
@@ -3892,6 +4280,9 @@ int main(int argc, char** argv)
                       "a baseline-inheriting run names the parent directory");
         checkContains(baselined, "CHGCAR",
                       "and reuses its charge density");
+        checkContains(baselined, "prec=\"Accurate\"",
+                      "and the baseline-restart branch gets the same PREC "
+                      "fix as the no-baseline one above");
     }
 
     // -- Interpolation windows actually reach ASE ----------------------------
@@ -4435,143 +4826,6 @@ int main(int argc, char** argv)
                       "a key");
     }
 
-    // -- Electron-phonon coupling -------------------------------------------
-    //
-    // The module's value is not the matrix elements — it is what is derived
-    // from them, and specifically that tau comes out in a form the Drude term
-    // in the optics module can consume. These assertions pin that chain and
-    // the two guards that keep an expensive run from being wasted.
-    std::printf("Electron-phonon coupling:\n");
-    {
-        ElectronPhononConfig cfg;
-        cfg.calculator = gpawConfig();
-        const std::string script = generateElectronPhononScript(cfg);
-
-        // The three GPAW stages, in order.
-        checkContains(script, "from gpaw.elph import DisplacementRunner",
-                      "stage 1 uses GPAW's displacement runner");
-        checkContains(script, "_sc.calculate_supercell_matrix(_calc2)",
-                      "stage 2 projects dV/du onto the LCAO basis");
-        checkContains(script, "_epm.bloch_matrix(_calc3, k_qc=_qs",
-                      "stage 3 rotates into the Bloch basis");
-        // LCAO is a requirement of the method, not a speed choice: the
-        // supercell stage projects onto basis functions.
-        checkContains(script, "mode=\"lcao\"",
-                      "throughout in LCAO, which the projection requires");
-        // prefactor=True is what puts g in eV. Without it every derived
-        // quantity is wrong by a mode-dependent factor, silently.
-        checkContains(script, "prefactor=True",
-                      "with the sqrt(hbar/2Mw) prefactor, so g is in eV");
-        // Symmetry off in stage 3: bloch_matrix indexes the full k-set.
-        checkContains(script, "symmetry=\"off\"",
-                      "and no symmetry reduction where the k-set is indexed");
-
-        // The handoff. The script's job now ENDS at the raw arrays: alpha^2F,
-        // lambda and tau are computed by Calango (ElectronPhononAnalysis),
-        // which integrates both Fermi-surface deltas on tetrahedra.
-        //
-        // This replaced an in-script Gaussian whose lambda on fcc Al ran
-        // 0.009, 0.22, 0.49, 1.55, 4.99, 16.6, 31.0 as sigma_e was widened
-        // 16x, with no plateau — the reported number was whatever sigma_e was
-        // set to. Pinned as absent so it cannot come back.
-        checkNotContains(script, "_gaussian(",
-                         "no Gaussian smearing survives in the script — the "
-                         "Fermi-surface integration moved to tetrahedra, "
-                         "which have no width to converge");
-        checkNotContains(script, "lambda vs Fermi smearing",
-                         "and with it the smearing sweep that used to police "
-                         "a parameter that no longer exists");
-        checkContains(script, "np.save(\"elph_eigenvalues.npy\"",
-                      "the eigenvalues are saved for the analysis");
-        checkContains(script, "np.save(\"elph_kplusq.npy\"",
-                      "so is the k+q map, built once here rather than twice");
-        // The RAW frequencies: Calango masks and counts imaginary modes
-        // itself, and a placeholder written here would hide an unstable
-        // structure behind a plausible lambda.
-        checkContains(script, "np.save(\"elph_frequencies.npy\"",
-                      "and the phonon frequencies as they are, negatives "
-                      "included");
-        checkNotContains(script, "_omega_ql = np.where(_valid_ql",
-                         "never with imaginary modes replaced by a "
-                         "placeholder before saving");
-        // The 2*pi ASE's reciprocal() omits. Without it every gradient, so
-        // every tetrahedron weight, so N(E_F) and lambda, is off by (2pi)^3.
-        checkContains(script, "2.0 * np.pi * np.array(atoms.cell.reciprocal())",
-                      "the reciprocal vectors carry the 2*pi that ASE's "
-                      "reciprocal() leaves out");
-        // The biggest array is referenced where GPAW already wrote it rather
-        // than recopied: it is tens of gigabytes on a production mesh.
-        checkContains(script, "gsquared gsqklnn.npy",
-                      "and |g|^2 is read from GPAW's own gsqklnn.npy, not "
-                      "rewritten");
-        checkContains(script, "savetofile=True",
-                      "which stage 3 is therefore asked to write");
-        // The mass convention is an OPEN question, not a settled one: GPAW
-        // divides by one atomic mass unit and flags its own uncertainty about
-        // it. Pinned as a comment so the next reader finds the question
-        // rather than rediscovering it from a wrong lambda.
-        checkContains(script, "potential BUG",
-                      "and the open question about which mass belongs in the "
-                      "prefactor travels with the code");
-
-        // The manifest the C++ loader reads.
-        checkContains(script, "calango.elph.raw 1",
-                      "a manifest ties the arrays to the mesh they live on");
-        // mu* travels in the manifest rather than being defaulted at analysis
-        // time: T_c depends on it exponentially, so a run analysed later must
-        // use the value the run was configured with.
-        checkContains(script, "mu_star 0.1",
-                      "and carries mu*, which T_c depends on exponentially");
-        checkContains(script, "CALANGO_RESULT elph=elph_raw.txt",
-                      "and is announced as the run's result");
-        // The ordering assumption, checked rather than trusted: GPAW's BZ
-        // enumeration is row-major today, and if it ever changed every
-        // eigenvalue would attach to the wrong corner of the mesh while still
-        // producing a number.
-        checkContains(script, "k-point order is not the row-major grid order",
-                      "the k-point ordering the tetrahedra assume is verified "
-                      "in the script, not assumed");
-
-        // Guards. Both exist to fail in the first seconds rather than after
-        // the 6N+1 displacement runs have been paid for.
-        checkContains(script, "is denser than the supercell",
-                      "an incommensurate q-mesh is refused up front");
-        checkContains(script, "is not on the k-mesh",
-                      "and so is a k-mesh that does not contain k+q");
-        // A gapped system has no Fermi surface for this to be about. That
-        // refusal now lives in ElectronPhononAnalysis, where its own test
-        // covers it — the script no longer decides anything about E_F.
-        // Imaginary modes are a real result, but 1/w cannot represent them.
-        checkContains(script, "imaginary phonon",
-                      "imaginary modes are reported, not silently integrated");
-        // Resume safety. Stage 1 runs for hours and therefore gets
-        // interrupted; ASE decides which displacements are done by which
-        // files EXIST, so a zero-length file left by a kill counts as done
-        // and that displacement is silently skipped on the rerun. ASE's own
-        // docstring says the file must be deleted and does not delete it.
-        checkContains(script, "strip_empties()",
-                      "an interrupted run's empty cache files are cleared "
-                      "before resuming");
-        checkContains(script, "cleared {_stripped} empty displacement",
-                      "and the recomputation is reported rather than silent");
-
-        // The settings must actually reach the script.
-        ElectronPhononConfig custom = cfg;
-        custom.supercell[0] = custom.supercell[1] = custom.supercell[2] = 3;
-        custom.qGrid[0] = custom.qGrid[1] = custom.qGrid[2] = 3;
-        custom.kGrid[0] = custom.kGrid[1] = custom.kGrid[2] = 12;
-        custom.temperatureK = 77.0;
-        custom.basis = "sz(dzp)";
-        const std::string tuned = generateElectronPhononScript(custom);
-        checkContains(tuned, "SUPERCELL = (3, 3, 3)", "the supercell is used");
-        checkContains(tuned, "QGRID = (3, 3, 3)", "so is the q-mesh");
-        checkContains(tuned, "KGRID = (12, 12, 12)", "and the k-mesh");
-        checkContains(tuned, "temperature 77",
-                      "and the temperature tau is asked at reaches the "
-                      "manifest");
-        checkContains(tuned, "BASIS = \"sz(dzp)\"", "and the LCAO basis");
-    }
-
     // -- 2D optics: the same advanced options as 3D -------------------------
     //
     // "2D Optics" is the SAME wizard and the SAME generator with vacuumAxis
@@ -4923,6 +5177,19 @@ int main(int argc, char** argv)
                       "records which bands can contribute a sheet");
         checkContains(script, "CALANGO_RESULT fermi_surface=",
                       "emits its result marker");
+        // Task 4 (2026-08-22): the sweep for this task found this module has
+        // no VASP support (it restarts a GPAW-only .gpw), and — unlike
+        // WannierScriptGenerator.cpp's Wannier Interpolation path, which
+        // already had one — NO explicit guard for a VASP-sourced MLWF run:
+        // completedMlwfRuns() (MainWindow.cpp) offers GPAW- and VASP-
+        // originated runs identically, so pointing this at a VASP one used
+        // to fall through to the generic ".gpw not found" message, true of
+        // the field and not the actual reason.
+        checkContains(script, "_meta.get('engine') == 'VASP'",
+                      "a VASP-sourced MLWF run is checked for explicitly");
+        checkContains(script, "is not implemented for",
+                      "and refused with a message naming the real reason, "
+                      "mirroring Wannier Interpolation's own existing guard");
 
         FermiSurfaceConfig tiny = cfg;
         tiny.gridSamples[0] = 1;
@@ -4955,6 +5222,15 @@ int main(int argc, char** argv)
                       "describe a partition that is not separated");
         checkContains(script, "Z2 assumes TIME-REVERSAL SYMMETRY",
                       "and the symmetry requirement is stated");
+        // Task 4 (2026-08-22): same gap and same fix as Fermi Surface above
+        // — this module also restarts a GPAW-only .gpw
+        // (gpaw.berryphase.parallel_transport) with no VASP awareness, and
+        // completedMlwfRuns() offers a VASP-sourced MLWF run just as
+        // readily as a GPAW one.
+        checkContains(script, "_meta.get('engine') == 'VASP'",
+                      "a VASP-sourced MLWF run is checked for explicitly");
+        checkContains(script, "not implemented for that route yet",
+                      "and refused with a message naming the real reason");
 
         TopologyConfig chernOnly = cfg;
         chernOnly.invariant = TopologicalInvariant::Chern;
@@ -5887,8 +6163,19 @@ int main(int argc, char** argv)
                       "generates a plasmon-pole G0W0 input");
         checkContains(script, "o-gw.qp", "parses the quasiparticle report");
         checkContains(script, "mpirun", "honors the MPI rank count");
-        check(!contains(script, "from gpaw"),
-              "no GPAW imports in the Yambo pipeline");
+        // Exactly one, not zero: every generated script (Task 1,
+        // 2026-08-22) carries ONE guarded, universal MPI-rank probe in its
+        // shared logging preamble (kJsonLoggerHelper's own try/except
+        // "from gpaw.mpi import world") so a script running under GPAW's
+        // own MPI-parallel launch does not have every rank race to write
+        // metrics.json — safe for an engine that never has gpaw installed,
+        // since the ImportError is the expected, handled case there. What
+        // this still guards against is a Yambo-pipeline-specific gpaw
+        // dependency ADDED ON TOP of that shared, always-safe probe.
+        check(countOccurrences(script, "from gpaw") == 1,
+              "no GPAW imports in the Yambo pipeline beyond the universal, "
+              "try/except-guarded rank probe every generated script now "
+              "carries");
         // A silent failure is worse than a loud one here: without the abort,
         // the parser would read the PREVIOUS run's report and hand back
         // confident, stale quasiparticle energies.

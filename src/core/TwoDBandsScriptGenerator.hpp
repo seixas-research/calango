@@ -59,6 +59,14 @@ struct TwoDBandsConfig {
     /// silent placeholder; see AseScriptGenerator.cpp's own emitSiesta(),
     /// which this mirrors exactly.
     std::string siestaPseudoDir;
+    /// The configured VASP POTCAR directory, Vasp only — see
+    /// AseScriptGenerator::vaspPotcarResolutionSnippet(), which this feeds.
+    /// Added Task 3, 2026-08-22 alongside the same fix in
+    /// ElectronicScriptGenerator.cpp (proc_4's own bug): the Vasp branch
+    /// used to read no configured path at all, relying purely on whatever
+    /// raw VASP_PP_PATH the launcher's environment already carried, which
+    /// fails outright for a flat-layout POTCAR library.
+    std::string vaspPotcarPath;
 
     /// Restart point, meaning depends on the engine — see the class docs for
     /// which engines require one and which run self-contained instead:

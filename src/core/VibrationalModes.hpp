@@ -23,8 +23,7 @@ namespace calango::core {
 /// Qt-free on purpose: the physics below (mass weighting, the q·R phase, the
 /// closed-form velocities, F = −Mω²u) is the part that can be wrong in ways no
 /// screenshot reveals, so it is pinned by a test that links no GUI. Decoding
-/// phonon_modes.json stays on the GUI side, where QJsonDocument already lives —
-/// the same split ElectronPhononIo made for the same reason.
+/// phonon_modes.json stays on the GUI side, where QJsonDocument already lives.
 
 /// How the eigenvector components in a mode set are normalized.
 ///

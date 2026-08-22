@@ -150,6 +150,53 @@ public:
     /// restart under the legacy engine (`GPAW_NEW=0`, which nothing but
     /// XAS ever sets).
     static std::string gpawWaveFunctionHelperScript();
+
+    /// The POTCAR resolution + flat-layout shim every VASP-emitting
+    /// generator needs. ASE hardcodes `$VASP_PP_PATH/potpaw_PBE/<El>/
+    /// POTCAR` with no way to override the subdirectory name; plenty of
+    /// real installations — this session's own diagnosed failure
+    /// (proc_4, a NiO band structure) among them — keep the element
+    /// folders directly under the POTCAR root with no `potpaw_PBE` level
+    /// at all. This detects that and builds a tiny symlink shim so ASE
+    /// finds what is already there, exactly like emitVasp() has always
+    /// done for the standard Single-point/Geometry Optimization page.
+    ///
+    /// Factored out (Task 3, 2026-08-22) because SIX other generators —
+    /// Electronic Structure (the ICHARG=11 bands-from-CHGCAR chain, proc_4's
+    /// own feature), 2D Bands, Born Charges, Raman/IR, Charge Density
+    /// Difference, and point/extended Defects — each carried their own
+    /// bare `os.environ['VASP_PP_PATH'] = r"..."` one-liner with NONE of
+    /// this shim, so every one of them failed the exact same way for any
+    /// flat-layout POTCAR library, not just the ICHARG=11 chain proc_4
+    /// happened to exercise. HubbardScriptGenerator.cpp's VASP branch had
+    /// the same bare one-liner and is switched to this too.
+    ///
+    /// MUST be emitted after `atoms` is already defined (the missing-
+    /// element check reads `atoms.get_chemical_symbols()`) and after
+    /// `import os`. Empty `potcarPath` emits nothing (ASE falls back to
+    /// whatever VASP_PP_PATH the environment already carries — unchanged
+    /// from every caller's own prior behavior for that case).
+    static std::string vaspPotcarResolutionSnippet(
+        const std::string& potcarPath);
+
+    /// "Normal"/"Single"/"Accurate" — the literal PREC= value for a
+    /// VASP() call, from the wizard's VaspPrecision choice. Defaults to
+    /// "Accurate" (VASP's own most-conservative choice) exactly like
+    /// emitVasp() always has.
+    ///
+    /// PREC directly sets VASP's FFT grid density for a given ENCUT — an
+    /// ICHARG=11 non-self-consistent run that reads a CHGCAR written under
+    /// a DIFFERENT PREC gets a DIFFERENT grid and VASP refuses it outright
+    /// ("ERROR: charge density could not be read from file CHGCAR for
+    /// ICHARG>10" — the second, distinct bug found alongside proc_4's
+    /// POTCAR failure, Task 3, 2026-08-22): emitVasp() (the standard
+    /// Single-point/Geometry Optimization page a CHGCAR baseline actually
+    /// comes from) always emits an explicit PREC=, so any generator that
+    /// restarts from its CHGCAR — ElectronicScriptGenerator.cpp's Vasp
+    /// backend among them — MUST emit the SAME one, not rely on VASP's own
+    /// default (Normal), or the grids silently stop matching the moment
+    /// anyone picks anything but the default precision.
+    static std::string vaspPrecString(VaspPrecision prec);
 };
 
 } // namespace calango::core

@@ -65,9 +65,10 @@ ElectronicBandsWizard::ElectronicBandsWizard(
     , structure_(std::move(structure))
 {
     buildUi();
-    // The NSCF-from-baseline workflow (mandatory density, cutoff/XC/mode
-    // inheritance, PDOS) is GPAW-specific, so open on GPAW rather than the
-    // first allowed engine.
+    // GPAW has the fullest feature set (PDOS, spin-orbit, band symmetry,
+    // fatbands), so it opens on GPAW rather than the first allowed engine —
+    // not because the NSCF-from-baseline workflow itself is GPAW-only; VASP
+    // shares it (CHGCAR + ICHARG = 11) via its own engineCombo_ entry.
     selectCalculator(core::CalculatorKind::Gpaw);
 }
 
@@ -84,15 +85,45 @@ QStringList ElectronicBandsWizard::calculatorElements() const
 QWidget* ElectronicBandsWizard::buildCalculatorExtras()
 {
     // The former separate k-Path stage is merged here: this single page hosts
-    // baseline selection + PDOS settings + the interactive k-path builder.
+    // the engine picker + baseline selection + PDOS settings + the
+    // interactive k-path builder.
+    auto* engineRow = new QWidget(this);
+    auto* engineForm = new QFormLayout(engineRow);
+    engineForm->setContentsMargins(0, 0, 0, 0);
+    engineCombo_ = new QComboBox(engineRow);
+    for (const auto& [kind, label] :
+         {std::pair{core::CalculatorKind::Gpaw, tr("GPAW")},
+          std::pair{core::CalculatorKind::Vasp, tr("VASP")},
+          std::pair{core::CalculatorKind::QuantumEspresso,
+                    tr("Quantum ESPRESSO")},
+          std::pair{core::CalculatorKind::Siesta, tr("SIESTA")}})
+        engineCombo_->addItem(label, static_cast<int>(kind));
+    engineCombo_->setToolTip(
+        tr("GPAW and VASP restart a converged baseline density (.gpw / "
+           "CHGCAR) and evaluate the bands non-self-consistently. Quantum "
+           "ESPRESSO and SIESTA have no single-file restart artifact this "
+           "application uses, so they converge their own SCF inline "
+           "first.\n\n"
+           "Only GPAW currently computes the projected DOS, spin-orbit "
+           "coupling, band symmetry and orbital-projected (fatband) "
+           "weights below — VASP adds projected DOS (LORBIT = 11); the "
+           "other three are GPAW-only, since they read the Kohn-Sham "
+           "states through GPAW's own APIs."));
+    engineForm->addRow(tr("Engine:"), engineCombo_);
+    connect(engineCombo_, &QComboBox::currentIndexChanged, this, [this] {
+        selectCalculator(static_cast<core::CalculatorKind>(
+            engineCombo_->currentData().toInt()));
+    });
+
+    // Charge-density baseline: a completed Single-Point Calculation whose
+    // converged density (.gpw, or for VASP CHGCAR) the bands/PDOS run reuses
+    // non-self-consistently (GPAW calc.fixed_density; VASP ICHARG = 11).
+    // This is MANDATORY — the controller (MainWindow::showBandStructure)
+    // refuses to open the wizard when no completed SCF baseline exists, so
+    // there is no inline-SCF fallback option.
     pdosGroup_ = new QGroupBox(tr("Density of states"), this);
     auto* form = new QFormLayout(pdosGroup_);
 
-    // Charge-density baseline: a completed Single-Point Calculation whose
-    // converged density (.gpw) the bands/PDOS run reuses non-self-consistently
-    // (GPAW calc.fixed_density). This is MANDATORY — the controller
-    // (MainWindow::showBandStructure) refuses to open the wizard when no
-    // completed SCF baseline exists, so there is no inline-SCF fallback option.
     baselineCombo_ = new QComboBox(pdosGroup_);
     baselineCombo_->setToolTip(
         tr("The completed Single-Point Calculation whose converged charge "
@@ -104,7 +135,7 @@ QWidget* ElectronicBandsWizard::buildCalculatorExtras()
             [this] { refreshPreview(); });
 
     pdosCheck_ = new QCheckBox(
-        tr("Compute element/orbital PDOS (GPAW backend)"), pdosGroup_);
+        tr("Compute element/orbital projected DOS"), pdosGroup_);
     pdosCheck_->setChecked(true);
     form->addRow(QString(), pdosCheck_);
 
@@ -266,6 +297,7 @@ QWidget* ElectronicBandsWizard::buildCalculatorExtras()
     columns->setContentsMargins(0, 0, 0, 0);
 
     auto* left = new QVBoxLayout;
+    left->addWidget(engineRow);
     left->addWidget(new QLabel(tr("High-symmetry k-path:"), container));
     kpath_ = new EmbeddedKPathEditor(structure_, container);
     // Stretch 1 on the editor and on this whole column: the Brillouin-zone
@@ -626,6 +658,12 @@ void ElectronicBandsWizard::applyPdosKmeshDefault()
     }
 }
 
+QString ElectronicBandsWizard::baselineDensityPathToStage() const
+{
+    return baselineCombo_ ? baselineCombo_->currentData().toString()
+                          : QString();
+}
+
 void ElectronicBandsWizard::calculatorKgridChanged()
 {
     // The baseline SCF k-grid changed — rescale the PDOS mesh default unless
@@ -635,15 +673,32 @@ void ElectronicBandsWizard::calculatorKgridChanged()
 
 void ElectronicBandsWizard::updateCalculatorExtras(core::CalculatorKind kind)
 {
-    // Only the GPAW backend produces a projected DOS, applies spin-orbit
-    // coupling or takes a `setups` DFT+U dictionary; showing the controls for
-    // the others would promise output they cannot generate.
-    // Band symmetry and fatbands go further still: both read the Kohn-Sham
-    // states through GPAW's own APIs (the pseudo wave functions and the PAW
-    // projector overlaps), which the file-based DFT templates never expose.
+    // Keep the engine combo in sync when selectCalculator() is called from
+    // outside it (the constructor's initial GPAW selection, most notably) —
+    // the QSignalBlocker matches TwoDBandsWizard::updateCalculatorExtras()'s
+    // own sync so the combo's own currentIndexChanged does not re-enter
+    // selectCalculator() while this is already updating it.
+    if (engineCombo_) {
+        const QSignalBlocker blocker(engineCombo_);
+        const int index = engineCombo_->findData(static_cast<int>(kind));
+        if (index >= 0)
+            engineCombo_->setCurrentIndex(index);
+    }
+
+    // GPAW and VASP both restart from a converged density (.gpw / CHGCAR)
+    // and can produce a projected DOS (GPAW natively; VASP via LORBIT = 11).
+    // Espresso/SIESTA have neither a restart artifact this wizard offers nor
+    // a wired-up PDOS emission, so PDOS stays GPAW/VASP-only.
+    //
+    // Spin-orbit coupling, band symmetry and orbital-projected (fatband)
+    // weights go further still: all three read the Kohn-Sham states through
+    // GPAW's own APIs (the pseudo wave functions and the PAW projector
+    // overlaps), which no file-based DFT template exposes — GPAW-only.
     const bool gpaw = kind == core::CalculatorKind::Gpaw;
-    for (QGroupBox* group : {pdosGroup_, spinGroup_, symmetryGroup_,
-                             fatbandGroup_}) {
+    const bool vasp = kind == core::CalculatorKind::Vasp;
+    if (pdosGroup_)
+        pdosGroup_->setVisible(gpaw || vasp);
+    for (QGroupBox* group : {spinGroup_, symmetryGroup_, fatbandGroup_}) {
         if (group)
             group->setVisible(gpaw);
     }
@@ -721,6 +776,7 @@ QString ElectronicBandsWizard::generateScript() const
     const core::CalculatorConfig base = baseCalculatorConfig();
     config.ecutEv = base.planeWaveCutoffEv;
     config.scfKpts = base.kpts[0];
+    config.vaspPotcarPath = base.vaspPotcarPath;
 
     // A selected charge-density baseline turns the run NSCF: evaluate
     // bands/PDOS at the fixed density of a prior single point instead of

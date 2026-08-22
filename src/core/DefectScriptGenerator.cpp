@@ -50,9 +50,6 @@ std::string defectExternalReaders(const DefectConfig& cfg)
             "from ase.io import read as _ase_read\n"
             "from ase.calculators.vasp import Vasp\n"
             "\n";
-        if (!cfg.calculator.vaspPotcarPath.empty())
-            out += "os.environ['VASP_PP_PATH'] = r\""
-                + cfg.calculator.vaspPotcarPath + "\"\n";
         out +=
             "\n"
             "def _read_energy(directory):\n"
@@ -310,6 +307,25 @@ std::string generateDefectScript(const DefectConfig& cfg)
         out << R"PY(
 # --- Host reference ------------------------------------------------------
 atoms_host, E_host = _read_energy(PRISTINE)
+)PY";
+        if (vasp) {
+            // The POTCAR shim needs a bound `atoms` (see
+            // AseScriptGenerator::vaspPotcarResolutionSnippet()'s own doc
+            // comment) -- atoms_host is the first real structure available
+            // at this point in a defect script, which has no single
+            // "atoms" the way most other generators do (host, neutral
+            // defect and N charge states are all separate structures). The
+            // per-element completeness half of the shim therefore checks
+            // against the HOST's species only; a dopant element present
+            // ONLY in the defect/charge-state structures is not caught by
+            // it -- the flat-layout shim itself (this fix's actual
+            // subject) applies regardless of which structure's elements
+            // are checked.
+            out << "atoms = atoms_host\n"
+                << AseScriptGenerator::vaspPotcarResolutionSnippet(
+                       cfg.calculator.vaspPotcarPath);
+        }
+        out << R"PY(
 E_VBM, E_CBM = _read_band_edges(PRISTINE)
 E_GAP = float(E_CBM - E_VBM)
 

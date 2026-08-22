@@ -234,8 +234,14 @@ def main(argv: list[str]) -> int:
                     failures.append(
                         f"{rel}: NEEDED '{soname}' is on the banned list "
                         f"(MKL / Intel OpenMP / Intel compiler runtime) -- "
-                        f"a packaged build must not link this; see "
-                        f"CMakeLists.txt CALANGO_BLAS")
+                        f"a packaged build must not link this at all. The "
+                        f"native DFT/DFTB engines that were LAPACK's only "
+                        f"consumers are gone (see CMakeLists.txt's top-of-"
+                        f"file comment), so nothing in a correctly-built "
+                        f"artifact should reference these sonames any more; "
+                        f"a hit here means something new started linking "
+                        f"LAPACK/BLAS, or this artifact predates that "
+                        f"removal")
                     continue
 
                 if soname in BASE_SYSTEM_ALLOWLIST:
