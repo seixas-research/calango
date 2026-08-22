@@ -353,7 +353,7 @@ def main():
         check("CALANGO_DONE" in done.stdout, "and reported completion")
 
         summary_path = job / "mdmc_summary.json"
-        trajectory_path = job / "mdmc_trajectory.extxyz"
+        trajectory_path = job / "accepted_structures.extxyz"
         if done.returncode == 0 and summary_path.is_file():
             summary = json.loads(summary_path.read_text())
             check(summary.get("accepted", 0) > 0,
@@ -399,7 +399,7 @@ def main():
                              offJob)
         check(offDone.returncode == 0,
               f"the OFF run completed (exit {offDone.returncode})")
-        offTrajectory = offJob / "mdmc_trajectory.extxyz"
+        offTrajectory = offJob / "accepted_structures.extxyz"
         if offDone.returncode == 0 and offTrajectory.is_file():
             offFrames = verify(python, offTrajectory, fixture)
             if offFrames is not None:

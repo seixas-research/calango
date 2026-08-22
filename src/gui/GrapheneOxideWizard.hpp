@@ -19,8 +19,14 @@ class QStackedWidget;
 
 namespace calango::gui {
 
-/// Modules → 2D Materials → "Graphene Oxide…": a two-stage builder for a
-/// functionalized graphene substrate.
+/// Modules → Graphene Oxide → "Graphene Oxide Builder…": a two-stage builder
+/// for a functionalized graphene substrate. GENERATION ONLY — the module that
+/// used to also offer an MDMC refinement on a third stage no longer does; that
+/// refinement is now its own module, "GO-MDMC" (GrapheneOxideMdmcWizard),
+/// which takes this dialog's output as input rather than being chained from
+/// it. Several independent MDMC runs from one build (different temperatures,
+/// seeds, step counts) is the whole reason for the split — see
+/// GrapheneOxideMdmcWizard's own doc comment.
 ///
 ///   Stage 1 — Base Structure: an infinite periodic sheet, or a finite
 ///     nanoflake C(6m²)H(6m) of index m — the difference that decides whether
@@ -44,6 +50,15 @@ namespace calango::gui {
 /// is a representative sample at a requested composition rather than "the"
 /// structure. The seed is exposed for exactly that reason: a sample nobody can
 /// regenerate is not a result.
+///
+/// The result is a "Graphene Oxide Build": the structure PLUS the persisted
+/// per-atom classification core::GrapheneOxideBuilder::build() writes onto it
+/// ("go_group" / "go_group_id" / "go_pair_id", alongside the existing "edge"
+/// field) — the contract every downstream GO module (GO-MDMC, GO Functional
+/// Group Analysis, GO Pair Correlation) reads instead of re-deriving its own
+/// notion of "which carbon is which". Nothing in this dialog has to do
+/// anything extra to produce that contract; core::GrapheneOxideBuilder::build()
+/// already writes it.
 class GrapheneOxideWizard : public QDialog {
     Q_OBJECT
 
@@ -54,12 +69,15 @@ public:
     const std::optional<core::Structure>& result() const { return result_; }
     /// What the builder actually placed, for the caller's status line.
     const core::GrapheneOxideBuilder::Report& report() const { return report_; }
+    /// What was ASKED for — the config() actually passed to
+    /// core::GrapheneOxideBuilder::build(), read by the host to record the
+    /// build's provenance (Document::goBuildProvenance) alongside the
+    /// persisted per-atom contract build() itself writes onto the structure.
+    /// Cheap to call again after exec(): it only reads widget state, the same
+    /// widgets refreshSummary() has been reading throughout.
+    core::GrapheneOxideBuilder::Config config() const;
 
 public:
-    /// True when the user asked for the MDMC refinement on stage 3. The host
-    /// builds and opens the structure either way, then offers the follow-on
-    /// wizard where a calculator is chosen.
-    bool mdmcRequested() const;
     /// Whether the structure just built has hydroxyls placed as bonded,
     /// opposite-face pairs (the "Hydroxyls antiposition" option) — read by
     /// the host so the follow-on MDMC wizard can move each pair as one
@@ -76,7 +94,6 @@ private Q_SLOTS:
     void refreshSummary();
 
 private:
-    core::GrapheneOxideBuilder::Config config() const;
     /// Carbons in the substrate the current settings describe, split into the
     /// two pools the chemistry draws from.
     void substrateCounts(int& total, int& basal, int& edge) const;
@@ -84,7 +101,7 @@ private:
     /// Show stage `index`, with the header and button states that go with it.
     /// One place, so the three stages cannot disagree about which is last.
     void showStage(int index);
-    static constexpr int kLastStage = 2;
+    static constexpr int kLastStage = 1;
 
     static constexpr std::size_t kGroups = core::GrapheneOxideBuilder::kGroupCount;
 
@@ -158,9 +175,6 @@ private:
     QGroupBox* edgeChemistryBox_ = nullptr;
     QLabel* edgeNote_ = nullptr;
     QCheckBox* bothFacesCheck_ = nullptr;
-    /// Stage 3 — opt in to the MDMC refinement.
-    QCheckBox* mdmcCheck_ = nullptr;
-    QLabel* mdmcCostNote_ = nullptr;
     QSpinBox* seedSpin_ = nullptr;
     QLabel* coverageSummary_ = nullptr;
 

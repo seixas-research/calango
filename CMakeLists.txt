@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.8.38
+    VERSION 26.8.39
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -228,6 +228,11 @@ qt_add_executable(calango
     src/core/GrapheneOxideSites.cpp
     src/core/GrapheneOxidePercolation.hpp
     src/core/GrapheneOxidePercolation.cpp
+    src/core/AngleGeometry.hpp
+    src/core/GrapheneOxideGroupAnalysis.hpp
+    src/core/GrapheneOxideGroupAnalysis.cpp
+    src/core/GrapheneOxidePairCorrelation.hpp
+    src/core/GrapheneOxidePairCorrelation.cpp
     src/core/WorkflowReport.cpp
     src/core/GrapheneOxideMdmcScriptGenerator.cpp
     src/core/BornChargesScriptGenerator.hpp
@@ -405,6 +410,8 @@ qt_add_executable(calango
     src/gui/FilmProductionDialog.cpp
     src/gui/MetricPlotWidget.hpp
     src/gui/MetricPlotWidget.cpp
+    src/gui/MultiSeriesPlotWidget.hpp
+    src/gui/MultiSeriesPlotWidget.cpp
     src/gui/ProjectSerializer.hpp
     src/gui/ProjectSerializer.cpp
     src/gui/ScriptStaging.hpp
@@ -678,6 +685,8 @@ qt_add_executable(calango
     src/gui/OrchestrationProvenance.cpp
     src/gui/RandomNoiseWizard.hpp
     src/gui/RandomNoiseWizard.cpp
+    src/gui/HistogramPlotWidget.hpp
+    src/gui/HistogramPlotWidget.cpp
     src/gui/RandomNoiseViewer.hpp
     src/gui/RandomNoiseViewer.cpp
     src/gui/CddWizard.hpp
@@ -758,6 +767,10 @@ qt_add_executable(calango
     src/gui/GrapheneOxideWizard.cpp
     src/gui/GrapheneOxideMdmcWizard.hpp
     src/gui/GrapheneOxideMdmcWizard.cpp
+    src/gui/GrapheneOxideGroupAnalysisDialog.hpp
+    src/gui/GrapheneOxideGroupAnalysisDialog.cpp
+    src/gui/GrapheneOxidePairCorrelationDialog.hpp
+    src/gui/GrapheneOxidePairCorrelationDialog.cpp
     src/gui/WorkflowReportDialog.hpp
     src/gui/WorkflowReportDialog.cpp
     src/gui/OpticsPlotStyleDialog.hpp
@@ -1914,6 +1927,7 @@ if(CALANGO_BUILD_TESTS)
         # Its results window: the JSON schema the generated script writes and
         # the viewer reads is a contract between two files that never see each
         # other, so the first GUI test to touch it pins the keys.
+        src/gui/HistogramPlotWidget.cpp
         src/gui/RandomNoiseViewer.cpp
         src/gui/CddWizard.cpp
         src/gui/HubbardUWizard.cpp
@@ -2931,6 +2945,41 @@ if(CALANGO_BUILD_TESTS)
     target_include_directories(calango_graphene_oxide_percolation_test PRIVATE src)
     add_test(NAME graphene_oxide_percolation COMMAND calango_graphene_oxide_percolation_test)
 
+    # GO Functional Group Analysis: synthetic micro-structures with hand-
+    # computable answers (a single epoxide, a single hydroxyl) plus a
+    # trajectory consistency check.
+    add_executable(calango_graphene_oxide_group_analysis_test
+        tests/GrapheneOxideGroupAnalysisTest.cpp
+        src/core/GrapheneOxideGroupAnalysis.cpp
+        src/core/GrapheneOxideBuilder.cpp
+        src/core/GrapheneOxideSites.cpp
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+    )
+    target_include_directories(calango_graphene_oxide_group_analysis_test PRIVATE src)
+    add_test(NAME graphene_oxide_group_analysis
+             COMMAND calango_graphene_oxide_group_analysis_test)
+
+    # GO Pair Correlation: honeycomb shell enumeration verified against a
+    # real pristine sheet's own bonding (3/6/3 neighbors for shells 1-3),
+    # plus synthetic decorations with known Warren-Cowley alpha (perfectly
+    # alternating, random, clustered).
+    add_executable(calango_graphene_oxide_pair_correlation_test
+        tests/GrapheneOxidePairCorrelationTest.cpp
+        src/core/GrapheneOxidePairCorrelation.cpp
+        src/core/GrapheneOxideGroupAnalysis.cpp
+        src/core/ChemicalOrder.cpp
+        src/core/GrapheneOxideBuilder.cpp
+        src/core/GrapheneOxideSites.cpp
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+    )
+    target_include_directories(calango_graphene_oxide_pair_correlation_test PRIVATE src)
+    add_test(NAME graphene_oxide_pair_correlation
+             COMMAND calango_graphene_oxide_pair_correlation_test)
+
     # Workflow report. Linked against Qt::Core ONLY — no Widgets, no Gui — so
     # the "decoupled from the GUI" claim is enforced by the build rather than
     # asserted in a comment. If someone reaches for a QWidget in here, this
@@ -3375,6 +3424,33 @@ if(CALANGO_BUILD_TESTS)
                 $<TARGET_FILE:calango-ring-percolation-analyze>)
     set_tests_properties(graphene_oxide_percolation_mdmc PROPERTIES TIMEOUT 600)
 
+    # The protocol itself, on a REAL potential (MACE-MP-0 small, CPU): the
+    # two Lennard-Jones harnesses above run with the dynamics OFF, which left
+    # the only relaxation mechanism the module has untested — and it was the
+    # initial burst that killed the first real run (the as-built flat sheet's
+    # strain released as a thermal shock opened an epoxide, exit 1 before any
+    # cycle). Builds a sheet with that exact contact planted, runs
+    # equilibration + cycles under NPT, and re-derives the inventory, the
+    # antiposition pair, the unscaled vacuum axis and the boundary C-C bonds
+    # from raw geometry on every frame. Self-skips without an interpreter
+    # that has mace, or without the cached checkpoint (never downloads).
+    add_test(NAME graphene_oxide_mdmc_mace
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/graphene_oxide_mdmc_mace_test.py
+                $<TARGET_FILE:calango_script_test>)
+    set_tests_properties(graphene_oxide_mdmc_mace PROPERTIES TIMEOUT 1800)
+
+    # Edge-group moves on a nanoflake (Lennard-Jones, dynamics off): the
+    # rim's hydrogen inventory is conserved — an edge move swaps the
+    # terminating H to the vacated carbon rather than landing the group on
+    # top of it and leaving a dangling bond behind. Re-derived from raw
+    # geometry on every frame. Self-skips without an interpreter that has ase.
+    add_test(NAME graphene_oxide_mdmc_flake
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/graphene_oxide_mdmc_flake_test.py
+                $<TARGET_FILE:calango_script_test>)
+    set_tests_properties(graphene_oxide_mdmc_flake PROPERTIES TIMEOUT 600)
+
     # DSIM vs. its own reference implementation (oncapintada), live: EMT-relax
     # a Cu/Pd 27-atom fcc supercell case, run it through oncapintada, check
     # oncapintada itself against the recorded fixture DsimTest.cpp also
@@ -3723,7 +3799,10 @@ if(CALANGO_BUILD_TESTS)
         extxyz_attributes frame_streaming
         generated_ase_scripts generated_script_lint gpaw_output_parser graphene_band_symmetry
         graphene_2d_bands_qe graphene_2d_bands_siesta
-        graphene_oxide graphene_oxide_mdmc_antiposition graphene_oxide_percolation
+        graphene_oxide graphene_oxide_group_analysis graphene_oxide_mdmc_antiposition
+        graphene_oxide_mdmc_mace graphene_oxide_mdmc_flake
+        graphene_oxide_pair_correlation
+        graphene_oxide_percolation
         graphene_oxide_percolation_mdmc graphene_oxide_sites graphene_tetrahedron
         energy_diagram_benchmark
         gpaw_mpi_preflight

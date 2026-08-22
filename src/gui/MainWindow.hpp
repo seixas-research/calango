@@ -9,6 +9,7 @@
 #include <QMainWindow>
 #include <QByteArray>
 #include <QImage>
+#include <QJsonObject>
 #include <QList>
 #include <QPair>
 #include <QSize>
@@ -27,6 +28,7 @@ class QComboBox;
 class QDockWidget;
 class QMenu;
 class QTabBar;
+class QTableWidget;
 class QTimer;
 class QToolButton;
 
@@ -45,6 +47,7 @@ class NebDialog;
 class PointOfViewDialog;
 class SimulationWizardBase;
 class MetricPlotWidget;
+class MultiSeriesPlotWidget;
 class OverlayPanel;
 class ProcessManagerPanel;
 class HpcPanel;
@@ -130,15 +133,19 @@ private Q_SLOTS:
     /// bicrystals and (multi-phase) polycrystals built from the current
     /// structure as the parent lattice. Also a new tab.
     void openSolidInterfaceBuilder();
-    /// Modules → 2D Materials → "Graphene Oxide…": functionalized
-    /// graphene at target coverages, opened as a new workspace tab.
+    /// Modules → Graphene Oxide → "Graphene Oxide Builder…": functionalized
+    /// graphene at target coverages, opened as a new workspace tab. GENERATION
+    /// ONLY — see GrapheneOxideWizard's doc comment for why the MDMC stage
+    /// this used to chain into is gone from here.
     void openGrapheneOxideBuilder();
-    /// The builder's optional MDMC refinement, on the structure just built.
-    /// `hydroxylAntiposition` carries forward the builder's own option so
-    /// the sampler moves each antipositioned pair as one unit.
-    void openGrapheneOxideMdmc(
-        const core::GrapheneOxideBuilder::Report& report,
-        bool hydroxylAntiposition);
+    /// Modules → Graphene Oxide → "GO-MDMC…": select a Graphene Oxide Build
+    /// (any open or saved document whose structure carries the persisted
+    /// classification, falling back to core::GrapheneOxideBuilder::
+    /// classifyFromBonding() for a pre-split project or an imported
+    /// structure), duplicate it into a fresh document so the run can never
+    /// mutate the build it started from, and open GrapheneOxideMdmcWizard on
+    /// the copy. See GrapheneOxideMdmcWizard's doc comment.
+    void openGoMdmc();
     void cleaveSurface();
     void addAtom();
     void changeElementOfSelection();
@@ -515,6 +522,18 @@ private Q_SLOTS:
     /// with a periodic percolation check per axis. Current structure or
     /// every frame of a loaded trajectory.
     void showRingPercolation();
+    /// Modules → Graphene Oxide → "GO Functional Group Analysis…": census +
+    /// geometric distortion (bond-length/angle distributions) from a
+    /// Graphene Oxide Build or GO-MDMC trajectory's own bonding — read-only,
+    /// no pre-flight classification check (a non-GO structure just reports
+    /// zero groups found). Current structure or every frame of a loaded
+    /// trajectory.
+    void showGrapheneOxideGroupAnalysis();
+    /// Modules → Graphene Oxide → "GO Pair Correlation…": Warren-Cowley
+    /// short-range order of the functional-group decoration, mapped onto
+    /// the multicomponent alloy formalism. Current structure or every frame
+    /// of a loaded trajectory.
+    void showGrapheneOxidePairCorrelation();
     /// Analysis → "Partial Charge Analysis…": Bader / Voronoi / Hirshfeld
     /// partitioning as a background DFT job, tabulated and colour-mapped.
     void showPartialCharge();
@@ -679,7 +698,7 @@ private:
         /// baseAtomCasts below. Applied on frame change by
         /// MainWindow::applyFrameCastOverride(); see also
         /// applyFunctionalGroupCasts()'s per-frame counterpart used by the
-        /// Graphene Oxide Builder's MDMC workflow.
+        /// GO-MDMC workflow.
         std::map<int, std::vector<int>> frameCastOverrides;
         /// The atomCasts to restore on a frame with no entry above — what
         /// "global" cast assignment meant before any per-frame override ever
@@ -690,13 +709,26 @@ private:
         std::vector<int> baseAtomCasts;
         bool hasBaseAtomCasts = false;
         /// Set once, right after the tab is created, when this document is a
-        /// Graphene Oxide Builder MDMC run with "Redefine Cast on every
-        /// accepted move" checked — appendStreamedFrame() then recomputes
+        /// GO-MDMC run with "Redefine Cast on every accepted move" checked —
+        /// appendStreamedFrame() then recomputes
         /// and records a Cast override for every frame it appends, via
         /// MainWindow::redefineFunctionalGroupCastForFrame(). False (the
         /// default) for every other document, including an MDMC run with the
         /// checkbox off: those behave exactly as before this feature existed.
         bool mdmcCastPerFrame = false;
+
+        /// Graphene Oxide Build provenance: the generation parameters and
+        /// seed that produced this document's structure, when it is one —
+        /// empty otherwise. NOT part of the "Graphene Oxide Build" chemistry
+        /// contract itself (that lives entirely in the structure's own
+        /// "go_group" / "go_group_id" / "go_pair_id" / "edge" scalar fields,
+        /// which is what every downstream GO module actually reads); this is
+        /// purely for a human re-reading the project later, or reproducing a
+        /// sample exactly. Set once by MainWindow::openGrapheneOxideBuilder()
+        /// right after a successful build. Persisted the same way
+        /// frameCastOverrides is: a Document-level JSON sidecar, generic
+        /// enough that no ProjectSerializer change was needed for it either.
+        QJsonObject goBuildProvenance;
     };
 
     struct ProcessRecord; // full definition below
@@ -852,6 +884,50 @@ private:
     /// Timer tick during a local run: re-read the running process's
     /// metrics.json and repaint the Results plots if it's the selected process.
     void pollLiveMetrics();
+    /// Repaint the GO-MDMC "Acceptance" multi-series plot from `record`'s
+    /// extraSeries (the windowed per-move-kind rates); empty/placeholder for
+    /// a record with none. Shared by pollLiveMetrics() (the running-job
+    /// timer tick) and syncResultsToProcess() (switching the Results
+    /// selector, including reconnecting to an already-running job when the
+    /// panel is reopened) so both refresh paths agree.
+    void updateMdmcAcceptancePlot(const ProcessRecord& record);
+    /// Repaint the GO-MDMC "MDMC Summary" table from `record`'s extraSeries —
+    /// one row per move kind, each cell read from that series' LATEST sample
+    /// (cumulative fields are monotone-ish running values, so the last point
+    /// already IS the whole-run-so-far total; nothing here needs
+    /// mdmc_summary.json, live or finished). A record with no
+    /// "acceptance_cumulative" series (any non-GO-MDMC job) clears the table
+    /// to its placeholder state.
+    void updateMdmcSummaryTable(const ProcessRecord& record);
+    /// Repaint the GO-MDMC "MDMC Summary" tab's RUN block — cycles done/total,
+    /// MD steps done, accepted count, current acceptance %, elapsed. Called by
+    /// updateMdmcSummaryTable(), so the two halves of that one tab always
+    /// refresh together and every path that repaints one repaints the other.
+    ///
+    /// Every number here comes from the script's own frames_written
+    /// bookkeeping, which counts frames AS THEY REACH DISK: what this shows
+    /// is what a reader of mdmc_all_structures.extxyz and
+    /// accepted_structures.extxyz would count. All of them are non-negative
+    /// counts; "cycles done" is a COUNT (1 after the first cycle completes)
+    /// and is clamped to the total, and the acceptance percentage to [0, 100].
+    void updateMdmcRunSummary(const ProcessRecord& record);
+    /// Open the two GO-MDMC live tabs of S4 ("All Structures" and "Accepted")
+    /// and register the two files they follow. Called from launchJob() rather
+    /// than from openGoMdmc() so a run that had to QUEUE behind another job
+    /// gets them too — this is the point at which its own directory is known.
+    void setUpGoMdmcLiveFiles(const QString& jobDir, int processId,
+                              const std::shared_ptr<core::Structure>& seed);
+    /// Timer tick: re-read each followed file and append whatever frames are
+    /// new to its tab. A file that does not exist yet, is mid-write or fails
+    /// to parse is simply left for the next tick — nothing partial is ever
+    /// appended and nothing is allowed to throw into the UI.
+    void pollGoMdmcLiveFiles();
+    /// One final read for `processId`'s followed files (the script appends
+    /// between the last tick and its own exit), then drop their " (live)"
+    /// marker and land each playhead on the last frame. Keyed by process id
+    /// because the queue may already have launched the NEXT run by the time
+    /// this fires.
+    void finishGoMdmcLiveFiles(int processId);
     /// Launch a staged local job. `taskLabel` names it in the Process
     /// panel; `expectFrames` opens a live trajectory tab that streamed
     /// CALANGO_FRAME blocks append to while the job runs.
@@ -991,6 +1067,14 @@ private:
         /// Latest progress from metrics.json ("progress":{step,total}); -1 = none.
         int progressStep = -1;
         int progressTotal = -1;
+        /// Every OTHER numeric field a metrics.json entry carries, beyond the
+        /// four fixed series above — keyed by its exact field name. GO-MDMC's
+        /// per-move-kind acceptance rates ("acceptance_cumulative",
+        /// "accept_epoxide_windowed", ...) are the first consumer; a future
+        /// job type's own extra metric rides this same generic bucket rather
+        /// than growing this struct's fixed fields again. Rebuilt from
+        /// scratch on every readMetricsJson() call, same as the fixed four.
+        std::map<QString, std::vector<std::pair<int, double>>> extraSeries;
     };
     std::map<int, ProcessRecord> processRecords_;
     int selectedProcessId_ = -1; ///< process whose data the Results tabs show
@@ -1028,6 +1112,23 @@ private:
     MetricPlotWidget* temperaturePlot_ = nullptr;
     MetricPlotWidget* forcePlot_ = nullptr;
     MetricPlotWidget* pressurePlot_ = nullptr;
+    /// GO-MDMC's "Acceptance" Results tab: windowed (last-50) per-move-kind
+    /// acceptance rate, one series per kind that has been attempted at least
+    /// once this run, plus the overall rate. Empty/placeholder for any other
+    /// job type — same convention as e.g. the Pressure tab already follows
+    /// for a non-NPT run.
+    MultiSeriesPlotWidget* mdmcAcceptancePlot_ = nullptr;
+    /// GO-MDMC's "MDMC Summary" Results tab: cumulative attempts/accepted/
+    /// acceptance-ratio, one row per move kind, read from the SAME polled
+    /// metrics — see updateMdmcSummaryTable().
+    QTableWidget* mdmcSummaryTable_ = nullptr;
+    /// The RUN block of that same tab, above the per-move-kind breakdown: the
+    /// five whole-run quantities (cycles done/total, MD steps done, accepted
+    /// count, current acceptance %, elapsed). A second table rather than more
+    /// rows in the first because the two have different shapes — five named
+    /// scalars against a row per move kind — and folding either into the
+    /// other's columns would have cost a diagnostic the module already had.
+    QTableWidget* mdmcRunSummaryTable_ = nullptr;
     TimelineWidget* timeline_ = nullptr;
     /// The default dock arrangement, captured once at construction before any
     /// saved state is restored — the only point at which it exists. View →
@@ -1085,6 +1186,30 @@ private:
     /// steal the other's frames. Entries are created on a node's first frame
     /// and dropped when it finishes or its tab is closed.
     std::map<int, Document*> orchestrationLiveDocs_;
+    /// One extended-XYZ file a GO-MDMC run appends to, plus the tab following
+    /// it. Frames reach these two tabs by re-reading the FILE on the metrics
+    /// timer, not over the CALANGO_FRAME stdout stream: that wire format is
+    /// four or ten columns, cannot carry the per-atom group columns the Cast
+    /// colouring needs, and lives in JobRunner/AseScriptGenerator (see
+    /// DECISIONS.md D4).
+    struct GoMdmcLiveFile {
+        /// Process the run belongs to — several GO-MDMC runs can be staged
+        /// one after another, and each finishes its OWN entries.
+        int processId = -1;
+        QString path; ///< absolute path of the file being followed
+        /// Document::id (a stable identity, unlike a tab index or a raw
+        /// pointer) of the tab it feeds. The tab can be closed mid-run; the
+        /// id then simply resolves to nothing and the entry goes quiet.
+        int documentId = -1;
+        /// COUNT of frames already appended to that tab. Starts at 0, only
+        /// ever increases, and is never an index — nothing here can be -1.
+        int framesIngested = 0;
+        /// Size of the file at the last SUCCESSFUL read. Both files are
+        /// append-only, so an unchanged size proves there is nothing new and
+        /// the (whole-file) re-read can be skipped for one stat() instead.
+        qint64 lastSize = 0;
+    };
+    std::vector<GoMdmcLiveFile> goMdmcLiveFiles_;
     /// One tab per TRANSFORM node (Container / Supercell / Defect),
     /// keyed by canvas node id so a batch reuses it per item.
     std::map<int, Document*> orchestrationTransformDocs_;

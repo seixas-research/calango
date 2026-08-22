@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <utility>
 
 namespace calango::core {
 
@@ -316,10 +317,31 @@ public:
     /// Build the decorated structure. Returns it; `report` receives the
     /// accounting.
     ///
-    /// The result carries a per-atom scalar field named "edge": 1 on every
-    /// framework carbon classified as an edge carbon, 0 elsewhere — so the
-    /// classification the chemistry was built on can be seen in the viewport
-    /// rather than taken on faith.
+    /// The result carries four per-atom scalar fields — the "Graphene Oxide
+    /// Build" contract every downstream GO module (GO-MDMC, GO Functional
+    /// Group Analysis, GO Pair Correlation) reads instead of re-deriving:
+    ///
+    ///  * "edge": 1 on every framework carbon classified as an edge carbon,
+    ///    0 elsewhere.
+    ///  * "go_group": the Group value (as an int, same encoding as
+    ///    functionalGroupLabels()) for every atom belonging to a functional
+    ///    group — its host carbon(s) included — and -1 for pristine
+    ///    framework carbons, edge-terminating hydrogens and anything else.
+    ///    This is exactly functionalGroupLabels()'s definition, persisted at
+    ///    build time instead of recomputed from bonding on every call.
+    ///  * "go_group_id": a non-negative integer, unique per placed group
+    ///    INSTANCE and shared by every atom of that instance's cluster (the
+    ///    group's own atoms plus its host carbon(s)) — so "every atom of
+    ///    group #7" is a filter over this field rather than a re-run of
+    ///    findFunctionalGroups(). -1 wherever "go_group" is -1.
+    ///  * "go_pair_id": a non-negative integer shared by the TWO hydroxyl
+    ///    instances placed together under Config::hydroxylAntiposition — the
+    ///    antiposition pairing registry. -1 everywhere else, including
+    ///    non-paired hydroxyls and every other group type.
+    ///
+    /// All four are ordinary Structure scalar fields, so they round-trip
+    /// through .calproj and extxyz with no serializer changes, the same way
+    /// "edge" already does.
     static Structure build(const Config& config, Report* report = nullptr);
 
     /// The clean substrate before functionalization: the bare sheet, or the
@@ -358,13 +380,66 @@ public:
     /// would tear every carboxyl into two half-groups. Each atom joins at most
     /// one cluster; a group whose oxygen has already been claimed by a larger
     /// one is not reported twice.
-    static std::vector<GroupCluster> findFunctionalGroups(const Structure& structure);
+    /// Bond tolerances for the classification below, as the multiple of the
+    /// summed covalent radii within which two atoms count as bonded
+    /// (Structure::detectBonds' own convention). kColdBondTolerance is the
+    /// application-wide default and right for a built or relaxed geometry.
+    /// kThermalBondTolerance is for a molecular-dynamics SNAPSHOT: measured
+    /// per bond on a graphene oxide sheet under MACE-MP-0, an intact O-H at
+    /// 300 K comes within 0.5 % of the 1.2x cutoff and crosses it at 400 K,
+    /// and an intact epoxide C-O stretched past 1.15x at an instant read as
+    /// "carbonyl" — two of six epoxides on one 335 K frame — which is what
+    /// recoloured the per-frame Cast of a GO-MDMC run. A bond that has really
+    /// gone is at 2 A or more within femtoseconds and clears either number.
+    static constexpr double kColdBondTolerance = 1.15;
+    static constexpr double kThermalBondTolerance = 1.3;
+
+    static std::vector<GroupCluster> findFunctionalGroups(
+        const Structure& structure, double bondTolerance = kColdBondTolerance);
 
     /// Per-atom group label: the Group value (as an int) for every atom that
     /// belongs to a functional group, its host carbon included, and -1 for the
     /// pristine framework, the terminating hydrogens and anything unrecognized.
     /// Index-aligned with `structure.atoms()`.
-    static std::vector<int> functionalGroupLabels(const Structure& structure);
+    static std::vector<int> functionalGroupLabels(
+        const Structure& structure, double bondTolerance = kColdBondTolerance);
+
+    /// Does `structure` carry a persisted Graphene Oxide Build classification
+    /// ("go_group", index-aligned with its atoms)? The pre-flight check every
+    /// downstream GO module runs before accepting a structure as input.
+    static bool hasClassification(const Structure& structure);
+
+    /// Compute "go_group" / "go_group_id" / "go_pair_id" from `structure`'s
+    /// bonding alone, via findFunctionalGroups(), and write them onto it.
+    ///
+    /// The ONE fallback path for a structure that arrives without a
+    /// classification already on it — whether that is a project saved before
+    /// this contract existed, or graphene oxide imported from anywhere else
+    /// entirely. Both go through the same code, so there is exactly one
+    /// definition of "what counts as a group" no matter which door a
+    /// structure came in through.
+    ///
+    /// Antiposition pairs are re-derived from geometry via
+    /// findAntipositionPairs(). A structure that was never built with
+    /// antiposition simply gets none — "go_pair_id" stays -1 throughout.
+    ///
+    /// Always overwrites any classification fields already present; call it
+    /// only after hasClassification() has said there is none to trust.
+    static void classifyFromBonding(Structure& structure);
+
+    /// The antiposition pairs findable in `structure` from geometry alone,
+    /// as index pairs into `clusters` (both indices refer to Hydroxyl
+    /// clusters): two Hydroxyl clusters whose host carbons are bonded to
+    /// each other and whose oxygens sit on opposite faces of that bond.
+    ///
+    /// Shared by classifyFromBonding() (which writes the pairing into
+    /// "go_pair_id") and any analysis that needs the same pairing without
+    /// touching the structure's scalar fields — one implementation of "what
+    /// counts as an antiposition pair", not a copy per caller. `clusters`
+    /// must be `findFunctionalGroups(structure)`'s own result — passed in
+    /// rather than recomputed here, since most callers already have it.
+    static std::vector<std::pair<int, int>> findAntipositionPairs(
+        const Structure& structure, const std::vector<GroupCluster>& clusters);
 
     // -- Chemistry the UI must not duplicate -------------------------------
 

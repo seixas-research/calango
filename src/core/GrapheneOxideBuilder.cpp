@@ -57,13 +57,27 @@ constexpr int kZ_O = 8;
 /// Closest approach allowed between atoms of two DIFFERENT groups.
 ///
 /// The builder produces unrelaxed starting geometries, so some strain is
-/// expected and fine — an epoxide and a hydroxyl on neighbouring carbons come
-/// out at an O···O of 1.9 Å and relax apart as the carbons pucker. What is not
-/// fine is a contact shorter than a covalent bond: two groups placed on
-/// adjacent sites with their substituents pointing at each other can land
-/// oxygens 0.1 Å apart, which is not a strained structure but a fused one, and
-/// no optimizer recovers from it. Placements that would do that are refused and
-/// the site is tried in another orientation, or skipped.
+/// expected and fine. What is not fine is a contact shorter than a covalent
+/// bond: two groups placed on adjacent sites with their substituents pointing
+/// at each other can land oxygens 0.1 Å apart, which is not a strained
+/// structure but a fused one, and no optimizer recovers from it. Placements
+/// that would do that are refused and the site is tried in another
+/// orientation, or skipped.
+///
+/// This threshold deliberately ADMITS an epoxide next to a same-face hydroxyl
+/// — O···O of 1.89 Å on the flat sheet — because that adjacency is a real,
+/// common graphene oxide motif (the Lerf–Klinowski picture, with the O–H
+/// hydrogen-bonded to the epoxide oxygen) and the builder's job is the
+/// composition's motif space, not one calculator's opinion of it. What it
+/// must NOT be assumed is that the contact "relaxes apart as the carbons
+/// pucker": measured on a 7×4 sheet carrying three of them, MACE-MP-0 (small
+/// AND medium) opens the epoxide instead — a gentle force-based relaxation
+/// slides the oxygen onto one carbon, and a thermal burst does so faster.
+/// Which groups survive is therefore the dynamics' verdict, and
+/// GrapheneOxideMdmcScriptGenerator's initial equilibration relocates the
+/// ones that do not rather than refusing to start; its own proposal
+/// clearance (2.0 Å heavy–heavy) is wider than this one for that reason —
+/// it prices a burst, not a placement.
 constexpr double kMinContact = 1.55;
 
 /// Framework carbons this far apart cannot host groups that reach each other:
@@ -349,7 +363,8 @@ Atom makeAtom(int z, const Vec3& position)
 } // namespace
 
 std::vector<GrapheneOxideBuilder::GroupCluster>
-GrapheneOxideBuilder::findFunctionalGroups(const Structure& structure)
+GrapheneOxideBuilder::findFunctionalGroups(const Structure& structure,
+                                           double bondTolerance)
 {
     const int n = static_cast<int>(structure.size());
     std::vector<GroupCluster> clusters;
@@ -359,7 +374,7 @@ GrapheneOxideBuilder::findFunctionalGroups(const Structure& structure)
     // Minimum-image aware, so a group bridging the cell boundary of a periodic
     // sheet is found like any other.
     std::vector<std::vector<int>> neighbours(static_cast<std::size_t>(n));
-    for (const Bond& bond : structure.detectBonds()) {
+    for (const Bond& bond : structure.detectBonds(bondTolerance)) {
         neighbours[static_cast<std::size_t>(bond.i)].push_back(bond.j);
         neighbours[static_cast<std::size_t>(bond.j)].push_back(bond.i);
     }
@@ -471,10 +486,12 @@ GrapheneOxideBuilder::findFunctionalGroups(const Structure& structure)
 }
 
 std::vector<int>
-GrapheneOxideBuilder::functionalGroupLabels(const Structure& structure)
+GrapheneOxideBuilder::functionalGroupLabels(const Structure& structure,
+                                            double bondTolerance)
 {
     std::vector<int> labels(structure.size(), -1);
-    for (const GroupCluster& cluster : findFunctionalGroups(structure)) {
+    for (const GroupCluster& cluster :
+         findFunctionalGroups(structure, bondTolerance)) {
         for (const int atom : cluster.atoms) {
             if (atom >= 0 && atom < static_cast<int>(labels.size()))
                 labels[static_cast<std::size_t>(atom)] =
@@ -482,6 +499,125 @@ GrapheneOxideBuilder::functionalGroupLabels(const Structure& structure)
         }
     }
     return labels;
+}
+
+bool GrapheneOxideBuilder::hasClassification(const Structure& structure)
+{
+    const auto& fields = structure.scalarFields();
+    const auto it = fields.find("go_group");
+    return it != fields.end() && it->second.size() == structure.size();
+}
+
+void GrapheneOxideBuilder::classifyFromBonding(Structure& structure)
+{
+    const std::size_t n = structure.size();
+    std::vector<double> groupField(n, -1.0);
+    std::vector<double> groupIdField(n, -1.0);
+    std::vector<double> pairIdField(n, -1.0);
+
+    const std::vector<GroupCluster> clusters = findFunctionalGroups(structure);
+    // Instance ids in cluster-discovery order — arbitrary but stable within
+    // one call, which is all a fallback classification promises; nothing
+    // downstream depends on ids matching a prior run's.
+    for (std::size_t gid = 0; gid < clusters.size(); ++gid) {
+        for (const int atom : clusters[gid].atoms) {
+            if (atom < 0 || static_cast<std::size_t>(atom) >= n)
+                continue;
+            groupField[static_cast<std::size_t>(atom)] =
+                static_cast<double>(static_cast<int>(clusters[gid].kind));
+            groupIdField[static_cast<std::size_t>(atom)] =
+                static_cast<double>(gid);
+        }
+    }
+
+    // Re-derive antiposition pairs from geometry: two Hydroxyl clusters whose
+    // host carbons are bonded to each other, with their oxygens on opposite
+    // faces, are treated as one trans-diol pair. A structure that was never
+    // built with antiposition simply has none — pairIdField stays -1
+    // throughout, which is correct.
+    int pairId = 0;
+    for (const auto& [a, b] : findAntipositionPairs(structure, clusters)) {
+        for (const int atom : clusters[static_cast<std::size_t>(a)].atoms)
+            pairIdField[static_cast<std::size_t>(atom)] =
+                static_cast<double>(pairId);
+        for (const int atom : clusters[static_cast<std::size_t>(b)].atoms)
+            pairIdField[static_cast<std::size_t>(atom)] =
+                static_cast<double>(pairId);
+        ++pairId;
+    }
+
+    structure.setScalarField("go_group", std::move(groupField));
+    structure.setScalarField("go_group_id", std::move(groupIdField));
+    structure.setScalarField("go_pair_id", std::move(pairIdField));
+}
+
+std::vector<std::pair<int, int>> GrapheneOxideBuilder::findAntipositionPairs(
+    const Structure& structure, const std::vector<GroupCluster>& clusters)
+{
+    std::vector<std::pair<int, int>> pairs;
+    std::vector<std::size_t> hydroxylIds;
+    for (std::size_t gid = 0; gid < clusters.size(); ++gid)
+        if (clusters[gid].kind == Group::Hydroxyl)
+            hydroxylIds.push_back(gid);
+    if (hydroxylIds.size() < 2)
+        return pairs;
+
+    const std::size_t n = structure.size();
+    std::vector<std::vector<int>> neighbours(n);
+    for (const Bond& bond : structure.detectBonds()) {
+        neighbours[static_cast<std::size_t>(bond.i)].push_back(bond.j);
+        neighbours[static_cast<std::size_t>(bond.j)].push_back(bond.i);
+    }
+    const auto atomOf = [&](const GroupCluster& cluster, int element) {
+        for (const int atom : cluster.atoms)
+            if (structure.atoms()[static_cast<std::size_t>(atom)].atomicNumber
+                == element)
+                return atom;
+        return -1;
+    };
+
+    std::vector<char> paired(hydroxylIds.size(), 0);
+    for (std::size_t a = 0; a < hydroxylIds.size(); ++a) {
+        if (paired[a])
+            continue;
+        const GroupCluster& clusterA = clusters[hydroxylIds[a]];
+        const int hostA = atomOf(clusterA, kZ_C);
+        const int oxygenA = atomOf(clusterA, kZ_O);
+        if (hostA < 0 || oxygenA < 0)
+            continue;
+        for (std::size_t b = a + 1; b < hydroxylIds.size(); ++b) {
+            if (paired[b])
+                continue;
+            const GroupCluster& clusterB = clusters[hydroxylIds[b]];
+            const int hostB = atomOf(clusterB, kZ_C);
+            const int oxygenB = atomOf(clusterB, kZ_O);
+            if (hostB < 0 || oxygenB < 0)
+                continue;
+            const auto& nb = neighbours[static_cast<std::size_t>(hostA)];
+            const bool bonded =
+                std::find(nb.begin(), nb.end(), hostB) != nb.end();
+            if (!bonded)
+                continue;
+            const double zHostA =
+                structure.atoms()[static_cast<std::size_t>(hostA)].position.z;
+            const double zHostB =
+                structure.atoms()[static_cast<std::size_t>(hostB)].position.z;
+            const double zOxygenA =
+                structure.atoms()[static_cast<std::size_t>(oxygenA)].position.z;
+            const double zOxygenB =
+                structure.atoms()[static_cast<std::size_t>(oxygenB)].position.z;
+            const bool oppositeFaces =
+                (zOxygenA - zHostA) * (zOxygenB - zHostB) < 0.0;
+            if (!oppositeFaces)
+                continue;
+            pairs.emplace_back(static_cast<int>(hydroxylIds[a]),
+                               static_cast<int>(hydroxylIds[b]));
+            paired[a] = 1;
+            paired[b] = 1;
+            break;
+        }
+    }
+    return pairs;
 }
 
 const char* GrapheneOxideBuilder::name(Group group)
@@ -609,6 +745,16 @@ Structure GrapheneOxideBuilder::build(const Config& config, Report* report)
     // after rehybridizing to sp3, and an edge carbon one substitutable
     // hydrogen; a second group on either would make it pentavalent.
     std::vector<int> owner(static_cast<std::size_t>(carbonCount), -1);
+    // The "Graphene Oxide Build" contract's per-atom classification, filled
+    // in alongside `owner` as groups are committed and written onto the
+    // structure as scalar fields at the end of this function — see build()'s
+    // doc comment. `carbonGroupId`/`carbonPairId` parallel `owner`;
+    // `attachmentGroup`/`attachmentGroupId`/`attachmentPairId` parallel
+    // `attachments` below (declared after it, entries pushed in lockstep).
+    int nextGroupId = 0;
+    int nextPairId = 0;
+    std::vector<int> carbonGroupId(static_cast<std::size_t>(carbonCount), -1);
+    std::vector<int> carbonPairId(static_cast<std::size_t>(carbonCount), -1);
 
     // Shuffled site orders: the decoration is a random sample of the
     // composition, not a pattern. Each pool is walked by a cursor that only
@@ -675,6 +821,12 @@ Structure GrapheneOxideBuilder::build(const Config& config, Report* report)
     };
 
     std::vector<Atom> attachments;
+    // Parallel to `attachments`, one entry pushed per attachment atom in
+    // commit() (or, for an unfunctionalized edge's terminating H, pushed
+    // directly as -1/-1/-1 — that atom belongs to no group).
+    std::vector<int> attachmentGroup;
+    std::vector<int> attachmentGroupId;
+    std::vector<int> attachmentPairId;
     // Which attachments hang off which framework carbon — the index that makes
     // the steric test local instead of a scan over the whole structure.
     std::vector<std::vector<int>> hosted(static_cast<std::size_t>(carbonCount));
@@ -713,13 +865,24 @@ Structure GrapheneOxideBuilder::build(const Config& config, Report* report)
         }
         return false;
     };
+    // `pairId` defaults to -1 (no antiposition pairing); the antiposition
+    // hydroxyl branch below is the only caller that passes one, drawn once
+    // per pair and passed to BOTH of its two commit() calls.
     const auto commit = [&](const std::vector<Atom>& pending,
-                            std::initializer_list<int> hosts, Group group) {
-        for (int host : hosts)
+                            std::initializer_list<int> hosts, Group group,
+                            int pairId = -1) {
+        const int groupId = nextGroupId++;
+        for (int host : hosts) {
             owner[static_cast<std::size_t>(host)] = static_cast<int>(group);
+            carbonGroupId[static_cast<std::size_t>(host)] = groupId;
+            carbonPairId[static_cast<std::size_t>(host)] = pairId;
+        }
         for (const Atom& atom : pending) {
             const int index = static_cast<int>(attachments.size());
             attachments.push_back(atom);
+            attachmentGroup.push_back(static_cast<int>(group));
+            attachmentGroupId.push_back(groupId);
+            attachmentPairId.push_back(pairId);
             for (int host : hosts)
                 hosted[static_cast<std::size_t>(host)].push_back(index);
         }
@@ -875,8 +1038,13 @@ Structure GrapheneOxideBuilder::build(const Config& config, Report* report)
                     }
                     if (crossClash)
                         continue;
-                    commit(pendingI, {i}, group);
-                    commit(pendingJ, {j}, group);
+                    // One pair id, shared by both halves — the antiposition
+                    // registry ("go_pair_id") a downstream MDMC or analysis
+                    // module reads to recover which two hydroxyls form a
+                    // trans-diol.
+                    const int pairId = nextPairId++;
+                    commit(pendingI, {i}, group, pairId);
+                    commit(pendingJ, {j}, group, pairId);
                     return 2;
                 }
             }
@@ -1194,6 +1362,12 @@ Structure GrapheneOxideBuilder::build(const Config& config, Report* report)
             attachments.push_back(makeAtom(
                 kZ_H, carbonAt(i)
                     + fw.outward[static_cast<std::size_t>(i)] * kCH_edge));
+            // A terminating hydrogen belongs to no group — kept in lockstep
+            // with `attachments` so index alignment holds when the
+            // classification fields are built below.
+            attachmentGroup.push_back(-1);
+            attachmentGroupId.push_back(-1);
+            attachmentPairId.push_back(-1);
             ++local.hydrogenTerminatedEdges;
         }
     }
@@ -1222,6 +1396,35 @@ Structure GrapheneOxideBuilder::build(const Config& config, Report* report)
         edgeField[static_cast<std::size_t>(i)] =
             fw.isEdge[static_cast<std::size_t>(i)] ? 1.0 : 0.0;
     structure.setScalarField("edge", std::move(edgeField));
+
+    // The Graphene Oxide Build contract: "go_group" / "go_group_id" /
+    // "go_pair_id", index-aligned with the finished structure, framework
+    // carbons first (indices < carbonCount, from `owner`/`carbonGroupId`/
+    // `carbonPairId`) then every attachment atom in the order it was
+    // appended (from the parallel `attachment*` vectors) — see build()'s doc
+    // comment for the encoding.
+    std::vector<double> groupField(structure.size(), -1.0);
+    std::vector<double> groupIdField(structure.size(), -1.0);
+    std::vector<double> pairIdField(structure.size(), -1.0);
+    for (int i = 0; i < carbonCount; ++i) {
+        const int o = owner[static_cast<std::size_t>(i)];
+        if (o < 0)
+            continue;
+        groupField[static_cast<std::size_t>(i)] = static_cast<double>(o);
+        groupIdField[static_cast<std::size_t>(i)] =
+            static_cast<double>(carbonGroupId[static_cast<std::size_t>(i)]);
+        pairIdField[static_cast<std::size_t>(i)] =
+            static_cast<double>(carbonPairId[static_cast<std::size_t>(i)]);
+    }
+    for (std::size_t k = 0; k < attachments.size(); ++k) {
+        const std::size_t idx = static_cast<std::size_t>(carbonCount) + k;
+        groupField[idx] = static_cast<double>(attachmentGroup[k]);
+        groupIdField[idx] = static_cast<double>(attachmentGroupId[k]);
+        pairIdField[idx] = static_cast<double>(attachmentPairId[k]);
+    }
+    structure.setScalarField("go_group", std::move(groupField));
+    structure.setScalarField("go_group_id", std::move(groupIdField));
+    structure.setScalarField("go_pair_id", std::move(pairIdField));
 
     // --- Shortfalls, reported rather than absorbed --------------------------
     std::vector<std::string> notes;

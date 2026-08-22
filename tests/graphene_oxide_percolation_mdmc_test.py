@@ -206,7 +206,7 @@ def main():
         check("CALANGO_DONE" in done.stdout, "and reported completion")
 
         summary_path = job / "mdmc_summary.json"
-        trajectory_path = job / "mdmc_trajectory.extxyz"
+        trajectory_path = job / "accepted_structures.extxyz"
         if done.returncode == 0 and summary_path.is_file():
             summary = json.loads(summary_path.read_text())
             check(summary.get("accepted", 0) > 0,

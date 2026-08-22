@@ -46,6 +46,8 @@ neighbouring menus, and this section documents those too:
 | Charge Density Difference (CDD) | {menuselection}`Analysis --> Charge Density Difference (CDD)…` | {doc}`/electronic/charges` |
 | Adsorption & Catalysis | {menuselection}`Analysis --> Adsorption && Catalysis…` | {doc}`/builders/index` |
 | Warren–Cowley Analysis | {menuselection}`Modules --> Alloys --> Warren-Cowley Analysis…` | {doc}`/analysis/order` |
+| GO Functional Group Analysis | {menuselection}`Modules --> Graphene Oxide --> GO Functional Group Analysis…` | {doc}`/builders/nanomaterials` |
+| GO Pair Correlation | {menuselection}`Modules --> Graphene Oxide --> GO Pair Correlation…` | {doc}`/builders/nanomaterials` |
 | Volumetric Data dock | {menuselection}`View --> Volumetric Data` | {doc}`/analysis/volumetric` |
 | Brillouin Zone Builder | {menuselection}`Build --> Brillouin Zone Builder…` | {doc}`/analysis/reciprocal` |
 

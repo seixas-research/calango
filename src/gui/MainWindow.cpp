@@ -28,6 +28,8 @@
 #include "gui/PointOfViewDialog.hpp"
 #include "gui/RayTraceDialog.hpp"
 #include "gui/RdfDialog.hpp"
+#include "gui/GrapheneOxideGroupAnalysisDialog.hpp"
+#include "gui/GrapheneOxidePairCorrelationDialog.hpp"
 #include "gui/RingPercolationDialog.hpp"
 #include "gui/BondEditorDialog.hpp"
 #include "gui/CellAxesTabs.hpp"
@@ -150,6 +152,7 @@
 #include "gui/LocalEntropyDialog.hpp"
 #include "gui/JobLogWidget.hpp"
 #include "gui/MetricPlotWidget.hpp"
+#include "gui/MultiSeriesPlotWidget.hpp"
 #include "gui/ProjectSerializer.hpp"
 #include "gui/StructureEditorDialog.hpp"
 #include "gui/StructureInfoWidget.hpp"
@@ -170,6 +173,7 @@
 #include <QGuiApplication>
 #include <QScreen>
 #include <QScrollArea>
+#include <QSet>
 #include <QStyleHints>
 #include <QCheckBox>
 #include <QCloseEvent>
@@ -182,6 +186,7 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QInputDialog>
 #include <QDockWidget>
 #include <QDoubleSpinBox>
 #include <QFile>
@@ -205,8 +210,12 @@
 #include <QSettings>
 #include <QSlider>
 #include <QSpinBox>
+#include <QAbstractItemView>
 #include <QStatusBar>
 #include <QTabBar>
+#include <QTableWidget>
+#include <QTableWidgetItem>
+#include <QHeaderView>
 #include <QToolBar>
 #include <QWidgetAction>
 #include <QToolButton>
@@ -219,6 +228,7 @@
 #include <algorithm>
 #include <array>
 #include <functional>
+#include <optional>
 #include <stdexcept>
 #include <string>
 
@@ -1664,9 +1674,15 @@ void MainWindow::createMenusAndDocks()
     // material, lives in a family of its own rather than lengthening one of the
     // menus above.
     //
-    // The two separators split the four families by AUDIENCE. The first two
-    // apply to any system at all; the last two apply only if you are working on
-    // that class of material. Within each half, the more general comes first.
+    // One separator splits the five families by AUDIENCE. The first two
+    // (Parameters Convergence, MLIP) apply to any system at all; the last
+    // three (Alloys, 2D Materials, Graphene Oxide) apply only if you are
+    // working on that class of material. Within each half, the more general
+    // comes first — and within the material-class half, Graphene Oxide
+    // trails 2D Materials as the more specific case of it (a single 2D
+    // material family with its own four-module build/refine/analyze
+    // toolchain, rather than a general-2D-physics readout), not a separate
+    // separator's worth of distinction from it.
     QMenu* modulesMenu = menuBar()->addMenu(tr("&Modules"));
 
     // -- General-purpose: applies to whatever is open ------------------------
@@ -1767,20 +1783,13 @@ void MainWindow::createMenusAndDocks()
 
     // 2D Materials: workflows whose physics is specific to a sheet in vacuum,
     // where the supercell's arbitrary vacuum thickness has to be divided back
-    // out before a quantity means anything.
+    // out before a quantity means anything. Graphene oxide's own toolchain
+    // used to live here too (the builder was the only entry that PRODUCED a
+    // structure, ahead of the four baseline-inheriting readouts below); it
+    // has grown into a four-module family of its own — build, refine,
+    // analyze census/geometry, analyze decoration order — and gets its own
+    // submenu immediately below rather than continuing to grow this one.
     QMenu* twoDimensionalMenu = modulesMenu->addMenu(tr("&2D Materials"));
-    // The builder first: it is the only entry here that PRODUCES a structure,
-    // and the four below all need one open before they can inherit a ground
-    // state computed from it.
-    twoDimensionalMenu->addAction(tr("&Graphene Oxide…"), this,
-                                  &MainWindow::openGrapheneOxideBuilder)
-        ->setToolTip(tr("Functionalized graphene: epoxides, hydroxyls, "
-                        "carboxyls and carbonyls at target coverages"));
-
-    twoDimensionalMenu->addSeparator();
-    // The four baseline-inheriting readouts, mirroring the order of the
-    // Electronics menu they parallel: bands first, then the optical response,
-    // then the potential-derived quantity, then the defect energetics.
     twoDimensionalMenu->addAction(tr("2D &Bands…"), this,
                                   &MainWindow::show2DBands)
         ->setToolTip(tr("Band structure of a sheet as surfaces "
@@ -1805,6 +1814,36 @@ void MainWindow::createMenusAndDocks()
         ->setToolTip(tr("Formation energies E_f(q, E_F) and transition levels "
                         "for a monolayer, with the Komsa-Pasquarello 2D "
                         "image-charge correction in place of bulk FNV"));
+
+    // Graphene Oxide: build -> refine -> analyze, four modules that share one
+    // classification (core::GrapheneOxideBuilder::findFunctionalGroups(), the
+    // ONLY place "which carbon is which" is ever decided) and one contract —
+    // the "Graphene Oxide Build" a completed structure carries as its own
+    // "go_group"/"go_group_id"/"go_pair_id"/"edge" scalar fields (see
+    // GrapheneOxideBuilder::build()'s own doc comment). A separator splits
+    // the two that CHANGE a structure (build it, refine its decoration) from
+    // the two that only READ one (census/geometry, decoration order).
+    QMenu* grapheneOxideMenu = modulesMenu->addMenu(tr("&Graphene Oxide"));
+    grapheneOxideMenu->addAction(tr("&Graphene Oxide Builder…"), this,
+                                 &MainWindow::openGrapheneOxideBuilder)
+        ->setToolTip(tr("Functionalized graphene: epoxides, hydroxyls, "
+                        "carboxyls and carbonyls at target coverages"));
+    grapheneOxideMenu->addAction(tr("GO-&MDMC…"), this, &MainWindow::openGoMdmc)
+        ->setToolTip(tr("Hybrid MD / Monte Carlo annealing of a Graphene "
+                        "Oxide Build's functional-group arrangement"));
+    grapheneOxideMenu->addSeparator();
+    grapheneOxideMenu
+        ->addAction(tr("GO Functional &Group Analysis…"), this,
+                    &MainWindow::showGrapheneOxideGroupAnalysis)
+        ->setToolTip(tr("Group census and bond-length/angle distortion "
+                        "around functional groups, from a Graphene Oxide "
+                        "Build or GO-MDMC trajectory"));
+    grapheneOxideMenu
+        ->addAction(tr("GO &Pair Correlation…"), this,
+                    &MainWindow::showGrapheneOxidePairCorrelation)
+        ->setToolTip(tr("Warren-Cowley short-range order of the functional-"
+                        "group decoration — does MC sampling drive ordering "
+                        "or clustering?"));
 
     // The "Workflow" menu and its single "Add Workflow…" action are gone: the
     // node canvas is now a permanent dock in the bottom row (see below) rather
@@ -2073,6 +2112,122 @@ void MainWindow::createMenusAndDocks()
     jobTabs->addTab(plotPage(temperaturePlot_), tr("Temperature"));
     jobTabs->addTab(plotPage(forcePlot_), tr("Force"));
     jobTabs->addTab(plotPage(pressurePlot_), tr("Pressure"));
+
+    // GO-MDMC's two tabs: Acceptance (a live multi-series plot — the overall
+    // rate CUMULATIVE and WINDOWED, plus one windowed line per move kind) and
+    // MDMC Summary (the run's counters, above the per-move-kind breakdown of
+    // the same data). Present unconditionally, like Pressure already is
+    // for a non-NPT run — empty and showing a placeholder for any job that
+    // is not GO-MDMC, populated the moment its metrics.json carries
+    // "acceptance_cumulative" (see readMetricsJson()/pollLiveMetrics()).
+    MultiSeriesPlotWidget::PlotSpec acceptanceSpec;
+    acceptanceSpec.quantity = tr("Acceptance");
+    // Not "(last 50 attempts)" any more: the cumulative series shares these
+    // axes now, and only half the lines on the plot are windowed. Which is
+    // which is in each series' own legend entry instead.
+    acceptanceSpec.yAxisLabel = tr("Acceptance rate");
+    acceptanceSpec.xAxisLabel = tr("MC cycle");
+    acceptanceSpec.placeholder =
+        tr("GO-MDMC's acceptance rate — cumulative and windowed, overall and "
+           "per move kind — will appear here during a run");
+    acceptanceSpec.exportBaseName = QStringLiteral("acceptance.csv");
+    mdmcAcceptancePlot_ = new MultiSeriesPlotWidget(acceptanceSpec, jobTabs);
+    {
+        auto* page = new QWidget(jobTabs);
+        auto* layout = new QVBoxLayout(page);
+        layout->setContentsMargins(0, 0, 0, 2);
+        layout->setSpacing(2);
+        layout->addWidget(mdmcAcceptancePlot_, 1);
+        auto* row = new QHBoxLayout;
+        row->addStretch(1);
+        auto* exportButton = new QPushButton(tr("Export Data…"), page);
+        row->addWidget(exportButton);
+        layout->addLayout(row);
+        connect(exportButton, &QPushButton::clicked, mdmcAcceptancePlot_,
+                &MultiSeriesPlotWidget::exportData);
+        jobTabs->addTab(page, tr("Acceptance"));
+    }
+
+    // The RUN block: the five whole-run quantities. A second, two-column
+    // table above the per-move-kind one rather than extra rows in it — the
+    // two have different shapes (five named scalars against a row per move
+    // kind), and folding either into the other's columns would have cost a
+    // diagnostic this tab already had.
+    mdmcRunSummaryTable_ = new QTableWidget(0, 2, jobTabs);
+    mdmcRunSummaryTable_->setHorizontalHeaderLabels(
+        {tr("Quantity"), tr("Value")});
+    mdmcRunSummaryTable_->horizontalHeader()->setSectionResizeMode(
+        QHeaderView::Stretch);
+    mdmcRunSummaryTable_->verticalHeader()->setVisible(false);
+    mdmcRunSummaryTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    mdmcRunSummaryTable_->setSelectionMode(QAbstractItemView::NoSelection);
+    // Five rows and a header, and it never grows: capped so the per-move-kind
+    // table below it keeps the rest of the (zone-10, short) tab.
+    mdmcRunSummaryTable_->setMaximumHeight(170);
+
+    mdmcSummaryTable_ = new QTableWidget(0, 4, jobTabs);
+    mdmcSummaryTable_->setHorizontalHeaderLabels(
+        {tr("Move kind"), tr("Attempts"), tr("Accepted"),
+         tr("Acceptance ratio")});
+    mdmcSummaryTable_->horizontalHeader()->setSectionResizeMode(
+        QHeaderView::Stretch);
+    mdmcSummaryTable_->verticalHeader()->setVisible(false);
+    mdmcSummaryTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    mdmcSummaryTable_->setSelectionMode(QAbstractItemView::NoSelection);
+    {
+        auto* page = new QWidget(jobTabs);
+        auto* layout = new QVBoxLayout(page);
+        layout->setContentsMargins(0, 0, 0, 2);
+        layout->setSpacing(2);
+        layout->addWidget(mdmcRunSummaryTable_, 0);
+        layout->addWidget(mdmcSummaryTable_, 1);
+        auto* row = new QHBoxLayout;
+        row->addStretch(1);
+        auto* exportButton = new QPushButton(tr("Export CSV…"), page);
+        row->addWidget(exportButton);
+        layout->addLayout(row);
+        connect(exportButton, &QPushButton::clicked, this, [this]() {
+            const QString path = QFileDialog::getSaveFileName(
+                this, tr("Export MDMC Summary"),
+                QStringLiteral("mdmc_summary.csv"), tr("CSV (*.csv)"));
+            if (path.isEmpty())
+                return;
+            QFile file(path);
+            if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+                QMessageBox::critical(this, tr("Export MDMC Summary"),
+                                      tr("Could not write %1").arg(path));
+                return;
+            }
+            QTextStream out(&file);
+            // Both blocks, run first, separated by a blank line. The
+            // per-move-kind block keeps its original header and column order
+            // byte for byte, so anything that already parses this file
+            // still finds what it was reading.
+            out << "quantity,value\n";
+            for (int row2 = 0; row2 < mdmcRunSummaryTable_->rowCount(); ++row2) {
+                for (int col = 0; col < mdmcRunSummaryTable_->columnCount();
+                     ++col) {
+                    if (col > 0)
+                        out << ',';
+                    const auto* item = mdmcRunSummaryTable_->item(row2, col);
+                    out << (item ? item->text() : QString());
+                }
+                out << '\n';
+            }
+            out << '\n';
+            out << "move_kind,attempts,accepted,acceptance_ratio\n";
+            for (int row2 = 0; row2 < mdmcSummaryTable_->rowCount(); ++row2) {
+                for (int col = 0; col < mdmcSummaryTable_->columnCount(); ++col) {
+                    if (col > 0)
+                        out << ',';
+                    const auto* item = mdmcSummaryTable_->item(row2, col);
+                    out << (item ? item->text() : QString());
+                }
+                out << '\n';
+            }
+        });
+        jobTabs->addTab(page, tr("MDMC Summary"));
+    }
 
     // Convex Hull and Effective Bands no longer live in the Results dock:
     // each opens in its own standalone window (ConvexHullWindow /
@@ -3101,6 +3256,12 @@ bool MainWindow::writeProject(const QString& path)
             }
             docJson[QStringLiteral("frameCastOverrides")] = overrides;
         }
+        // Graphene Oxide Build provenance — see Document::goBuildProvenance's
+        // doc comment. Empty for every document that is not one, the common
+        // case, so this line is a no-op for them.
+        if (!document->goBuildProvenance.isEmpty())
+            docJson[QStringLiteral("goBuildProvenance")]
+                = document->goBuildProvenance;
         docs.append(docJson);
     }
     root[QStringLiteral("documents")] = docs;
@@ -3271,6 +3432,10 @@ bool MainWindow::readProject(const QString& path)
                     std::move(atomCasts);
             }
         }
+        if (docJson.contains(QStringLiteral("goBuildProvenance"))
+            && !documents_.empty())
+            documents_.back()->goBuildProvenance =
+                docJson[QStringLiteral("goBuildProvenance")].toObject();
     }
 
     const int activeTab = root[QStringLiteral("activeTab")].toInt(0);
@@ -6937,6 +7102,40 @@ void MainWindow::showLocalEntropy()
     dialog.exec();
 }
 
+void MainWindow::showGrapheneOxideGroupAnalysis()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()) {
+        QMessageBox::information(this, tr("GO Functional Group Analysis"),
+                                 tr("Open a structure first."));
+        return;
+    }
+    // No pre-flight classification check, unlike GO-MDMC: the analysis is
+    // read-only and core::analyzeGrapheneOxideGroups() already reports "zero
+    // groups found" gracefully from bonding alone for any structure that
+    // simply is not graphene oxide, rather than refusing to open.
+    GrapheneOxideGroupAnalysisDialog dialog(doc->structure, doc->frames,
+                                            viewport_, this);
+    connect(&dialog, &GrapheneOxideGroupAnalysisDialog::castsApplied, this, [this] {
+        notifyStructureChanged(false);
+        if (representationPanel_)
+            representationPanel_->syncFromViewport();
+    });
+    dialog.exec();
+}
+
+void MainWindow::showGrapheneOxidePairCorrelation()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()) {
+        QMessageBox::information(this, tr("GO Pair Correlation"),
+                                 tr("Open a structure first."));
+        return;
+    }
+    GrapheneOxidePairCorrelationDialog dialog(doc->structure, doc->frames, this);
+    dialog.exec();
+}
+
 void MainWindow::showRingPercolation()
 {
     Document* doc = currentDocument();
@@ -8037,7 +8236,13 @@ void MainWindow::redefineFunctionalGroupCastForFrame(Document* doc,
         return;
 
     using Builder = core::GrapheneOxideBuilder;
-    const std::vector<int> labels = Builder::functionalGroupLabels(*frame);
+    // A streamed or loaded MDMC frame is a thermal snapshot, and the
+    // application-wide 1.15x bond tolerance reads a hot, intact bond as
+    // broken -- two of six epoxides recoloured as carbonyls on one 335 K
+    // frame. The thermal tolerance is the one the run itself judges its
+    // chemistry by; see GrapheneOxideBuilder::kThermalBondTolerance.
+    const std::vector<int> labels = Builder::functionalGroupLabels(
+        *frame, Builder::kThermalBondTolerance);
     if (labels.size() != frame->size())
         return;
 
@@ -8118,6 +8323,31 @@ void MainWindow::openGrapheneOxideBuilder()
     isDirty_ = true;
     const int castCount = applyFunctionalGroupCasts();
 
+    // Generation provenance: not part of the Graphene Oxide Build contract
+    // itself (that is entirely the structure's own "go_group" / "go_group_id"
+    // / "go_pair_id" / "edge" scalar fields — see GrapheneOxideBuilder::build()
+    // and Document::goBuildProvenance's own doc comment), but worth keeping
+    // for a human re-reading the project or wanting to reproduce the sample.
+    if (Document* doc = currentDocument()) {
+        using Builder = core::GrapheneOxideBuilder;
+        QJsonObject provenance;
+        provenance[QStringLiteral("base")] =
+            wizard.config().base == Builder::Base::Nanoflake
+                ? QStringLiteral("nanoflake")
+                : QStringLiteral("periodicSheet");
+        provenance[QStringLiteral("basalCarbonCount")] = report.basalCarbonCount;
+        provenance[QStringLiteral("edgeCarbonCount")] = report.edgeCarbonCount;
+        provenance[QStringLiteral("carbonToOxygenRatio")] =
+            report.carbonToOxygenRatio();
+        provenance[QStringLiteral("hydroxylAntiposition")] =
+            wizard.hydroxylAntiposition();
+        provenance[QStringLiteral("seed")] =
+            static_cast<qint64>(wizard.config().seed);
+        provenance[QStringLiteral("calangoVersion")] =
+            QStringLiteral(CALANGO_VERSION);
+        doc->goBuildProvenance = provenance;
+    }
+
     // Report what was actually placed, not what was asked for. The two differ
     // whenever the substrate ran out of free carbons, and a silent shortfall
     // leaves the user believing they have a composition they do not have.
@@ -8142,27 +8372,87 @@ void MainWindow::openGrapheneOxideBuilder()
     }
     statusBar()->showMessage(message);
 
-    if (wizard.mdmcRequested())
-        openGrapheneOxideMdmc(report, wizard.hydroxylAntiposition());
+    // The MDMC refinement is no longer chained from here — it is its own
+    // module, GO-MDMC (Modules → Graphene Oxide → "GO-MDMC…"), reached
+    // through openGoMdmc() with this document offered as one of its eligible
+    // inputs.
 }
 
-void MainWindow::openGrapheneOxideMdmc(
-    const core::GrapheneOxideBuilder::Report& report,
-    bool hydroxylAntiposition)
+void MainWindow::openGoMdmc()
 {
-    // Reached only from the builder, on the structure it just opened as the
-    // current document — which is what makes this short: stageJob() already
-    // writes the current document to structure.extxyz, the name the generated
-    // script reads. Nothing here has to stage anything of its own.
-    using Group = core::GrapheneOxideBuilder::Group;
-    const int groups = report.placedFor(Group::Epoxide)
-        + report.placedFor(Group::Hydroxyl) + report.placedFor(Group::Carboxyl)
-        + report.placedFor(Group::Carbonyl);
+    using Builder = core::GrapheneOxideBuilder;
+
+    // Eligible inputs: every open document whose structure already carries
+    // the persisted classification, plus — the migration / foreign-import
+    // fallback (Task 1.4) — one that does not, but classifies as graphene
+    // oxide from bonding alone. A structure with no oxygen chemistry findable
+    // at all is correctly excluded rather than offered as "zero groups to
+    // move": that message belongs to a build that legitimately has none, not
+    // to a document that is not graphene oxide in the first place.
+    struct Candidate {
+        std::size_t documentIndex = 0;
+        bool needsFallbackClassification = false;
+    };
+    std::vector<Candidate> candidates;
+    QStringList labels;
+    for (std::size_t i = 0; i < documents_.size(); ++i) {
+        Document* doc = documents_[i].get();
+        if (!doc->structure || doc->structure->empty())
+            continue;
+        const bool classified = Builder::hasClassification(*doc->structure);
+        const bool fallbackUsable = !classified
+            && !Builder::findFunctionalGroups(*doc->structure).empty();
+        if (!classified && !fallbackUsable)
+            continue;
+        candidates.push_back({i, !classified});
+        labels << tabBar_->tabText(static_cast<int>(i));
+    }
+
+    if (candidates.empty()) {
+        QMessageBox::information(
+            this, tr("GO-MDMC"),
+            tr("No open document carries a Graphene Oxide classification. "
+               "Build one first with Modules → Graphene Oxide → Graphene "
+               "Oxide Builder…, or open a graphene oxide structure that "
+               "carries at least one recognizable functional group."));
+        return;
+    }
+
+    std::size_t chosen = 0;
+    if (candidates.size() > 1) {
+        bool ok = false;
+        const QString picked = QInputDialog::getItem(
+            this, tr("GO-MDMC — Select Build"),
+            tr("Which Graphene Oxide Build should this run refine?"), labels,
+            0, false, &ok);
+        if (!ok)
+            return;
+        const int index = labels.indexOf(picked);
+        if (index < 0)
+            return;
+        chosen = static_cast<std::size_t>(index);
+    }
+
+    Document* source = documents_[candidates[chosen].documentIndex].get();
+    auto structure = std::make_shared<core::Structure>(*source->structure);
+    if (candidates[chosen].needsFallbackClassification) {
+        Builder::classifyFromBonding(*structure);
+        statusBar()->showMessage(
+            tr("Classification recomputed from bonding — this document "
+               "predates the persisted Graphene Oxide Build contract."));
+    }
+
+    // A FRESH document for the run's input, decoupled from the source: this
+    // is what makes several independent runs from one build safe.
+    // stageJob() (called below, through runScript()/hpcPanel_) always stages
+    // whatever is the CURRENT document as structure.extxyz, so the source
+    // document — whichever tab it lives in — is never read from again after
+    // this copy, let alone written to.
+    const int tab = addDocument(structure, tr("Graphene oxide (GO-MDMC input)"));
+    tabBar_->setCurrentIndex(tab);
 
     GrapheneOxideMdmcWizard wizard(this);
-    wizard.setSubstrate(groups, report.basalCarbonCount,
-                        report.edgeCarbonCount, report.edgeCarbonCount == 0,
-                        hydroxylAntiposition);
+    wizard.setInputBuild(*structure);
     if (wizard.exec() != QDialog::Accepted)
         return;
 
@@ -8173,12 +8463,12 @@ void MainWindow::openGrapheneOxideMdmc(
         hpcDock_->show();
         hpcDock_->raise();
         const int taskId =
-            processPanel_->registerTask(tr("Remote graphene oxide MDMC"), jobDir);
+            processPanel_->registerTask(tr("Remote GO-MDMC"), jobDir);
         processPanel_->setTaskStatus(taskId, ProcessManagerPanel::Status::Running);
         hpcPanel_->submitStagedJob(jobDir,
                                       QStringLiteral("graphene_oxide_mdmc"),
                                       wizard.calculatorKind());
-        statusBar()->showMessage(tr("Submitting MDMC run to the cluster…"));
+        statusBar()->showMessage(tr("Submitting GO-MDMC run to the cluster…"));
         return;
     }
     if (wizard.action() != SimulationWizardBase::Action::RunLocal)
@@ -8186,18 +8476,16 @@ void MainWindow::openGrapheneOxideMdmc(
 
     // expectFrames: the run writes a trajectory of accepted configurations, so
     // the live tab follows the annealing rather than waiting for the end.
-    runScript(wizard.script(), wizard.pythonExecutable(),
-              tr("Graphene oxide MDMC"), true, wizard.calculatorKind(),
-              wizard.runCommand());
+    runScript(wizard.script(), wizard.pythonExecutable(), tr("GO-MDMC"), true,
+              wizard.calculatorKind(), wizard.runCommand());
     // liveDoc_ is set synchronously by launchJob() when nothing else is
-    // running, which is the overwhelmingly common case for a builder flow
-    // like this one; the task-name check is a defensive match against the
-    // right tab rather than whatever liveDoc_ happened to hold. If this run
-    // instead queued behind another job, liveDoc_ is not (yet) this tab and
-    // the flag is simply not set — that MDMC run falls back to a single,
-    // frame-0 Cast, exactly like the checkbox being off, rather than
-    // silently marking the wrong document.
-    if (liveDoc_ && liveDoc_->task == tr("Graphene oxide MDMC"))
+    // running, which is the overwhelmingly common case; the task-name check
+    // is a defensive match against the right tab rather than whatever
+    // liveDoc_ happened to hold. If this run instead queued behind another
+    // job, liveDoc_ is not (yet) this tab and the flag is simply not set —
+    // that GO-MDMC run falls back to a single, frame-0 Cast, exactly like the
+    // checkbox being off, rather than silently marking the wrong document.
+    if (liveDoc_ && liveDoc_->task == tr("GO-MDMC"))
         liveDoc_->mdmcCastPerFrame = wizard.castPerFrame();
 }
 
@@ -9434,6 +9722,11 @@ void MainWindow::syncResultsToProcess(int id)
     if (r.hasPressTarget)
         pressurePlot_->setTarget(r.pressTarget);
     jobLogWidget_->restoreLog(r.log);
+    // GO-MDMC's tabs reconnect the same way the four fixed ones do — the
+    // "reopen the panel on an already-running job" case this function's own
+    // lazy-hydration block above exists for.
+    updateMdmcAcceptancePlot(r);
+    updateMdmcSummaryTable(r);
 }
 
 void MainWindow::onEnergySample(int step, double value)
@@ -9584,6 +9877,17 @@ bool MainWindow::readMetricsJson(const QString& directory,
     record.temperature.clear();
     record.force.clear();
     record.pressure.clear();
+    record.extraSeries.clear();
+    // Every field name a metric entry carries besides these five is a
+    // candidate for extraSeries — GO-MDMC's "acceptance_cumulative",
+    // "accept_epoxide_windowed", etc. today, some other job type's own
+    // metric tomorrow. Generic on purpose: no new field name here should
+    // ever need a matching C++ change to become visible somewhere.
+    static const QSet<QString> kFixedFields = {
+        QStringLiteral("step"), QStringLiteral("energy"),
+        QStringLiteral("temperature"), QStringLiteral("max_force"),
+        QStringLiteral("pressure"),
+    };
     for (const QJsonValue& value : metrics) {
         const QJsonObject entry = value.toObject();
         const int step = entry.value(QStringLiteral("step")).toInt();
@@ -9597,6 +9901,11 @@ bool MainWindow::readMetricsJson(const QString& directory,
         add("temperature", record.temperature);
         add("max_force", record.force);
         add("pressure", record.pressure);
+        for (auto it = entry.constBegin(); it != entry.constEnd(); ++it) {
+            if (kFixedFields.contains(it.key()) || !it.value().isDouble())
+                continue;
+            record.extraSeries[it.key()].emplace_back(step, it.value().toDouble());
+        }
     }
     return true;
 }
@@ -9641,6 +9950,375 @@ void MainWindow::pollLiveMetrics()
     temperaturePlot_->setSamples(toSamples(r.temperature));
     forcePlot_->setSamples(toSamples(r.force));
     pressurePlot_->setSamples(toSamples(r.pressure));
+
+    // GO-MDMC's two extra tabs, driven by the SAME poll — see
+    // readMetricsJson()'s generic extraSeries capture. Empty (placeholder)
+    // for any job whose metrics.json carries none of these field names.
+    updateMdmcAcceptancePlot(r);
+    updateMdmcSummaryTable(r);
+}
+
+void MainWindow::updateMdmcAcceptancePlot(const ProcessRecord& record)
+{
+    if (!mdmcAcceptancePlot_)
+        return;
+    const auto toMultiSamples =
+        [](const std::vector<std::pair<int, double>>& v) {
+            std::vector<MultiSeriesPlotWidget::Sample> s;
+            s.reserve(v.size());
+            for (const auto& [step, value] : v)
+                s.push_back({step, value});
+            return s;
+        };
+    std::map<QString, std::vector<MultiSeriesPlotWidget::Sample>> series;
+    const auto addIfPresent = [&](const char* key, const QString& label) {
+        const auto it = record.extraSeries.find(QLatin1String(key));
+        if (it != record.extraSeries.end() && !it->second.empty())
+            series[label] = toMultiSamples(it->second);
+    };
+    // The overall rate BOTH ways: cumulative (the whole run so far) and
+    // windowed (the last ACCEPTANCE_WINDOW attempts), which is what says
+    // whether a rate that looks fine over the run has already started
+    // drifting. Both come from _acceptance_fields(), which has emitted them
+    // side by side all along; only the cumulative one was never plotted.
+    addIfPresent("acceptance_cumulative", tr("Overall (cumulative)"));
+    addIfPresent("acceptance_windowed", tr("Overall (windowed)"));
+    // The per-move-kind lines are kept, as additional series — the plot takes
+    // N named series and this data is a superset, so nothing is lost. They
+    // carry the "(windowed)" qualifier now that a cumulative line shares the
+    // axes: a bare "Epoxide" beside "Overall (windowed)" would not say which
+    // of the two it is.
+    addIfPresent("accept_epoxide_windowed", tr("Epoxide (windowed)"));
+    addIfPresent("accept_hydroxyl_windowed", tr("Hydroxyl (windowed)"));
+    addIfPresent("accept_hydroxyl_pair_windowed", tr("Hydroxyl pair (windowed)"));
+    addIfPresent("accept_carbonyl_windowed", tr("Carbonyl (windowed)"));
+    addIfPresent("accept_carboxyl_windowed", tr("Carboxyl (windowed)"));
+    mdmcAcceptancePlot_->clear();
+    mdmcAcceptancePlot_->setSeries(series);
+}
+
+void MainWindow::updateMdmcSummaryTable(const ProcessRecord& record)
+{
+    // The RUN block of the same tab, repainted from the same record. Driven
+    // from here rather than from pollLiveMetrics() so that every path which
+    // refreshes one half refreshes the other — the timer tick and the
+    // Results process selector both already come through this function.
+    updateMdmcRunSummary(record);
+
+    if (!mdmcSummaryTable_)
+        return;
+
+    const auto lastValue = [&](const QString& key) -> std::optional<double> {
+        const auto it = record.extraSeries.find(key);
+        if (it == record.extraSeries.end() || it->second.empty())
+            return std::nullopt;
+        return it->second.back().second;
+    };
+
+    // "acceptance_attempts" (the overall count) is present iff this record
+    // is a GO-MDMC run that has recorded at least one judged move — the
+    // signal that decides whether this table has anything to show at all.
+    if (!lastValue(QStringLiteral("acceptance_attempts"))) {
+        mdmcSummaryTable_->setRowCount(0);
+        return;
+    }
+
+    struct Row {
+        QString label;
+        QString kindKey; ///< empty = the overall "acceptance_*" fields
+    };
+    const std::vector<Row> rows = {
+        {tr("Overall"), QString()},
+        {tr("Epoxide"), QStringLiteral("epoxide")},
+        {tr("Hydroxyl"), QStringLiteral("hydroxyl")},
+        {tr("Hydroxyl pair (antiposition)"), QStringLiteral("hydroxyl_pair")},
+        {tr("Carbonyl"), QStringLiteral("carbonyl")},
+        {tr("Carboxyl"), QStringLiteral("carboxyl")},
+    };
+    const auto prefixFor = [](const Row& row) {
+        return row.kindKey.isEmpty() ? QStringLiteral("acceptance")
+                                     : QStringLiteral("accept_") + row.kindKey;
+    };
+
+    // Only kinds actually attempted in this run — a build with no carboxyls
+    // at all would otherwise show a permanent, uninformative "0/0" row.
+    std::vector<Row> visible;
+    for (const Row& row : rows) {
+        const auto attempts =
+            lastValue(prefixFor(row) + QStringLiteral("_attempts"));
+        if (attempts && *attempts > 0.0)
+            visible.push_back(row);
+    }
+
+    mdmcSummaryTable_->setRowCount(static_cast<int>(visible.size()));
+    for (int i = 0; i < static_cast<int>(visible.size()); ++i) {
+        const Row& row = visible[static_cast<std::size_t>(i)];
+        const QString prefix = prefixFor(row);
+        const double attempts =
+            lastValue(prefix + QStringLiteral("_attempts")).value_or(0.0);
+        const double accepted =
+            lastValue(prefix + QStringLiteral("_accepted")).value_or(0.0);
+        const auto ratio = lastValue(prefix + QStringLiteral("_cumulative"));
+
+        mdmcSummaryTable_->setItem(i, 0, new QTableWidgetItem(row.label));
+        mdmcSummaryTable_->setItem(
+            i, 1,
+            new QTableWidgetItem(QString::number(static_cast<qlonglong>(attempts))));
+        mdmcSummaryTable_->setItem(
+            i, 2,
+            new QTableWidgetItem(QString::number(static_cast<qlonglong>(accepted))));
+        mdmcSummaryTable_->setItem(
+            i, 3,
+            new QTableWidgetItem(ratio ? tr("%1%").arg(*ratio * 100.0, 0, 'f', 1)
+                                       : QStringLiteral("—")));
+    }
+}
+
+void MainWindow::updateMdmcRunSummary(const ProcessRecord& record)
+{
+    if (!mdmcRunSummaryTable_)
+        return;
+
+    const auto lastValue = [&](const char* key) -> std::optional<double> {
+        const auto it = record.extraSeries.find(QLatin1String(key));
+        if (it == record.extraSeries.end() || it->second.empty())
+            return std::nullopt;
+        return it->second.back().second;
+    };
+
+    // "mdmc_cycles_total" rides every GO-MDMC cycle sample and no other job
+    // type's metrics: its absence is what says this record has no run to
+    // summarize. (The equivalent of the per-move-kind table's own
+    // "acceptance_attempts" gate, but present from the FIRST completed cycle
+    // rather than from the first judged move — a run whose opening cycles all
+    // found no free site has cycles to report before it has attempts.)
+    const std::optional<double> total = lastValue("mdmc_cycles_total");
+    if (!total) {
+        mdmcRunSummaryTable_->setRowCount(0);
+        return;
+    }
+
+    // R2: every one of these is a non-negative COUNT. The script emits them
+    // as counts of frames that have reached disk, and they arrive here as
+    // JSON doubles; anything negative or unreadable is floored at 0 rather
+    // than shown, so no arithmetic on this path can put a -1 on screen.
+    const auto count = [](const std::optional<double>& value) -> qlonglong {
+        if (!value || !(*value > 0.0))
+            return 0;
+        return static_cast<qlonglong>(*value + 0.5);
+    };
+    const qlonglong cyclesTotal = count(total);
+    // Clamped to the total: "cycles/total" may never read 101/100.
+    const qlonglong cyclesDone =
+        std::min(count(lastValue("mdmc_cycles_done")), cyclesTotal);
+    const qlonglong mdSteps = count(lastValue("mdmc_md_steps_done"));
+    const qlonglong accepted = count(lastValue("mdmc_accepted"));
+
+    // Accepted per cycle COMPLETED — the same ratio mdmc_summary.json reports
+    // at the end of the run (accepted / cycles), so the finished panel and
+    // the finished file agree. Deliberately NOT "acceptance_cumulative",
+    // which is per judged ATTEMPT and excludes cycles that found no site:
+    // that one is the Acceptance plot's business, and putting it here would
+    // contradict the two numbers printed directly above it.
+    const double acceptancePercent =
+        cyclesDone > 0
+            ? std::clamp(100.0 * static_cast<double>(accepted)
+                             / static_cast<double>(cyclesDone),
+                         0.0, 100.0)
+            : 0.0;
+
+    const auto formatElapsed = [](double seconds) -> QString {
+        // Monotonic on the script's side, floored here as well: an elapsed
+        // time is a duration, and a negative duration is not a thing.
+        const qlonglong whole =
+            static_cast<qlonglong>(seconds > 0.0 ? seconds : 0.0);
+        const qlonglong hours = whole / 3600;
+        const qlonglong minutes = (whole % 3600) / 60;
+        const qlonglong secs = whole % 60;
+        if (hours > 0)
+            return QStringLiteral("%1 h %2 m %3 s")
+                .arg(hours)
+                .arg(minutes, 2, 10, QLatin1Char('0'))
+                .arg(secs, 2, 10, QLatin1Char('0'));
+        if (minutes > 0)
+            return QStringLiteral("%1 m %2 s")
+                .arg(minutes)
+                .arg(secs, 2, 10, QLatin1Char('0'));
+        return QStringLiteral("%1 s").arg(secs);
+    };
+
+    const std::vector<std::pair<QString, QString>> rows = {
+        {tr("Cycles"), QStringLiteral("%1 / %2").arg(cyclesDone).arg(cyclesTotal)},
+        {tr("MD steps"), QString::number(mdSteps)},
+        {tr("Accepted"), QString::number(accepted)},
+        {tr("Acceptance"),
+         cyclesDone > 0 ? tr("%1%").arg(acceptancePercent, 0, 'f', 1)
+                        : QStringLiteral("—")},
+        {tr("Elapsed"),
+         formatElapsed(lastValue("mdmc_elapsed_s").value_or(0.0))},
+    };
+    mdmcRunSummaryTable_->setRowCount(static_cast<int>(rows.size()));
+    for (int i = 0; i < static_cast<int>(rows.size()); ++i) {
+        const auto& [label, value] = rows[static_cast<std::size_t>(i)];
+        mdmcRunSummaryTable_->setItem(i, 0, new QTableWidgetItem(label));
+        mdmcRunSummaryTable_->setItem(i, 1, new QTableWidgetItem(value));
+    }
+}
+
+void MainWindow::setUpGoMdmcLiveFiles(
+    const QString& jobDir, int processId,
+    const std::shared_ptr<core::Structure>& seed)
+{
+    if (jobDir.isEmpty() || !seed || !tabBar_)
+        return;
+
+    // The two files S1/S3 make this module write, and the two tabs S4 asks
+    // for. Fixed literals here because they are fixed literals in the
+    // generated script too (DECISIONS.md D7) — nothing outside that script
+    // chooses either name.
+    struct Followed {
+        const char* fileName;
+        QString title;
+    };
+    const std::vector<Followed> followed = {
+        {"mdmc_all_structures.extxyz", tr("GO-MDMC / All Structures")},
+        {"accepted_structures.extxyz", tr("GO-MDMC / Accepted")},
+    };
+
+    // addDocument() selects each tab as it creates it; the run's own streamed
+    // tab is the one launchJob() just made current, and that is where the
+    // user expects to land. Restored below — the two new tabs are appended
+    // after every existing one, so no index shifts under this.
+    const int restore = tabBar_->currentIndex();
+    for (const Followed& entry : followed) {
+        GoMdmcLiveFile follow;
+        follow.processId = processId;
+        follow.path = jobDir + QLatin1Char('/') + QLatin1String(entry.fileName);
+        // The input geometry is shown while the first frame is written, but
+        // is NOT seeded as frame 0 — the same choice, for the same reason,
+        // that the streamed live tab above makes.
+        auto first = std::make_shared<core::Structure>(*seed);
+        const int tab = addDocument(first, tr("%1 (live)").arg(entry.title), {},
+                                    entry.title);
+        if (tab < 0 || tab >= static_cast<int>(documents_.size()))
+            continue;
+        Document* doc = documents_[static_cast<std::size_t>(tab)].get();
+        // S2/S4: every frame that arrives is reclassified through the ONE
+        // classification core and the result recorded as THAT frame's Cast
+        // override — appendStreamedFrame() does it, via
+        // setUpFunctionalGroupCastKey() (which also switches the viewport to
+        // Cast colouring and tells the Representation dock) and
+        // redefineFunctionalGroupCastForFrame() (which calls
+        // GrapheneOxideBuilder::functionalGroupLabels()). Unconditional here,
+        // unlike the streamed tab's wizard checkbox: showing the grouping as
+        // it moves is the entire purpose of these two tabs.
+        doc->mdmcCastPerFrame = true;
+        follow.documentId = doc->id;
+        goMdmcLiveFiles_.push_back(follow);
+    }
+    if (restore >= 0 && restore < tabBar_->count())
+        tabBar_->setCurrentIndex(restore);
+
+    // Polled on the metrics timer the run already runs — no second timer, and
+    // no file watcher (there is none anywhere in src/). UniqueConnection so a
+    // later GO-MDMC run does not poll twice per tick.
+    connect(metricsTimer_, &QTimer::timeout, this,
+            &MainWindow::pollGoMdmcLiveFiles, Qt::UniqueConnection);
+    // One final read when THIS process finishes, so the frames written
+    // between the last tick and the script's exit are not lost. Keyed by
+    // process id rather than by "whatever just finished": startNextQueuedJob()
+    // is connected to the same signal ahead of this one, so by the time this
+    // fires the queue may already have launched the NEXT run and registered
+    // its entries — which must not be finalized with this run's. The
+    // connection is single-shot; a connection made during an emission is not
+    // called for that emission, so a queued successor's own connection is not
+    // consumed by its predecessor's finish.
+    auto handle = std::make_shared<QMetaObject::Connection>();
+    *handle = connect(jobRunner_, &jobs::JobRunner::finished, this,
+                      [this, handle, processId](int, bool) {
+                          disconnect(*handle);
+                          finishGoMdmcLiveFiles(processId);
+                      });
+}
+
+void MainWindow::pollGoMdmcLiveFiles()
+{
+    for (GoMdmcLiveFile& follow : goMdmcLiveFiles_) {
+        Document* doc = nullptr;
+        for (const auto& candidate : documents_)
+            if (candidate && candidate->id == follow.documentId)
+                doc = candidate.get();
+        if (!doc)
+            continue; // the tab was closed mid-run — stop feeding it
+
+        // Both files are append-only, so their size only grows: an unchanged
+        // size proves there is nothing new and costs one stat() instead of
+        // re-parsing the whole file (see DECISIONS.md D4 on the whole-file
+        // re-read this deliberately keeps).
+        const QFileInfo info(follow.path);
+        if (!info.exists())
+            continue; // not written yet
+        const qint64 size = info.size();
+        if (size <= 0 || size == follow.lastSize)
+            continue;
+
+        std::vector<core::Structure> frames;
+        try {
+            frames =
+                pybridge::AseBridge::readTrajectory(follow.path.toStdString());
+        } catch (const std::exception&) {
+            // Caught mid-append, or truncated: nothing is appended and
+            // lastSize is NOT advanced, so the next tick reads the same file
+            // again. Retrying IS the recovery — a half-written frame must
+            // never reach a document, and it must never throw into the UI.
+            continue;
+        } catch (...) {
+            continue;
+        }
+        follow.lastSize = size;
+        // framesIngested is a COUNT of frames already shown: it starts at 0,
+        // only ever grows, and a read that came back with fewer frames than
+        // that simply appends nothing rather than counting backwards.
+        for (std::size_t i = static_cast<std::size_t>(follow.framesIngested);
+             i < frames.size(); ++i) {
+            appendStreamedFrame(doc,
+                                std::make_shared<core::Structure>(frames[i]));
+            ++follow.framesIngested;
+        }
+    }
+}
+
+void MainWindow::finishGoMdmcLiveFiles(int processId)
+{
+    if (goMdmcLiveFiles_.empty())
+        return;
+    // One last read before anything is torn down: the script appends its
+    // final frames between the last timer tick and its own exit.
+    pollGoMdmcLiveFiles();
+    for (auto it = goMdmcLiveFiles_.begin(); it != goMdmcLiveFiles_.end();) {
+        if (it->processId != processId) {
+            ++it;
+            continue;
+        }
+        Document* doc = nullptr;
+        for (const auto& candidate : documents_)
+            if (candidate && candidate->id == it->documentId)
+                doc = candidate.get();
+        const int index = doc ? indexOfDocument(doc) : -1;
+        if (doc && index >= 0) {
+            // The same finish onJobFinished() gives the streamed tab: drop
+            // the "(live)" marker and land the playhead on the last frame.
+            // The tab is KEPT even with no frames at all — a run that
+            // accepted nothing leaves an empty "Accepted" tab, and that is
+            // the answer, not a placeholder to clean away.
+            doc->fileName.replace(tr(" (live)"), QString());
+            tabBar_->setTabText(index, doc->fileName);
+            if (tabBar_->currentIndex() == index)
+                syncViewsToCurrent(false);
+            showFinalFrame(doc);
+        }
+        it = goMdmcLiveFiles_.erase(it);
+    }
 }
 
 void MainWindow::loadProcessMetrics(int id)
@@ -9943,6 +10621,15 @@ void MainWindow::launchJob(const QueuedJob& job)
         liveDoc_ = documents_[static_cast<std::size_t>(tab)].get();
         tabBar_->setCurrentIndex(tab);
     }
+    // GO-MDMC (S4): two MORE live tabs, each following one of the run's two
+    // structure FILES as the script appends to it. Not over the stdout frame
+    // stream: that wire format cannot carry the per-atom group columns the
+    // Cast colouring needs and cannot say which of the two files a frame
+    // belongs to (DECISIONS.md D4). Here rather than in openGoMdmc() so a run
+    // that had to queue behind another job gets them too — this is the point
+    // at which its own directory is known.
+    if (job.label == tr("GO-MDMC"))
+        setUpGoMdmcLiveFiles(job.jobDir, job.processId, job.liveSeed);
 
     jobDock_->show();
     jobDock_->raise();
@@ -10057,8 +10744,8 @@ void MainWindow::appendStreamedFrame(
     doc.frames.push_back(frame);
     isDirty_ = true;
 
-    // Graphene Oxide Builder MDMC, with "Redefine Cast on every accepted
-    // move" checked: this frame's own functional-group classification is
+    // GO-MDMC, with "Redefine Cast on every accepted move" checked: this
+    // frame's own functional-group classification is
     // recorded as ITS Cast override before anything decides whether to
     // display it — a frame the user later scrubs back to (not just the tail
     // this run happens to be following right now) still needs its own
@@ -10201,7 +10888,14 @@ void MainWindow::onJobFinished(int exitCode, bool crashed)
         const int index = indexOfDocument(liveDoc_);
         Document* streamed = liveDoc_;
         liveDoc_ = nullptr;
-        if (index >= 0 && streamed->frames.size() > 1) {
+        // A GO-MDMC run streams its equilibrated structure before the first
+        // cycle, so even a run that then accepts no move has exactly one
+        // real frame -- the puckered, thermalized sheet -- and that frame IS
+        // its result. Dropping the tab at "<= 1 frame" left the flat
+        // as-built input on screen as if the run had done nothing.
+        const bool keepSingleFrame =
+            streamed->frames.size() == 1 && streamed->task == tr("GO-MDMC");
+        if (index >= 0 && (streamed->frames.size() > 1 || keepSingleFrame)) {
             streamed->fileName.replace(tr(" (live)"), QString());
             tabBar_->setTabText(index, streamed->fileName);
             if (tabBar_->currentIndex() == index)

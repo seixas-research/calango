@@ -158,6 +158,54 @@ void check(bool condition, const std::string& what)
     check(condition, what.c_str());
 }
 
+/// A synthetic "Graphene Oxide Build" for GrapheneOxideMdmcWizard::
+/// setInputBuild() — geometry is irrelevant here (every atom sits at the
+/// origin), only the persisted classification fields
+/// GrapheneOxideMdmcWizard reads matter: `basal` + `edge` carbon atoms (the
+/// "edge" field), of which the first `min(groups, basal + edge)` carry a
+/// distinct "go_group_id" (so the wizard counts exactly `groups` functional
+/// groups), and — when `antiposition` — the first two of those share a
+/// "go_pair_id".
+calango::core::Structure makeGoBuildStructure(int groups, int basal, int edge,
+                                              bool antiposition)
+{
+    using calango::core::Atom;
+    using calango::core::Structure;
+    using calango::core::Vec3;
+
+    Structure s;
+    const int total = basal + edge;
+    for (int i = 0; i < total; ++i) {
+        Atom atom;
+        atom.atomicNumber = 6; // carbon
+        atom.position = Vec3{0.0, 0.0, 0.0};
+        s.addAtom(atom);
+    }
+
+    std::vector<double> edgeField(static_cast<std::size_t>(total), 0.0);
+    for (int i = basal; i < total; ++i)
+        edgeField[static_cast<std::size_t>(i)] = 1.0;
+
+    std::vector<double> groupField(static_cast<std::size_t>(total), -1.0);
+    std::vector<double> groupIdField(static_cast<std::size_t>(total), -1.0);
+    std::vector<double> pairIdField(static_cast<std::size_t>(total), -1.0);
+    const int marked = std::min(groups, total);
+    for (int i = 0; i < marked; ++i) {
+        groupField[static_cast<std::size_t>(i)] = 1.0; // Group::Hydroxyl
+        groupIdField[static_cast<std::size_t>(i)] = static_cast<double>(i);
+    }
+    if (antiposition && marked >= 2) {
+        pairIdField[0] = 0.0;
+        pairIdField[1] = 0.0;
+    }
+
+    s.setScalarField("edge", std::move(edgeField));
+    s.setScalarField("go_group", std::move(groupField));
+    s.setScalarField("go_group_id", std::move(groupIdField));
+    s.setScalarField("go_pair_id", std::move(pairIdField));
+    return s;
+}
+
 /// Toggle every checkbox and nudge every numeric control. Each of these emits
 /// a signal, and it is the SLOTS behind them that touch state which may not
 /// exist yet — so this is what actually exercises the hazard.
@@ -443,47 +491,127 @@ int main(int argc, char** argv)
         calango::pybridge::PythonEngine python;
         GrapheneOxideMdmcWizard wizard;
         check(true, "constructs");
-        // setSubstrate runs BEFORE the pages it writes into may exist in a
+        // setInputBuild runs BEFORE the pages it writes into may exist in a
         // future edit, and it is called by the host immediately after
         // construction — exactly the ordering that has crashed wizards here.
-        wizard.setSubstrate(24, 60, 18, false);
-        check(true, "accepts a substrate without dereferencing a missing page");
+        wizard.setInputBuild(makeGoBuildStructure(24, 60, 18, false));
+        check(true, "accepts a build without dereferencing a missing page");
         // A flake has no cell, so constant pressure must not be selectable.
         // Offering NPT on a molecule is meaningless, not merely wasteful.
         const auto* ensemble = wizard.findChildren<QComboBox*>().isEmpty()
             ? nullptr
             : wizard.findChildren<QComboBox*>().first();
         (void)ensemble;
+
+        // The defaults this page seeds must be the SAME defaults
+        // core::GrapheneOxideMdmcConfig carries — the two are written out
+        // separately (a setValue() here, an initializer there) and nothing
+        // in the compiler makes them agree. Read from the generated script,
+        // which is the only place both of them meet, and read BEFORE
+        // exerciseControls() below nudges every spin box off its default.
+        {
+            const QString fresh = wizard.script();
+            const auto pins = {
+                std::make_pair("md_steps = 5", "MD steps per cycle"),
+                std::make_pair("timestep_fs = 0.5", "MD timestep, in fs"),
+                std::make_pair("equilibration_steps = 10",
+                               "initial equilibration steps"),
+                std::make_pair("viewport_every = 1",
+                               "live-view frame interval, in cycles"),
+                std::make_pair("stream_md_frames = True",
+                               "the dynamics between MC steps is always-on"),
+                std::make_pair("hydroxyl_antiposition = True",
+                               "hydroxyls antiposition"),
+            };
+            for (const auto& [needle, what] : pins)
+                check(fresh.contains(QLatin1String(needle)),
+                      std::string("the page's default for ") + what
+                          + " is the config struct's ('" + needle + "')");
+        }
         exerciseControls(&wizard);
         check(true, "survives every control being exercised");
-        wizard.setSubstrate(0, 60, 18, false);
-        check(true, "handles a substrate with no groups to move");
+        wizard.setInputBuild(makeGoBuildStructure(0, 60, 18, false));
+        check(true, "handles a build with no groups to move");
 
-        // Hydroxyls antiposition is INHERITED from the builder's own
-        // config, not a choice offered on this page (see setSubstrate's own
-        // doc comment) — so the wiring risk here is that the flag actually
-        // reaches the generated script, not that a checkbox exists for it.
+        // Hydroxyls antiposition is now a real CONTROL on this page, checked
+        // by default — it used to be inherited state read off the input
+        // build's "go_pair_id" field and shown only as prose. Both halves
+        // are checked here: the control exists, is checked, and reaches the
+        // script; and the prose that says what the input build actually
+        // CONTAINS is still there beside it, so the two can be compared.
+        //
+        // `exerciseControls()` toggles every checkbox exactly twice, so it
+        // leaves each one as it found it — a default checked here is still
+        // checked when the script is generated below.
+        const auto antipositionBox = [](const GrapheneOxideMdmcWizard& w) {
+            QCheckBox* found = nullptr;
+            for (QCheckBox* box : w.findChildren<QCheckBox*>())
+                if (box->text().contains(QStringLiteral("antiposition"),
+                                         Qt::CaseInsensitive))
+                    found = box;
+            return found;
+        };
+
         GrapheneOxideMdmcWizard antiposWizard;
-        antiposWizard.setSubstrate(10, 40, 0, true,
-                                   /*hydroxylAntiposition=*/true);
+        antiposWizard.setInputBuild(
+            makeGoBuildStructure(10, 40, 0, /*antiposition=*/true));
         bool labelMentionsAntiposition = false;
         for (const QLabel* label : antiposWizard.findChildren<QLabel*>())
             if (label->text().contains(QStringLiteral("antiposition"),
                                        Qt::CaseInsensitive))
                 labelMentionsAntiposition = true;
         check(labelMentionsAntiposition,
-              "the substrate summary says antiposition is on, read-only");
+              "the substrate summary still says what the input build "
+              "contains");
+        QCheckBox* antiposOn = antipositionBox(antiposWizard);
+        check(antiposOn != nullptr,
+              "hydroxyls antiposition is a checkbox on the settings page");
+        check(antiposOn && antiposOn->isChecked(), "checked by default");
         exerciseControls(&antiposWizard);
         check(antiposWizard.script().contains(
                   QStringLiteral("hydroxyl_antiposition = True")),
               "and the flag reaches the generated script");
 
+        // The control is the user's, not the input build's: a build with no
+        // antiposition pairs still gets the checkbox checked, and the flag
+        // still reaches the script. That is safe because the emitted
+        // pairing bootstrap recovers pairs from the GEOMETRY - it finds
+        // none here and every hydroxyl stays an ordinary single.
+        GrapheneOxideMdmcWizard plainWizard;
+        plainWizard.setInputBuild(
+            makeGoBuildStructure(10, 40, 0, /*antiposition=*/false));
+        QCheckBox* plainBox = antipositionBox(plainWizard);
+        check(plainBox && plainBox->isChecked(),
+              "checked by default on a build that has no pairs too - the "
+              "control is not derived from the input any more");
+        check(plainWizard.script().contains(
+                  QStringLiteral("hydroxyl_antiposition = True")),
+              "and that default reaches the script");
+
         GrapheneOxideMdmcWizard offWizard;
-        offWizard.setSubstrate(10, 40, 0, true);
+        offWizard.setInputBuild(
+            makeGoBuildStructure(10, 40, 0, /*antiposition=*/false));
+        QCheckBox* offBox = antipositionBox(offWizard);
+        check(offBox != nullptr, "the checkbox is there to be turned off");
+        if (offBox)
+            offBox->setChecked(false);
         exerciseControls(&offWizard);
         check(offWizard.script().contains(
                   QStringLiteral("hydroxyl_antiposition = False")),
-              "off by default, exactly as before this option existed");
+              "unchecking it reaches the script, exactly as before this "
+              "option existed");
+
+        // Retired with the always-on decision: the dynamics between MC
+        // steps is streamed unconditionally now, throttled by the one
+        // viewport interval, so a second on/off for it must not come back.
+        bool hasStreamMdCheckbox = false;
+        for (const QCheckBox* box : offWizard.findChildren<QCheckBox*>())
+            if (box->text().contains(QStringLiteral("dynamics"),
+                                     Qt::CaseInsensitive))
+                hasStreamMdCheckbox = true;
+        check(!hasStreamMdCheckbox,
+              "no separate \"also show the dynamics\" checkbox - the "
+              "interval is the only knob");
     }
 
     std::printf("Workflow report dialog:\n");

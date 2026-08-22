@@ -20,12 +20,15 @@
 
 #include "core/GrapheneOxideBuilder.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
 #include <map>
+#include <set>
+#include <utility>
 #include <vector>
 
 using calango::core::Atom;
@@ -178,6 +181,22 @@ GrapheneOxideBuilder::Config flakeConfig(int generation)
     config.base = Base::Nanoflake;
     config.flakeIndex = generation;
     return config;
+}
+
+/// A geometry-only copy of `source`: same atoms, same cell, no scalar or
+/// vector fields at all -- what a project saved before the Graphene Oxide
+/// Build contract existed looks like, or graphene oxide imported from
+/// anywhere else. setScalarField() silently no-ops on a size mismatch (see
+/// Structure::setScalarField()), so overwriting a built structure's own
+/// "go_group" with an empty vector does NOT clear it; a fresh atoms-only
+/// copy is the only way to get a structure with none.
+Structure stripClassification(const Structure& source)
+{
+    Structure copy;
+    copy.setCell(source.cell());
+    for (const Atom& atom : source.atoms())
+        copy.addAtom(atom);
+    return copy;
 }
 
 std::map<int, int> elementCounts(const Structure& s)
@@ -1343,6 +1362,354 @@ int main()
         check(hasOppositeFacePartner == static_cast<int>(hydroxylOxygenByCarbon.size()),
               "every hydroxyl's host carbon has a bonded hydroxyl neighbour "
               "on the OPPOSITE face (DecoupledRegions)");
+    }
+
+    // ===== The Graphene Oxide Build contract ===============================
+    //
+    // "go_group" / "go_group_id" / "go_pair_id": the persisted classification
+    // and antiposition registry every downstream GO module (GO-MDMC, GO
+    // Functional Group Analysis, GO Pair Correlation) reads. Checked against
+    // functionalGroupLabels()/findFunctionalGroups() -- the SAME classifier,
+    // re-derived from bonding -- so the persisted fields cannot silently
+    // drift from the one implementation of "what counts as a group".
+    std::printf("The Graphene Oxide Build contract:\n");
+    {
+        Config config = flakeConfig(4);
+        config.setCoverage(Group::Epoxide, 0.2);
+        config.setCoverage(Group::Hydroxyl, 0.2);
+        config.setCoverage(Group::Carboxyl, 0.3);
+        config.setCoverage(Group::Carbonyl, 0.2);
+        config.seed = 42;
+        const Structure s = Builder::build(config);
+
+        check(Builder::hasClassification(s),
+              "a freshly built structure carries the classification");
+
+        const auto& fields = s.scalarFields();
+        check(fields.count("go_group") == 1 && fields.count("go_group_id") == 1
+                  && fields.count("go_pair_id") == 1,
+              "all three classification fields are present");
+        const auto& group = fields.at("go_group");
+        const auto& groupId = fields.at("go_group_id");
+        const auto& pairId = fields.at("go_pair_id");
+        check(group.size() == s.size() && groupId.size() == s.size()
+                  && pairId.size() == s.size(),
+              "every field is index-aligned with the atoms");
+
+        // "go_group" must agree with functionalGroupLabels() atom for atom --
+        // it is that function's own definition, persisted rather than
+        // recomputed.
+        const auto labels = Builder::functionalGroupLabels(s);
+        bool groupMatchesLabels = true;
+        for (std::size_t i = 0; i < s.size(); ++i)
+            groupMatchesLabels = groupMatchesLabels
+                && static_cast<int>(std::lround(group[i])) == labels[i];
+        check(groupMatchesLabels,
+              "\"go_group\" matches functionalGroupLabels() exactly");
+
+        // "go_group_id": every non-negative id groups exactly the atoms of
+        // one findFunctionalGroups() cluster -- no more, no fewer.
+        const auto clusters = Builder::findFunctionalGroups(s);
+        std::map<int, std::vector<int>> atomsById;
+        for (std::size_t i = 0; i < s.size(); ++i) {
+            const int id = static_cast<int>(std::lround(groupId[i]));
+            if (id >= 0)
+                atomsById[id].push_back(static_cast<int>(i));
+        }
+        check(atomsById.size() == clusters.size(),
+              "one distinct \"go_group_id\" per placed group instance");
+        bool everyIdIsACluster = true;
+        for (auto& [id, atoms] : atomsById) {
+            std::sort(atoms.begin(), atoms.end());
+            bool matchesSomeCluster = false;
+            for (const auto& cluster : clusters) {
+                std::vector<int> clusterAtoms = cluster.atoms;
+                std::sort(clusterAtoms.begin(), clusterAtoms.end());
+                if (clusterAtoms == atoms) {
+                    matchesSomeCluster = true;
+                    break;
+                }
+            }
+            everyIdIsACluster = everyIdIsACluster && matchesSomeCluster;
+        }
+        check(everyIdIsACluster,
+              "and its atom set is exactly one findFunctionalGroups() "
+              "cluster");
+
+        // No antiposition was requested, so the pairing registry must be
+        // empty throughout.
+        bool noPairs = true;
+        for (double p : pairId)
+            noPairs = noPairs && p < 0.0;
+        check(noPairs,
+              "\"go_pair_id\" is -1 everywhere when antiposition is off");
+    }
+    {
+        // The antiposition registry itself: every pair id is shared by
+        // exactly two group instances, and every one of those is a
+        // hydroxyl -- checked against the SAME geometric antiposition motif
+        // (bonded host carbons, opposite-face oxygens) the earlier
+        // "Hydroxyls antiposition" block verifies independently.
+        Config config;
+        config.supercell[0] = config.supercell[1] = 8;
+        config.dosing = Dosing::ExplicitCoverage;
+        config.setCoverage(Group::Hydroxyl, 0.35);
+        config.hydroxylAntiposition = true;
+        config.seed = 9;
+        Report report;
+        const Structure s = Builder::build(config, &report);
+
+        const auto& fields = s.scalarFields();
+        const auto& group = fields.at("go_group");
+        const auto& groupId = fields.at("go_group_id");
+        const auto& pairId = fields.at("go_pair_id");
+
+        std::map<int, std::vector<int>> groupIdsByPair;
+        for (std::size_t i = 0; i < s.size(); ++i) {
+            const int p = static_cast<int>(std::lround(pairId[i]));
+            if (p < 0)
+                continue;
+            const int gid = static_cast<int>(std::lround(groupId[i]));
+            auto& ids = groupIdsByPair[p];
+            if (std::find(ids.begin(), ids.end(), gid) == ids.end())
+                ids.push_back(gid);
+            check(static_cast<int>(std::lround(group[i]))
+                      == static_cast<int>(Group::Hydroxyl),
+                  "every paired atom belongs to a hydroxyl");
+        }
+        check(!groupIdsByPair.empty(), "at least one antiposition pair exists");
+        bool everyPairHasTwoInstances = true;
+        for (const auto& [p, ids] : groupIdsByPair)
+            everyPairHasTwoInstances = everyPairHasTwoInstances
+                && ids.size() == 2;
+        check(everyPairHasTwoInstances,
+              "every \"go_pair_id\" is shared by exactly two group "
+              "instances");
+        // Every antiposition hydroxyl belongs to exactly one pair (the
+        // placement path never leaves one unpaired), so twice the pair
+        // count must account for every hydroxyl the builder placed.
+        check(2 * static_cast<int>(groupIdsByPair.size())
+                  == report.placedFor(Group::Hydroxyl),
+              "the pair count accounts for every hydroxyl placed");
+    }
+
+    std::printf("Legacy/imported structures -- classifyFromBonding() fallback:\n");
+    {
+        // Simulate a structure saved before this contract existed (or one
+        // imported from anywhere else): a freshly built GO sample with its
+        // classification fields stripped back off.
+        Config config = flakeConfig(4);
+        config.setCoverage(Group::Epoxide, 0.2);
+        config.setCoverage(Group::Hydroxyl, 0.2);
+        config.setCoverage(Group::Carboxyl, 0.3);
+        config.seed = 5;
+        Structure s = stripClassification(Builder::build(config));
+        check(!Builder::hasClassification(s),
+              "a structure with an empty \"go_group\" field is NOT "
+              "classified");
+
+        Builder::classifyFromBonding(s);
+        check(Builder::hasClassification(s),
+              "classifyFromBonding() leaves the structure classified");
+
+        // The fallback must reach the SAME answer as the persisted field
+        // would have -- it is the identical classifier, findFunctionalGroups(),
+        // just called later.
+        const auto labels = Builder::functionalGroupLabels(s);
+        const auto& group = s.scalarFields().at("go_group");
+        bool matches = group.size() == s.size();
+        for (std::size_t i = 0; matches && i < s.size(); ++i)
+            matches = static_cast<int>(std::lround(group[i])) == labels[i];
+        check(matches,
+              "the recomputed \"go_group\" matches functionalGroupLabels() "
+              "exactly, same as the build-time field would");
+    }
+    {
+        // The fallback's antiposition re-derivation: strip the fields off an
+        // antiposition-built structure and check classifyFromBonding()
+        // recovers the SAME pairing -- geometry alone is enough.
+        Config config;
+        config.supercell[0] = config.supercell[1] = 8;
+        config.dosing = Dosing::ExplicitCoverage;
+        config.setCoverage(Group::Hydroxyl, 0.35);
+        config.hydroxylAntiposition = true;
+        config.seed = 13;
+        const Structure built = Builder::build(config);
+
+        // The pairing the builder itself recorded, as a set of unordered
+        // atom-index pairs (the two host carbons of each pair), independent
+        // of the arbitrary pair-id numbering.
+        const auto pairedHostCarbons = [&](const Structure& structure) {
+            const auto& fields = structure.scalarFields();
+            const auto& groupField = fields.at("go_group");
+            const auto& groupIdField = fields.at("go_group_id");
+            const auto& pairField = fields.at("go_pair_id");
+            std::map<int, std::vector<int>> hostByPair;
+            for (std::size_t i = 0; i < structure.size(); ++i) {
+                const int p = static_cast<int>(std::lround(pairField[i]));
+                if (p < 0
+                    || static_cast<int>(std::lround(groupField[i]))
+                        != static_cast<int>(Group::Hydroxyl)
+                    || structure.atoms()[i].atomicNumber != 6)
+                    continue;
+                hostByPair[p].push_back(static_cast<int>(i));
+            }
+            std::set<std::pair<int, int>> pairs;
+            for (auto& [p, hosts] : hostByPair) {
+                if (hosts.size() != 2)
+                    continue;
+                std::sort(hosts.begin(), hosts.end());
+                pairs.insert({hosts[0], hosts[1]});
+            }
+            (void)groupIdField;
+            return pairs;
+        };
+
+        const auto builtPairs = pairedHostCarbons(built);
+        check(!builtPairs.empty(), "the build itself produced some pairs");
+
+        Structure s = stripClassification(built);
+        Builder::classifyFromBonding(s);
+        const auto recoveredPairs = pairedHostCarbons(s);
+
+        check(recoveredPairs == builtPairs,
+              "classifyFromBonding() recovers the SAME antiposition pairing "
+              "from geometry alone, with no build-time record to consult");
+    }
+    {
+        // A structure with no antiposition at all: classifyFromBonding() has
+        // only geometry to go on, so at high enough density it CAN pair two
+        // independently-placed hydroxyls that happen to land on bonded
+        // carbons with opposite faces -- that is not a bug, it is the
+        // documented limit of reconstructing a pairing that was never
+        // recorded. What must hold unconditionally is SOUNDNESS: whatever
+        // "go_pair_id" it assigns always satisfies the antiposition motif
+        // it claims to have found.
+        Config config;
+        config.supercell[0] = config.supercell[1] = 6;
+        config.setCoverage(Group::Hydroxyl, 0.3);
+        config.seed = 21;
+        Structure s = stripClassification(Builder::build(config));
+        Builder::classifyFromBonding(s);
+
+        const auto& groupField = s.scalarFields().at("go_group");
+        const auto& pairField = s.scalarFields().at("go_pair_id");
+        std::map<int, std::vector<int>> hostsByPair;
+        for (std::size_t i = 0; i < s.size(); ++i) {
+            const int p = static_cast<int>(std::lround(pairField[i]));
+            if (p < 0 || s.atoms()[i].atomicNumber != 6)
+                continue;
+            hostsByPair[p].push_back(static_cast<int>(i));
+        }
+        bool everyPairIsGenuinelyAntiposition = true;
+        std::vector<std::vector<int>> neighbours(s.size());
+        for (const auto& bond : s.detectBonds()) {
+            neighbours[static_cast<std::size_t>(bond.i)].push_back(bond.j);
+            neighbours[static_cast<std::size_t>(bond.j)].push_back(bond.i);
+        }
+        for (const auto& [p, hosts] : hostsByPair) {
+            if (hosts.size() != 2) {
+                everyPairIsGenuinelyAntiposition = false;
+                continue;
+            }
+            const int hostA = hosts[0];
+            const int hostB = hosts[1];
+            const auto& nb = neighbours[static_cast<std::size_t>(hostA)];
+            const bool bonded =
+                std::find(nb.begin(), nb.end(), hostB) != nb.end();
+            const bool bothHydroxyl =
+                static_cast<int>(std::lround(groupField[static_cast<std::size_t>(hostA)]))
+                    == static_cast<int>(Group::Hydroxyl)
+                && static_cast<int>(std::lround(groupField[static_cast<std::size_t>(hostB)]))
+                    == static_cast<int>(Group::Hydroxyl);
+            everyPairIsGenuinelyAntiposition =
+                everyPairIsGenuinelyAntiposition && bonded && bothHydroxyl;
+        }
+        check(everyPairIsGenuinelyAntiposition,
+              "every pair classifyFromBonding() reports (coincidental or "
+              "not) has two bonded hydroxyl-host carbons -- it never "
+              "invents a pairing the geometry does not support");
+    }
+    {
+        // A plain structure with no oxygen chemistry at all -- e.g. bare
+        // graphene -- is squarely "not classified", the case GO-MDMC's
+        // pre-flight check must catch and refuse rather than crash on.
+        Config config;
+        config.supercell[0] = config.supercell[1] = 4;
+        const Structure s = Builder::pristine(config);
+        check(!Builder::hasClassification(s),
+              "a bare, never-built substrate carries no classification");
+    }
+
+    std::printf("Thermal bond tolerance for MDMC frames:\n");
+    {
+        // An MDMC frame is a thermal snapshot. Measured on a sheet under
+        // MACE-MP-0, an intact epoxide C-O momentarily stretched past the
+        // application-wide 1.15x covalent-radius cutoff read as a carbonyl
+        // -- two of six epoxides on one 335 K frame -- and recoloured the
+        // per-frame Cast of a GO-MDMC run. The Cast therefore classifies
+        // MDMC frames at kThermalBondTolerance. This pins the two numbers
+        // against a closed-form geometry: one C-O at 1.78 A (a thermal
+        // instant), the other at its 1.44 A rest length.
+        Config config;
+        config.supercell[0] = config.supercell[1] = 4;
+        Structure s = Builder::pristine(config);
+        const auto p0 = s.atoms()[0].position;
+        std::size_t partner = 0;
+        double best = 1e9;
+        for (std::size_t j = 1; j < s.size(); ++j) {
+            const auto& pj = s.atoms()[j].position;
+            const double d = std::sqrt((pj.x - p0.x) * (pj.x - p0.x)
+                                       + (pj.y - p0.y) * (pj.y - p0.y)
+                                       + (pj.z - p0.z) * (pj.z - p0.z));
+            if (d < best) {
+                best = d;
+                partner = j;
+            }
+        }
+        const auto p1 = s.atoms()[partner].position;
+        const double ux = (p1.x - p0.x) / best;
+        const double uy = (p1.y - p0.y) / best;
+        Atom oxygen;
+        oxygen.atomicNumber = 8;
+        // Rest geometry: O above the bond midpoint at the height that makes
+        // both C-O 1.44 A on a 1.42 A bond.
+        const double height = std::sqrt(1.44 * 1.44 - 0.25 * best * best);
+        oxygen.position = calango::core::Vec3{0.5 * (p0.x + p1.x), 0.5 * (p0.y + p1.y),
+                                             p0.z + height};
+        s.addAtom(oxygen);
+        const std::size_t o = s.size() - 1;
+        const int epoxide = static_cast<int>(Group::Epoxide);
+
+        auto cold = Builder::functionalGroupLabels(s);
+        auto hot = Builder::functionalGroupLabels(
+            s, Builder::kThermalBondTolerance);
+        check(cold[o] == epoxide && hot[o] == epoxide,
+              "a cold, intact epoxide is an epoxide at either tolerance");
+        const bool hostsLabelled = cold[0] == epoxide && cold[partner] == epoxide;
+
+        // One C-O stretched to 1.78 A, the other held at 1.44 A: solve for
+        // the O in the plane of the bond and the normal.
+        const double along = (1.78 * 1.78 - 1.44 * 1.44 + best * best)
+                             / (2.0 * best);
+        const double up = std::sqrt(1.78 * 1.78 - along * along);
+        s.atoms()[o].position =
+            calango::core::Vec3{p0.x + along * ux, p0.y + along * uy, p0.z + up};
+        cold = Builder::functionalGroupLabels(s);
+        hot = Builder::functionalGroupLabels(s, Builder::kThermalBondTolerance);
+        check(cold[o] != epoxide,
+              "at the cold 1.15x tolerance (C-O cutoff 1.63 A) the stretched "
+              "bond is gone and the group is no longer an epoxide -- the "
+              "recolouring a thermal frame used to get");
+        check(hot[o] == epoxide
+                  && (!hostsLabelled
+                      || (hot[0] == epoxide && hot[partner] == epoxide)),
+              "at kThermalBondTolerance (1.3x: 1.85 A) it is still the "
+              "epoxide it is, hosts included");
+        check(Builder::kThermalBondTolerance > Builder::kColdBondTolerance
+                  && Builder::kColdBondTolerance == 1.15,
+              "the cold default is the application-wide 1.15x, untouched for "
+              "built and relaxed geometries");
     }
 
     std::printf(failures == 0 ? "\nAll graphene oxide checks passed.\n"

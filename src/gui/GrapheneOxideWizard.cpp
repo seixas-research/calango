@@ -402,56 +402,6 @@ GrapheneOxideWizard::GrapheneOxideWizard(QWidget* parent)
     stage2Layout->addStretch(1);
     stack_->addWidget(stage2);
 
-    // ===== Stage 3 — MDMC Optimization (optional) ==========================
-    auto* stage3 = new QWidget(stack_);
-    auto* stage3Layout = new QVBoxLayout(stage3);
-    stage3Layout->setSpacing(10);
-
-    mdmcCheck_ = new QCheckBox(
-        tr("Refine the arrangement with hybrid MD / Monte Carlo"), stage3);
-    mdmcCheck_->setObjectName(QStringLiteral("mdmcCheck"));
-    mdmcCheck_->setToolTip(
-        tr("Anneal WHERE the groups sit, at fixed composition.\n\n"
-           "The builder places groups at random free sites, which gives the "
-           "composition you asked for but not a low-energy arrangement. Real "
-           "graphene oxide is strongly correlated — hydroxyls cluster, "
-           "epoxides line up along the ridges they create — and no geometry "
-           "optimizer can find that, because moving a group from one carbon to "
-           "another is a discrete step and an optimizer only moves atoms "
-           "continuously."));
-    stage3Layout->addWidget(mdmcCheck_);
-
-    auto* mdmcNote = new QLabel(
-        tr("<p>Each cycle moves one functional group to a random free site "
-           "and accepts or rejects it by the Metropolis criterion. "
-           "<b>This needs a calculator.</b></p>"),
-        stage3);
-    mdmcNote->setWordWrap(true);
-    mdmcNote->setTextFormat(Qt::RichText);
-    mdmcNote->setToolTip(
-        tr("A site is a bonded carbon pair for an epoxide, a single carbon "
-           "otherwise, on either face of the sheet. Each proposal runs a short "
-           "burst of molecular dynamics before it is judged.\n\n"
-           "A move whose chemistry did not survive the dynamics is rejected "
-           "whatever its energy. That check is not optional bookkeeping: "
-           "dynamics on a reactive surface will abstract a hydroxyl and a "
-           "neighbouring hydrogen and release water, which lowers the energy "
-           "and destroys the material.\n\n"
-           "Choosing a calculator, reviewing the script and launching the run "
-           "happen on the next screen — the structure is built and opened "
-           "either way."));
-    stage3Layout->addWidget(mdmcNote);
-
-    mdmcCostNote_ = new QLabel(stage3);
-    mdmcCostNote_->setWordWrap(true);
-    mdmcCostNote_->setTextFormat(Qt::RichText);
-    stage3Layout->addWidget(mdmcCostNote_);
-    stage3Layout->addStretch(1);
-    stack_->addWidget(stage3);
-
-    connect(mdmcCheck_, &QCheckBox::toggled, this,
-            &GrapheneOxideWizard::refreshSummary);
-
     // ===== Navigation ======================================================
     auto* buttonRow = new QHBoxLayout;
     backButton_ = new QPushButton(tr("< Back"), this);
@@ -684,35 +634,6 @@ void GrapheneOxideWizard::refreshSummary()
     }
 
     coverageSummary_->setText(lines.join(QStringLiteral("<br>")));
-
-    if (mdmcCostNote_) {
-        // The group count is what the sampler moves, so it is what decides
-        // whether the refinement has anything to do and how long it takes.
-        const int basalGroups = basalOc <= 0.0
-            ? 0
-            : static_cast<int>(std::llround(basal * basalOc));
-        const int edgeGroups = (!flake || edgeOx <= 0.0)
-            ? 0
-            : std::max(1, static_cast<int>(std::llround(edge * edgeOx)));
-        const int total = basalGroups + edgeGroups;
-        if (total == 0) {
-            mdmcCostNote_->setText(
-                tr("<i>No functional groups, so there is nothing for MDMC to "
-                   "rearrange.</i>"));
-            mdmcCostNote_->setToolTip(
-                tr("Raise the oxidation level on the previous stage."));
-        } else {
-            mdmcCostNote_->setText(
-                tr("<i>About <b>%n group(s)</b> will be placed; plan on a few "
-                   "hundred cycles.</i>",
-                   nullptr, total));
-            mdmcCostNote_->setToolTip(
-                tr("A run needs several accepted moves per group before the "
-                   "arrangement has forgotten where it started. Each cycle is "
-                   "an energy evaluation, or several with molecular dynamics "
-                   "enabled."));
-        }
-    }
 }
 
 void GrapheneOxideWizard::goNext()
@@ -737,19 +658,13 @@ void GrapheneOxideWizard::showStage(int index)
 {
     stack_->setCurrentIndex(index);
     static const char* const kHeaders[] = {
-        QT_TR_NOOP("Stage 1 of 3 — Base Structure"),
-        QT_TR_NOOP("Stage 2 of 3 — Functionalization & Oxidation Level"),
-        QT_TR_NOOP("Stage 3 of 3 — MDMC Optimization (optional)"),
+        QT_TR_NOOP("Stage 1 of 2 — Base Structure"),
+        QT_TR_NOOP("Stage 2 of 2 — Functionalization & Oxidation Level"),
     };
     stageLabel_->setText(tr(kHeaders[index]));
     backButton_->setEnabled(index > 0);
     nextButton_->setText(index == kLastStage ? tr("Build") : tr("Next >"));
     refreshSummary();
-}
-
-bool GrapheneOxideWizard::mdmcRequested() const
-{
-    return mdmcCheck_ && mdmcCheck_->isChecked();
 }
 
 bool GrapheneOxideWizard::hydroxylAntiposition() const

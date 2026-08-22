@@ -89,10 +89,13 @@ WarrenCowleyResult computeWarrenCowley(const Structure& structure,
         out.alpha.assign(speciesCount, std::vector<double>(
                                            speciesCount,
                                            std::numeric_limits<double>::quiet_NaN()));
+        out.pairCounts = counts[shell];
+        out.neighborsOfSpecies.assign(speciesCount, 0.0);
         for (std::size_t si = 0; si < speciesCount; ++si) {
             double neighborsOfI = 0.0;
             for (std::size_t sj = 0; sj < speciesCount; ++sj)
                 neighborsOfI += counts[shell][si][sj];
+            out.neighborsOfSpecies[si] = neighborsOfI;
             if (neighborsOfI <= 0.0)
                 continue; // no neighbors in this shell — α undefined (NaN)
             for (std::size_t sj = 0; sj < speciesCount; ++sj) {

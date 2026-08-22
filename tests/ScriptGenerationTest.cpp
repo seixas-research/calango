@@ -206,6 +206,10 @@ int main(int argc, char** argv)
             antipos.calculator.calculator = CalculatorKind::LennardJones;
             antipos.hydroxylAntiposition = true;
             antipos.mdStepsPerCycle = 0;
+            // No initial equilibration either, for the same reason: the
+            // stage is molecular dynamics, and Lennard-Jones has no covalent
+            // bond to keep intact through it.
+            antipos.equilibrationSteps = 0;
             antipos.temperatureK = 2000.0;
             antipos.cycles = 300;
             antipos.snapshotInterval = 1;
@@ -215,6 +219,63 @@ int main(int argc, char** argv)
             antipos.hydroxylAntiposition = false;
             dumpText("graphene_oxide_mdmc_off.py",
                  GrapheneOxideMdmcScriptGenerator::generate(antipos));
+        }
+
+        // The protocol on a REAL potential: graphene_oxide_mdmc_mace_test.py
+        // runs this one under MACE-MP-0 small (self-skipping without it),
+        // with the dynamics ON — equilibration, per-cycle bursts, NPT with
+        // the in-plane-only barostat — against a sheet carrying the planted
+        // epoxide/hydroxyl clash that killed the first real run. Short
+        // (150 + 12 × 50 steps) because every step is a MACE evaluation.
+        {
+            GrapheneOxideMdmcConfig real;
+            real.calculator.calculator = CalculatorKind::Mace;
+            real.calculator.maceSize = "small";
+            real.calculator.maceDevice = "cpu";
+            real.calculator.macePrecision = MacePrecision::Float32;
+            real.hydroxylAntiposition = true;
+            real.temperatureK = 300.0;
+            real.cycles = 12;
+            // THE BURST LENGTH AND ITS THERMOSTAT ARE PART OF THE FIXTURE,
+            // not incidental. Measured on this exact sheet, MACE-MP-0
+            // small, 300 K, 0.5 fs, 12 cycles - the per-cycle delta-E
+            // handed to the Metropolis test, and what it accepted:
+            //
+            //     steps  friction/fs   delta-E range (eV)   accepted
+            //        10      0.02      +1.14 ... +3.03        0/12
+            //        50      0.02      +0.05 ... +2.03        0/12
+            //       100      0.02      +0.32 ... +0.94        0/12
+            //        10      0.10      +1.15 ... +3.05        0/12
+            //        20      0.10      +0.23 ... +1.66        0/12
+            //        50      0.10      -0.44 ... +1.70        4/12
+            //
+            // kT at 300 K is 0.0259 eV, so even +0.2 eV is refused with
+            // probability 1 - 4e-4: a move is accepted here only where the
+            // burst has actually drained the placement strain of the group
+            // it just moved, and nothing else in that table does. Both
+            // knobs are needed, and neither changes WHAT is sampled -
+            // Langevin/Berendsen at 300 K either way. The friction is the
+            // equilibration stage's own value used for the equilibration
+            // stage's own reason: freshly released strain has to be carried
+            // away as it appears, and 1/0.02 = 50 fs is longer than the
+            // whole burst.
+            //
+            // At 10 steps this run accepted 0 of 12, so
+            // `accepted_structures.extxyz` was a 0-frame file and the
+            // harness's whole per-frame battery - three intact epoxides,
+            // three intact hydroxyls, the antiposition pair unsplit, one
+            // connected molecule, the vacuum axis never scaled - had
+            // nothing to run against.
+            real.mdStepsPerCycle = 50;
+            real.timestepFs = 0.5;
+            real.frictionPerFs = 0.1;
+            real.equilibrationSteps = 150;
+            real.constantPressure = true;
+            real.pressureGpa = 0.0;
+            real.seed = 7;
+            real.viewportEveryCycles = 0;
+            dumpText("graphene_oxide_mdmc_mace.py",
+                 GrapheneOxideMdmcScriptGenerator::generate(real));
         }
 
         // 2D Bands, one dump per engine — the whole point of Task 3's
@@ -6946,15 +7007,261 @@ int main(int argc, char** argv)
                       "crystal");
     }
 
+    std::printf("Graphene Oxide MDMC — equilibration, clearance, reversion:\n");
+    {
+        // The protocol that made a real MACE-MP run die before its first
+        // cycle (tens of eV of as-built strain released in one 20-step
+        // burst) and the bookkeeping that quietly corrupted the one that
+        // survived (a barostat-scaled cell never reverted). Every item here
+        // is a separate defect; each is pinned by the text that fixes it.
+        GrapheneOxideMdmcConfig cfg;
+        cfg.calculator = maceConfig();
+        const std::string script = GrapheneOxideMdmcScriptGenerator::generate(cfg);
+        checkContains(script, "equilibration_steps = 10",
+                      "an initial equilibration stage exists, 10 steps by "
+                      "default");
+        // The rest of the module's defaults, pinned here because the wizard
+        // seeds the same numbers a second time (a setValue() per control)
+        // and nothing but a test makes the two agree — the wizard side is
+        // pinned in DialogConstructionTest against these same strings.
+        checkContains(script, "md_steps = 5",
+                      "five MD steps per cycle: many cheap cycles, a short "
+                      "burst each, is this protocol's own regime");
+        checkContains(script, "timestep_fs = 0.5",
+                      "half a femtosecond — twenty points per period of the "
+                      "O-H stretch this material carries");
+        checkContains(script, "viewport_every = 1",
+                      "a live frame every cycle; the run is short cycles and "
+                      "showing one in five is not showing the run");
+        checkContains(script, "stream_md_frames = True",
+                      "and the dynamics BETWEEN moves is streamed too — "
+                      "always-on, throttled by that same one interval");
+        checkContains(script, "equilibration_friction_per_fs = 0.1",
+                      "thermostatted 5x more strongly than the per-cycle "
+                      "burst: it has the as-built strain to drain");
+        checkContains(script, "def equilibrate(system):",
+                      "as a stage of its own, not a first MC burst");
+        checkContains(script, "relocated to {new_hosts}",
+                      "a group the equilibration opens is RELOCATED, not a "
+                      "fatal error");
+        checkContains(script, "def relocate(index):",
+                      "through the same proposal the MC loop uses");
+        checkContains(script, "def clearance_ok(",
+                      "every proposal passes a steric clearance first");
+        checkContains(script, "CLEARANCE_HEAVY = 2.0",
+                      "heavy-heavy 2.0 A - wider than the builder's 1.55 A "
+                      "placement rule: it prices a burst, not a placement");
+        checkContains(script, "CLEARANCE_HYDROGEN = 1.6",
+                      "and 1.6 A to a hydrogen, which still admits an H-bond");
+        checkContains(script, "\"rejected_clash\": rejected_clash,",
+                      "clash rejections are reported separately");
+        checkContains(script,
+                      "\"equilibration_relocations\": equilibration_relocations,",
+                      "as is the relocation count");
+        checkContains(script, "atoms.get_distance(a, b, mic=True, vector=True)",
+                      "the epoxide recipe uses the minimum-image bond vector: "
+                      "boundary-straddling pairs were unreachable sites");
+        checkContains(script, "def restore_state(state):",
+                      "reversion goes through one state restorer");
+        checkContains(script, "atoms.set_cell(cell, scale_atoms=False)",
+                      "which restores the CELL, not only the positions");
+        checkContains(script, "Inhomogeneous_NPTBerendsen(",
+                      "the per-axis barostat");
+        checkContains(script, "mask=barostat_mask",
+                      "masked to the in-plane vectors");
+        checkNotContains(script,
+                         "from ase.md.nptberendsen import NPTBerendsen\n",
+                         "the isotropic one, which scales the vacuum axis, "
+                         "is gone");
+        checkContains(script, "taut=(1.0 / friction) * units.fs",
+                      "Berendsen's temperature coupling follows the friction "
+                      "knob, not ase's 500 fs production default");
+        checkContains(script, "Stationary(system)",
+                      "no centre-of-mass drift from the velocity draw");
+        {
+            // The equilibrated structure is streamed before cycle 1: a run
+            // that accepts no move still shows its puckered, thermalized
+            // sheet rather than leaving the flat input on screen.
+            const auto initialAt = script.find(
+                "initial energy after equilibration:");
+            const auto streamAt = script.find(
+                "if viewport_every > 0:\n    _stream_frame()");
+            const auto loopAt = script.find("for cycle in range(mc_cycles):");
+            check(initialAt != std::string::npos && streamAt != std::string::npos
+                      && loopAt != std::string::npos && initialAt < streamAt
+                      && streamAt < loopAt,
+                  "the equilibrated state is streamed to the viewport before "
+                  "the first cycle, as frame 0 of the run");
+        }
+        checkContains(script, "SURVIVAL_SCALE = 1.3",
+                      "a thermal snapshot is judged at 1.3x covalent radii, "
+                      "not the 1.2x that recognizes the cold input - a hot "
+                      "intact O-H sits within 0.5 % of 1.2x at 300 K");
+        checkContains(script, "graph = bond_graph(system, SURVIVAL_SCALE)",
+                      "and that is the graph chemistry_survived() uses");
+        checkContains(script, "def update_host_fields(",
+                      "an accepted move updates the host carbons' persisted "
+                      "classification fields");
+        checkContains(script, "ignore=cap",
+                      "an edge move swaps the terminating hydrogen to the "
+                      "vacated carbon");
+        {
+            // A cycle whose move could not be generated still runs its
+            // burst, and the state that burst produces is KEPT (energy =
+            // burst_energy, then continue). output_path is documented to
+            // hold the BEST configuration found, so that state has to be
+            // compared against the best — otherwise the walk can reach a
+            // configuration better than anything it accepted and throw it
+            // away. Eight-space indent: this is the branch body, not the
+            // Metropolis one below it, which compares trial_energy.
+            checkContains(script,
+                          "        if energy < best_energy:\n"
+                          "            best_energy = energy\n"
+                          "            best_atoms = atoms.copy()\n",
+                          "a kept, chemistry-intact state from a move-less "
+                          "cycle can become the best configuration");
+            const auto keptAt = script.find("        if energy < best_energy:");
+            const auto acceptedAt =
+                script.find("        if trial_energy < best_energy:");
+            check(keptAt != std::string::npos
+                      && acceptedAt != std::string::npos && keptAt < acceptedAt,
+                  "and it is the same test the accepted branch makes, not a "
+                  "redefinition of \"best\" as \"best accepted\"");
+        }
+
+        const auto equilibrateAt =
+            script.find("energy, equilibration_relocations = equilibrate(atoms)");
+        const auto loopAt = script.find("for cycle in range(mc_cycles):");
+        check(equilibrateAt != std::string::npos && loopAt != std::string::npos
+                  && equilibrateAt < loopAt,
+              "the equilibration runs before the first cycle");
+
+        GrapheneOxideMdmcConfig none = cfg;
+        none.equilibrationSteps = 0;
+        checkContains(GrapheneOxideMdmcScriptGenerator::generate(none),
+                      "equilibration_steps = 0",
+                      "and zero skips the stage (what the Lennard-Jones "
+                      "harness tests run with)");
+    }
+
+    std::printf("Graphene Oxide MDMC — the live run counters:\n");
+    {
+        // The counters the Results panel's "MDMC Summary" shows. The whole
+        // requirement is that a DISPLAYED number equals what a reader of the
+        // two structure files would count for themselves, and that none of
+        // them is ever negative — so what is pinned here is (a) where they
+        // are counted, (b) that they are counts and not indices, and (c) that
+        // every per-cycle metric carries them.
+        GrapheneOxideMdmcConfig cfg;
+        cfg.calculator = maceConfig();
+        const std::string script = GrapheneOxideMdmcScriptGenerator::generate(cfg);
+
+        checkContains(script, "import time\n",
+                      "elapsed time needs a clock");
+        checkContains(script, "RUN_STARTED_AT = time.monotonic()",
+                      "and it is the MONOTONIC one");
+        checkContains(script,
+                      "    return max(0.0, time.monotonic() - RUN_STARTED_AT)",
+                      "so elapsed is a difference of monotonic readings, "
+                      "floored at zero");
+        checkNotContains(script, "time.time()",
+                         "never wall clock: two time.time() samples can come "
+                         "out in the wrong order when the system clock is "
+                         "stepped, and that is a negative counter");
+
+        // ONE counting site, and it is the write itself: a frame that never
+        // reached the writer (a rewound equilibration chunk) is never
+        // counted, which is exactly what makes these numbers agree with the
+        // files.
+        checkContains(script,
+                      "frames_written = {\"equilibration\": 0, \"md\": 0, "
+                      "\"mc_trial\": 0, \"accepted\": 0}",
+                      "the per-kind frame counters exist, all starting at 0");
+        checkContains(script,
+                      "    write(path, frames, format=\"extxyz\", append=True)\n",
+                      "append_frames still writes through ase");
+        {
+            const auto writeAt =
+                script.find("    write(path, frames, format=\"extxyz\", "
+                            "append=True)");
+            const auto countAt = script.find("        frames_written[key] += 1");
+            check(writeAt != std::string::npos && countAt != std::string::npos
+                      && writeAt < countAt,
+                  "and the counters are incremented AFTER the write, not "
+                  "before it — a writer that raised put nothing on disk");
+        }
+        checkContains(script,
+                      "        key = (\"accepted\" if path == "
+                      "accepted_structures_path\n"
+                      "               else frame.info[\"phase\"])",
+                      "the accepted file is counted by PATH, because the frame "
+                      "it holds is the same \"mc_trial\" snapshot");
+
+        checkContains(script, "def _run_fields(cycle):",
+                      "the run counters travel as one kwargs block");
+        checkContains(script, "        \"mdmc_cycles_done\": cycle + 1,",
+                      "cycles done is a COUNT of completed cycles — cycle + 1 "
+                      "off the 0-based loop index, so it reads 1 after the "
+                      "first cycle and never -1 before it");
+        checkNotContains(script, "\"mdmc_cycles_done\": cycle,",
+                         "not the raw index, which would report 0 completed "
+                         "cycles after the first one finished");
+        checkContains(script, "        \"mdmc_cycles_total\": mc_cycles,",
+                      "against the total, so \"done / total\" cannot exceed 1");
+        checkContains(script,
+                      "        \"mdmc_md_steps_done\": frames_written[\"md\"],",
+                      "MD steps done is read off the frames on disk, not "
+                      "off cycle x md_steps");
+        checkContains(script,
+                      "        \"mdmc_equilibration_steps_done\": "
+                      "frames_written[\"equilibration\"],",
+                      "as are the retained equilibration steps");
+        checkContains(script,
+                      "        \"mdmc_accepted\": frames_written[\"accepted\"],",
+                      "and the accepted count is the number of frames in "
+                      "accepted_structures.extxyz");
+        checkContains(script, "        \"mdmc_elapsed_s\": _elapsed_seconds(),",
+                      "with the run's elapsed time alongside them");
+
+        // Every branch of the MC loop reports. A branch that emitted a metric
+        // WITHOUT the run counters would freeze "cycles done" at whatever the
+        // previous branch left; a branch that emitted none at all would leave
+        // a finished run reporting fewer cycles than it ran.
+        const auto occurrences = [&script](const std::string& needle) {
+            std::size_t found = 0;
+            for (std::size_t at = script.find(needle); at != std::string::npos;
+                 at = script.find(needle, at + needle.size()))
+                ++found;
+            return found;
+        };
+        const std::size_t metricCalls = occurrences("_calango_metric(cycle");
+        const std::size_t runFieldUses = occurrences("**_run_fields(cycle)");
+        check(metricCalls == 4,
+              "all four exits of the MC loop record a metric sample — "
+              "including the one whose calculator threw, which used to record "
+              "none and so lost a cycle from the count for good");
+        check(runFieldUses == metricCalls,
+              "and every one of them carries the run counters");
+    }
+
     std::printf("Graphene Oxide MDMC — hydroxyl antiposition:\n");
     {
-        // Off is the default and must reproduce exactly what this script
-        // generated before the antiposition move existed.
-        GrapheneOxideMdmcConfig off;
-        off.calculator = maceConfig();
+        // ON is the default now: the setting became a real, checked-by-
+        // default control on the wizard's MDMC page, and the struct default
+        // was flipped to match it. Turning it OFF must still reproduce
+        // exactly what this script generated before the antiposition move
+        // existed.
+        GrapheneOxideMdmcConfig defaulted;
+        defaulted.calculator = maceConfig();
+        checkContains(GrapheneOxideMdmcScriptGenerator::generate(defaulted),
+                      "hydroxyl_antiposition = True",
+                      "on by default");
+
+        GrapheneOxideMdmcConfig off = defaulted;
+        off.hydroxylAntiposition = false;
         const std::string offScript = GrapheneOxideMdmcScriptGenerator::generate(off);
         checkContains(offScript, "hydroxyl_antiposition = False",
-                      "off by default");
+                      "and turning it off reaches the script");
         checkContains(offScript, "if hydroxyl_antiposition:",
                       "the pairing bootstrap is still emitted, gated");
         checkContains(offScript, "groups = collect_groups(atoms, graph0)",
@@ -7008,7 +7315,7 @@ int main(int argc, char** argv)
         // symmetry argument valid without a Hastings correction.
         checkContains(script, "def revert():",
                       "a single revert() serves every group kind");
-        checkContains(script, "for cycle in range(1, mc_cycles + 1):",
+        checkContains(script, "for cycle in range(mc_cycles):",
                       "one MC loop handles every group kind, hydroxyl_pair "
                       "included — no special-cased second loop");
     }

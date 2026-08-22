@@ -1,5 +1,7 @@
 #pragma once
 
+#include "gui/HistogramPlotWidget.hpp"
+
 #include <QDialog>
 #include <QString>
 #include <QWidget>
@@ -10,61 +12,6 @@ class QLabel;
 class QSpinBox;
 
 namespace calango::gui {
-
-/// A histogram drawn as bars, with the mean and a ±σ band marked on it.
-///
-/// Not LinePlotWidget with the bin centres joined up: a polyline through bin
-/// counts reads as a continuous signal that was sampled, when a histogram is
-/// the opposite — a count of things that fell in a box, with nothing between
-/// the boxes. The distinction matters at the small ensemble sizes this window
-/// is usually looking at (20–100 members), where a polyline invents structure
-/// between bins that the data does not contain.
-///
-/// The mean/σ overlay is drawn HERE rather than left to a caption because the
-/// whole question the window answers is "how wide is this?", and a number in a
-/// label beside a chart makes the reader do the mapping themselves.
-class HistogramPlotWidget : public QWidget {
-    Q_OBJECT
-
-public:
-    explicit HistogramPlotWidget(QWidget* parent = nullptr);
-
-    /// Bin `samples` into `bins` equal-width bars and redraw. Fewer than two
-    /// distinct values draws the empty-state message instead.
-    void setSamples(std::vector<double> samples, int bins);
-    void setLabels(const QString& xLabel, const QString& yLabel);
-    /// Colour of the bars. The energy and force panels differ so the two are
-    /// distinguishable at a glance in an exported figure.
-    void setBarColor(const QColor& color);
-    /// Message shown when there is nothing to draw ("this run recorded no
-    /// forces" reads better than an empty frame).
-    void setPlaceholder(const QString& text);
-
-protected:
-    void paintEvent(QPaintEvent* event) override;
-
-private:
-    void rebin();
-
-    std::vector<double> samples_;
-    std::vector<double> counts_; ///< one per bin
-    int bins_ = 24;
-    double binWidth_ = 0.0;
-    double xMin_ = 0.0;
-    double xMax_ = 1.0;
-    double maxCount_ = 1.0;
-    /// Top of the count axis and its tick spacing, both whole numbers — see
-    /// rebin(). A count axis cut into five equal parts labels itself in
-    /// fractions of a sample, which no bar can ever reach.
-    double yTop_ = 1.0;
-    double yStep_ = 1.0;
-    double mean_ = 0.0;
-    double sigma_ = 0.0;
-    QString xLabel_;
-    QString yLabel_;
-    QString placeholder_;
-    QColor barColor_{102, 153, 255};
-};
 
 /// Results window for a Random Noise run: what the ensemble's spread actually
 /// came out to be.

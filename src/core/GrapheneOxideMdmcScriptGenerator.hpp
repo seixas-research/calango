@@ -36,7 +36,9 @@ namespace calango::core {
 ///      sites currently free, and pick a face at random for basal groups.
 ///   3. Run a short burst of molecular dynamics at the target temperature so
 ///      the new arrangement relaxes into its own local basin rather than being
-///      judged on an unrelaxed geometry.
+///      judged on an unrelaxed geometry. The burst is the ONLY relaxation
+///      mechanism in the run — there is deliberately no geometry optimizer
+///      anywhere in it.
 ///   4. **Validate the topology.** This is the step a generic Metropolis code
 ///      does not have and this system cannot do without. Molecular dynamics on
 ///      a reactive surface will happily abstract a hydroxyl and a neighbouring
@@ -46,6 +48,31 @@ namespace calango::core {
 ///      regardless of its energy.
 ///   5. Metropolis: accept with min(1, exp(-ΔE / kB T)), else revert exactly —
 ///      positions, group inventory and site pools all restored.
+///
+/// WHAT IT TOOK TO MAKE THAT PROTOCOL ACTUALLY RUN. The builder places every
+/// group analytically on a FLAT sheet, so the as-built structure carries
+/// ~10 eV/Å on its host carbons and tens of eV of strain. The first version
+/// of this script released that in a single 20-step burst — a thermal shock
+/// of thousands of kelvin for a few femtoseconds — and whichever group the
+/// builder had placed closest to a neighbour came apart, after which the
+/// run exited. Three things fix that without changing the protocol:
+///
+///   * an **initial equilibration** stage of its own (`equilibrationSteps`,
+///     `equilibrationFrictionPerFs`): long enough for the sheet to pucker and
+///     thermalize, thermostatted strongly enough to drain the strain as it is
+///     released, checked for intact chemistry every few steps — and a group
+///     that still comes apart is RELOCATED to a fresh free site (the
+///     sampler's own move, inventory preserved) rather than the run
+///     abandoned. The run refuses only when relocating stops helping;
+///   * a **steric clearance** on every proposal (2.0 Å heavy–heavy, 1.6 Å
+///     to a hydrogen — wider than the builder's 1.55 Å placement rule, which
+///     defines the motif space rather than what a burst keeps): a bridging
+///     oxygen 1.9 Å from a neighbouring hydroxyl oxygen is not a
+///     configuration a burst relaxes, it is one it resolves by breaking a
+///     bond, so it is refused before any energy is evaluated;
+///   * the **cell is part of the reverted state** under NPT, and only the
+///     in-plane vectors are ever scaled (ase's isotropic barostat scaled the
+///     vacuum axis too, and a rejected move used to keep the scaled cell).
 ///
 /// The site bookkeeping in the emitted script is a port of
 /// core::ReactiveSiteGraph, whose C++ tests are the reference for the coupling
@@ -77,8 +104,17 @@ struct GrapheneOxideMdmcConfig {
     /// happens to be, and reporting that as the answer throws away the best
     /// configuration the sampler visited.
     std::string outputStructure = "mdmc_optimized.extxyz";
-    /// Accepted configurations, in order, for the trajectory viewer.
-    std::string trajectory = "mdmc_trajectory.extxyz";
+    /// Accepted configurations, in order — every one of them, appended as
+    /// the walk accepts it, each frame carrying its own 0-based
+    /// acceptance ordinal and the per-frame provenance of the
+    /// all-structures log.
+    ///
+    /// This replaced `mdmc_trajectory.extxyz`, which held the same
+    /// quantity worse: written once at the end from an in-memory list,
+    /// throttled by `snapshotInterval`, and seeded at index 0 with the
+    /// post-equilibration structure — a frame that was never an accepted
+    /// configuration at all.
+    std::string trajectory = "accepted_structures.extxyz";
 
     CalculatorConfig calculator;
 
@@ -96,17 +132,58 @@ struct GrapheneOxideMdmcConfig {
 
     /// Molecular-dynamics steps per cycle.
     ///
-    /// Few (5-20) is the intended regime. This is not a relaxation: it is
-    /// enough dynamics to let the neighbours accommodate the moved group, and
-    /// the cost of the whole run is cycles × mdSteps energy evaluations, so
-    /// this multiplies directly into the wall clock.
-    int mdStepsPerCycle = 20;
+    /// The burst is the only relaxation the protocol has, so it must be long
+    /// enough for the strain of a freshly placed group to drain before the
+    /// energy is judged — otherwise every Metropolis test sees an uphill
+    /// move whatever the new site is worth. Measured on an equilibrated
+    /// 7×4 sheet under MACE-MP-0 (epoxide moves, 300 K, 0.5 fs, friction
+    /// 0.02/fs): ΔE is +1.8 eV after 10-20 steps, +0.4 at 40, within the
+    /// thermal noise (±0.4 eV) around 80-120 steps, and NEGATIVE (-0.8 to
+    /// -1.8 eV) by 200 — the burst is then long enough for the dynamics to
+    /// carry the sheet's own slow relaxation past the placement strain, so
+    /// the energy keeps dropping and Metropolis keeps accepting, which is
+    /// what this protocol is for. The default stays at the protocol's own
+    /// regime — many cheap cycles, a short burst each; the figures above
+    /// are what to expect when lengthening it. The cost of the run is
+    /// cycles × mdSteps energy evaluations.
+    int mdStepsPerCycle = 5;
 
-    double timestepFs = 1.0;
-    /// Langevin friction, in inverse femtoseconds. The thermostat has to be
-    /// strong enough to equilibrate within the short burst above, which is why
-    /// this is larger than a production-MD value.
+    /// Integration step, in femtoseconds. Graphene oxide carries O–H and
+    /// C–H stretches whose periods are ~10 fs, so half a femtosecond is
+    /// twenty points per period — a step at or above 1 fs integrates them
+    /// badly and heats the system artificially, which this run then reads
+    /// as broken chemistry.
+    double timestepFs = 0.5;
+    /// Thermostat coupling for the per-cycle burst, in inverse femtoseconds:
+    /// the Langevin friction under NVT, and 1/(Berendsen temperature time)
+    /// under NPT, so the knob means the same thing in both ensembles (ase's
+    /// own Berendsen default of 500 fs would leave a burst of tens of
+    /// femtoseconds effectively unthermostatted). Larger than a production-MD
+    /// value on purpose, though a burst this short is mostly a thermal
+    /// perturbation either way — the real equilibration is the stage below.
     double frictionPerFs = 0.02;
+
+    /// Initial equilibration: molecular-dynamics steps run ONCE, before the
+    /// first Monte Carlo cycle, to bring the as-built (flat, strained)
+    /// structure to the target temperature. Checked for intact chemistry
+    /// every few steps; a group that comes apart is relocated to a fresh
+    /// free site and the dynamics resumes from the last intact state. Zero
+    /// skips the stage entirely and starts the walk from the as-built
+    /// geometry's own energy.
+    ///
+    /// The default is deliberately SHORT. The stage is checked for intact
+    /// chemistry every EQUILIBRATION_CHECK_EVERY steps and relocates
+    /// whatever came apart, so it costs one energy evaluation per step
+    /// before the sampling has started at all; the protocol this module is
+    /// for is many cheap cycles, and the cost of the run is dominated by
+    /// what happens after this stage. Raise it for an as-built structure
+    /// that carries more strain than a burst can drain.
+    int equilibrationSteps = 10;
+    /// Thermostat coupling during the equilibration, in inverse
+    /// femtoseconds — stronger than the per-cycle value because this stage
+    /// has tens of eV of strain to drain as it is released, and a thermostat
+    /// with a 50 fs time constant lets that become a thermal shock first.
+    double equilibrationFrictionPerFs = 0.1;
 
     /// Constant pressure instead of constant volume. Periodic sheets only —
     /// a flake has no cell to relax, and asking for NPT on one is meaningless
@@ -127,18 +204,29 @@ struct GrapheneOxideMdmcConfig {
     /// drawn opposite-face split — so a swap can never separate a pair
     /// onto two independently sited carbons.
     ///
-    /// This is inherited state about the INPUT, not a sampling choice: the
-    /// caller (MainWindow, from the builder's own config) sets it, and the
-    /// wizard does not expose it as a toggle a user could mismatch against
-    /// the structure actually being refined. Off leaves every hydroxyl
-    /// moved individually, exactly as before this option existed.
-    bool hydroxylAntiposition = false;
+    /// ON by default, and exposed as a real checkbox on the wizard's MDMC
+    /// settings page. It used to be inherited state, read off the input
+    /// Graphene Oxide Build's own "go_pair_id" scalar field and never
+    /// offered as a control, on the argument that a toggle could disagree
+    /// with the geometry actually being refined. That hazard is real but it
+    /// is not fatal, because pairing is recovered FROM GEOMETRY: on a build
+    /// that has no bonded, opposite-face hydroxyl pairs the bootstrap finds
+    /// none and every hydroxyl stays an ordinary single, so the flag set on
+    /// an unpaired build is a no-op rather than a corruption. The wizard
+    /// therefore keeps showing what the input build actually contains, in
+    /// prose, beside the checkbox. Off leaves every hydroxyl moved
+    /// individually, exactly as before this option existed.
+    bool hydroxylAntiposition = true;
 
     /// Deterministic seed for the move sequence and the thermostat.
     std::uint32_t seed = 0;
 
-    /// Write an accepted configuration to the trajectory every this many
-    /// ACCEPTED moves. Zero writes none.
+    /// NO LONGER READ by this generator, and no longer emitted into the
+    /// script. It throttled `mdmc_trajectory.extxyz`, which no longer
+    /// exists: `trajectory` above now receives EVERY accepted
+    /// configuration, because an acceptance ordinal that skips is not an
+    /// ordinal. Kept as a field so the wizard that sets it still compiles;
+    /// its control has no effect until that wizard is revisited.
     int snapshotInterval = 1;
 
     // -- Live viewport -----------------------------------------------------
@@ -152,7 +240,12 @@ struct GrapheneOxideMdmcConfig {
     /// than a viewport can draw them - at which point the pipe backs up and the
     /// application spends its time watching a calculation instead of running
     /// one.
-    int viewportEveryCycles = 5;
+    ///
+    /// This is the ONE knob the live view has. Every cycle by default,
+    /// because the protocol this module is for is many short cycles and a
+    /// view that skips four of every five of them is not showing the run;
+    /// zero is the headless setting a cluster wants.
+    int viewportEveryCycles = 1;
 
     /// Also stream the geometry the DYNAMICS produced, before the move is
     /// judged.
@@ -161,11 +254,18 @@ struct GrapheneOxideMdmcConfig {
     /// questions. The relaxed geometry after the MD burst shows the atoms
     /// MOVING - whether the structure is holding together. The accepted
     /// configuration after the Metropolis test shows the groups HOPPING, which
-    /// is the discrete process the run exists to sample. The second is always
-    /// streamed (subject to the throttle); the first is opt-in because it is
-    /// much the more expensive, and because a rejected move's geometry is not
-    /// a state of the ensemble at all.
-    bool streamMdFrames = false;
+    /// is the discrete process the run exists to sample.
+    ///
+    /// BOTH are now streamed unconditionally, subject to the one throttle
+    /// above: the dynamics between MC steps is always-on behavior, and
+    /// `viewportEveryCycles` is its configurable interval. The wizard no
+    /// longer offers a separate on/off for it - a run set to show the
+    /// groups hopping and not the atoms moving cannot show the structure
+    /// coming apart, which is the failure this module actually has. The
+    /// field is kept, and still emitted, so a caller that constructs the
+    /// config directly can turn the extra frames off; nothing in the
+    /// application does.
+    bool streamMdFrames = true;
 
     /// NOT read by this generator, and not emitted into the script — MDMC's
     /// classification of which carbon belongs to which functional group is
@@ -177,7 +277,7 @@ struct GrapheneOxideMdmcConfig {
     /// MainWindow read `wizard.castPerFrame()` (which forwards to this
     /// field) match the shape of `wizard.streamMdFrames()`-style access
     /// beat inventing a second, parallel place for one bool to live. See
-    /// MainWindow::openGrapheneOxideMdmc() and
+    /// MainWindow::openGoMdmc() and
     /// MainWindow::redefineFunctionalGroupCastForFrame().
     bool castPerFrame = true;
 };

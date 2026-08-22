@@ -88,9 +88,61 @@ met by the nearest closed shell.
 
 ## Graphene oxide
 
-{menuselection}`Modules --> 2D Materials --> Graphene Oxide` builds a functionalized
-carbon substrate — an infinite periodic sheet or a finite flake — in a two-stage wizard.
-It runs natively in C++.
+The graphene oxide functionality is a family of four modules, each doing one job and
+consuming the last one's output rather than one combined flow:
+
+- **Graphene Oxide Builder** generates a Graphene Oxide Build.
+- **GO-MDMC** takes a Graphene Oxide Build in and produces a trajectory.
+- **GO Functional Group Analysis** and **GO Pair Correlation** each take either a
+  Graphene Oxide Build or a GO-MDMC trajectory — whichever is open — and are read-only:
+  neither one changes the structure it is given.
+
+**Graphene Oxide Builder** generates a decorated structure. **GO-MDMC** anneals *where*
+an existing decoration's groups sit, at fixed composition — several independent runs
+(different temperature, seed, cycle count) from the *same* build, each producing its own
+trajectory without disturbing the build itself. **GO Functional Group Analysis** and
+**GO Pair Correlation** are read-only analyses of a build or a trajectory's classification
+and geometry; see their own sections below. All four are grouped under
+{menuselection}`Modules --> Graphene Oxide`.
+
+One classification implementation serves every module:
+`core::GrapheneOxideBuilder::findFunctionalGroups()` /
+`functionalGroupLabels()`, the same bonding-based classifier the builder itself uses to
+decide where a group may go. GO-MDMC, the analysis modules, and the viewport's
+functional-group Cast all read the *same* answer — nothing re-derives its own notion of
+"which carbon is which".
+
+### The Graphene Oxide Build contract
+
+Every module below reads a structure through this contract rather than its own bespoke
+state. `core::GrapheneOxideBuilder::build()` writes four per-atom scalar fields onto the
+structure it returns — the same `Structure::setScalarField()` mechanism already used for
+things like grain IDs, index-aligned with the atoms and round-tripping through `.calproj`
+and extxyz with no serializer changes required:
+
+| Field | Meaning |
+|---|---|
+| `edge` | 1 on a framework carbon classified as an edge carbon, 0 elsewhere (pre-existing). |
+| `go_group` | The functional-group kind (epoxide/hydroxyl/carboxyl/carbonyl, encoded the same way `functionalGroupLabels()` returns it) for every atom of a placed group, its host carbon(s) included; −1 for pristine carbon, terminating hydrogens and anything else. |
+| `go_group_id` | A non-negative integer unique per placed group *instance*, shared by every atom of that instance's cluster — "every atom of group #7" is a filter over this field. −1 wherever `go_group` is −1. |
+| `go_pair_id` | Shared by the two hydroxyl instances placed together under {guilabel}`Hydroxyls antiposition` — the antiposition pairing registry. −1 everywhere else. |
+
+A structure that predates this contract, or graphene oxide imported from anywhere else,
+has none of these fields. `core::GrapheneOxideBuilder::hasClassification()` is the
+pre-flight check every consuming module runs; when it fails, `classifyFromBonding()` is
+the *one* fallback — it recomputes all four fields from bonding alone
+(`findFunctionalGroups()`, plus a geometric re-derivation of antiposition pairs: two
+hydroxyl clusters whose host carbons are bonded and whose oxygens sit on opposite faces).
+Both a pre-split project and a foreign import go through this exact same code, so "what
+counts as a group" never has two definitions.
+
+### Graphene Oxide Builder — generation
+
+{menuselection}`Modules --> Graphene Oxide --> Graphene Oxide Builder…` builds a
+functionalized carbon substrate — an infinite periodic sheet or a finite flake — in a
+two-stage wizard. It runs natively in C++, and it is generation only: nothing here
+launches a calculation. The refinement that used to be an optional third stage of this
+dialog is now the separate GO-MDMC module below.
 
 Graphene oxide has no single structure — it is a non-stoichiometric, disordered
 material, and the accepted picture (Lerf–Klinowski) is a basal plane carrying epoxides
@@ -297,14 +349,36 @@ edge oxidation has its own density and carboxyl:carbonyl controls. The seed repr
 the exact decoration.
 ```
 
-### Stage 3 (optional) — MDMC refinement
+## GO-MDMC — hybrid MD/MC refinement
 
-Stage 2 places groups at random, subject to the chemical constraints above;
-it says nothing about whether that particular *arrangement* is favorable.
-**MDMC** ("Molecular Dynamics / Monte Carlo") is the optional refinement
-step reached from the builder once a structure exists: a hybrid annealing
-loop that relocates functional groups — never adds, removes, or changes
-which kinds are present — to sample lower-energy arrangements.
+Stage 2 above places groups at random, subject to the chemical constraints listed there;
+it says nothing about whether that particular *arrangement* is favorable. **GO-MDMC**
+({menuselection}`Modules --> Graphene Oxide --> GO-MDMC…`) is **MDMC** ("Molecular
+Dynamics / Monte Carlo"), a hybrid annealing loop that relocates functional groups —
+never adds, removes, or changes which kinds are present — to sample lower-energy
+arrangements.
+
+### Selecting an input build
+
+GO-MDMC takes a Graphene Oxide Build as **input**, not a structure it produces itself.
+Opening it shows every open document whose structure satisfies
+`GrapheneOxideBuilder::hasClassification()` — falling back to `classifyFromBonding()`
+for a build made before this module existed, or for graphene oxide imported from
+elsewhere, when at least one functional group is findable on it — and lets you pick
+which one to refine. A document with neither a persisted classification nor any
+findable functional group (a structure that plainly isn't graphene oxide) is refused,
+with a message pointing at the builder.
+
+The selected build is then **copied** into a fresh document before the wizard opens; the
+run stages *that* document's structure as `structure.extxyz` (the same mechanism every
+job in the application uses), so the source build is never read from again once the run
+starts, let alone written to. This is what makes several independent runs from the same
+build safe: pick the same build again with a different temperature, seed or cycle count,
+and each run gets its own copy and its own trajectory. Whether feeding a build to
+GO-MDMC through the Orchestration node canvas — several runs fanned out from one source
+node — is worth wiring as a first-class node pair is tracked in `FUTURE.md` rather than
+half-built here; the underlying fan-out/copy-based-staging pattern the canvas already
+uses for every other node would support it directly.
 
 One cycle: pick a random existing group, release its host carbon(s) back to
 the free-site pool, draw a new site **of the same kind**, rebuild the group
@@ -313,24 +387,156 @@ reject the move by the Metropolis criterion at the configured temperature.
 Because a move only ever relocates a group to another site of its own kind,
 the sheet's total inventory — how many epoxides, hydroxyls, carboxyls,
 carbonyls — is an invariant of the whole run; only *where* they sit changes.
+The MD burst is the **only** relaxation mechanism in the run: there is
+deliberately no geometry optimizer anywhere in the protocol.
 
-If the structure was built with {guilabel}`Hydroxyls antiposition` on, each
+### Initial equilibration
+
+The builder places every group analytically on a *flat* sheet — each host
+carbon is still planar sp² where the chemistry wants it pyramidal — so an
+as-built structure carries forces of ~10 eV/Å on its carbons and tens of eV
+of strain in total. Released in a single short burst, that is a thermal shock
+of thousands of kelvin for a few femtoseconds, and whichever group the builder
+placed closest to a neighbour comes apart; the first real MACE-MP run of this
+module died exactly so, before its first cycle.
+
+The run therefore opens with an **equilibration** stage of its own
+({guilabel}`Equilibration steps`, 400 by default, under
+{guilabel}`Equilibration friction`, 0.1 fs⁻¹ — five times the per-cycle
+coupling, because this stage has the strain to drain *as* it is released).
+The chemistry is checked every 10 steps. A group that still opens is
+**relocated** to a freshly drawn free site of its own kind — the sampler's
+own move, inventory preserved — and the dynamics resumes from the last intact
+state; each relocation is reported in the log and counted in
+`mdmc_summary.json` (`equilibration_relocations`). The run refuses only when
+relocating stops helping (a temperature that breaks the chemistry at any
+site) or when the carbon framework itself comes apart. Zero steps skips the
+stage and starts the walk from the as-built geometry's own energy.
+
+### Proposals, clearance and reversion
+
+Every proposal passes a **steric clearance** before any energy is evaluated:
+heavy atoms of different groups no closer than 2.0 Å, nothing closer than
+1.6 Å to a hydrogen (a hydrogen bond still passes). This is deliberately
+wider than the builder's own 1.55 Å placement rule — the builder defines the
+motif space of a composition and rightly admits an epoxide with a same-face
+hydroxyl on an adjacent carbon (1.89 Å oxygen to oxygen on the flat sheet, a
+real Lerf–Klinowski motif); the clearance prices a *burst*, and under
+MACE-MP-0 (either size) the dynamics does not relax that contact apart, it
+opens the epoxide, so proposing it only buys a full burst's worth of
+rejection. The two numbers are plain constants at the top of the generated
+script's clearance section, to be edited if your calculator keeps the motif.
+A refused proposal is counted as `rejected_clash`, separately from moves the
+burst actually broke (`rejected_topology`) and from Metropolis rejections.
+
+Whether a group's chemistry survived a burst is judged at **1.3 ×** the
+covalent radii, not the 1.2 × that recognizes the groups on the cold input.
+The two are different questions: measured on an intact sheet under
+MACE-MP-0, the longest intact O–H at 300 K came within 0.5 % of the 1.2 ×
+cutoff, and at 400 K several intact hydroxyls crossed it transiently while
+only a real proton transfer crossed 1.3 ×. A bond that has really gone is at
+2–2.5 Å within femtoseconds and clears either number; the looser one only
+stops "broken" from meaning "warm".
+
+A rejected move is reverted *exactly*: positions, momenta, the group
+inventory, the site pools — and, under NPT, the **cell**. The barostat is
+the per-axis Berendsen variant masked to the in-plane vectors (the mask is
+derived from the sheet's own normal, whatever the input file says about
+periodicity along the vacuum), so the vacuum gap and every out-of-plane bond
+are never scaled with the lattice; and its temperature coupling follows the
+friction knob rather than ASE's 500 fs production default, which would leave
+a burst of tens of femtoseconds effectively unthermostatted.
+
+```{admonition} What the Metropolis test compares
+:class: note
+
+The energies compared are the instantaneous potential energies at the end of
+two thermal bursts, not minimized energies, so each carries the thermal
+fluctuation of the whole sheet (of order *N·k*{sub}`B`*T*/2, a few eV for a
+100-atom sheet at 300 K). This is inherent to the MD-as-relaxation protocol —
+it is what makes the run an annealing walk rather than a basin-hopping
+search — and it is why a low acceptance ratio at 300 K is normal rather than
+a sign something is wrong.
+
+The other half of the story is the burst length. A freshly placed group
+carries placement strain, and a burst too short to dissipate it hands
+Metropolis a trial energy biased upward by that amount, so nothing is
+accepted however good the new site is. The burst's length is measured, not
+guessed: at 300 K with a
+0.5 fs step, ΔE is still +1.8 eV after 10–20 steps, +0.4 eV at 40, inside
+the ±0.4 eV thermal noise around 80–120, and *negative* (−0.8 to −1.8 eV) by
+200 — only then does the burst carry the sheet's own slow relaxation past the
+placement strain, so the energy keeps dropping and Metropolis keeps
+accepting. The default nevertheless stays in the protocol's own regime —
+many cheap cycles with a short burst each (20 steps); the figures above are
+what to expect when lengthening it. The equilibration stage is logged
+(energy and temperature every 100 steps) and drives the progress bar; the
+equilibrated structure is then streamed once, as the run's first frame.
+`metrics.json`
+records the ΔE each Metropolis test actually saw as `trial_delta`, one value
+per judged cycle: if it sits eV above zero cycle after cycle, the burst is
+too short for the move to be judged fairly — lengthen it before touching the
+temperature.
+```
+
+```{admonition} Colours on a thermal frame
+:class: note
+
+{guilabel}`Redefine Cast on every accepted move` recolours each frame from
+its own bonding. An MDMC frame is a thermal snapshot, and the application's
+cold 1.15 × bond tolerance reads a hot, intact bond as broken — on one 335 K
+frame two of six epoxides showed as carbonyls. Those frames are therefore
+classified at the same 1.3 × tolerance the run judges its own chemistry by
+(`GrapheneOxideBuilder::kThermalBondTolerance`); the analysis modules and the
+builder keep the cold default for built or relaxed geometries.
+```
+
+If the input build carries antiposition pairs (its `go_pair_id` field, read
+straight off the build rather than re-typed as a checkbox here), each
 bonded, opposite-face hydroxyl pair is one of these "groups" in its own
-right: MDMC recovers every such pair from the structure's geometry once, at
+right: MDMC recovers every such pair from the input's own geometry once, at
 the start, and from then on moves, checks and reports it as a single
 compound unit — drawing a new *bonded pair* of free carbons (the same pool
 an epoxide draws from) and rebuilding both −OH groups with a fresh,
 independent opposite-face split. A swap can therefore never separate the two
 halves of a pair onto unrelated carbons; a hydroxyl with no eligible partner
 (possible when a requested count was odd) moves on its own, exactly as it
-would with the option off.
+would with an unpaired build.
 
-Reached from a separate wizard (not another page of the builder dialog):
 MDMC is where a **calculator** is chosen, and `SimulationWizardBase`'s
 engine picker, environment resolution and script review are reused rather
 than duplicated. Settings include the annealing temperature, the number of
-MC cycles, the MD burst length between moves, and (under **Output**) how
-much of the run to stream to the viewport live.
+MC cycles, the MD burst length between moves, the equilibration stage above,
+and (under **Output**) how much of the run to stream to the viewport live.
+The cost estimate on the page counts the equilibration steps too.
+
+### Live partial results
+
+While a run is in progress, the **Results** dock's {guilabel}`Energy` tab plots total
+energy against cycle exactly like any other monitored job, on the same polling channel
+(`metrics.json`, written by `_calango_metric()`) — reopening the panel reconnects to a
+run already under way the same way it does for any other job type.
+
+Two more tabs are GO-MDMC specific:
+
+{guilabel}`Acceptance` plots the **windowed** (last 50 judged moves) Metropolis
+acceptance rate, broken out **by move type** — each functional-group swap kind, plus
+antiposition pair moves counted separately from ordinary hydroxyl moves — because a
+per-move-class rate is the actual diagnostic for whether a run is mixing: a kind stuck
+near 0% means that move is never finding room, which a single overall acceptance number
+hides. Only kinds actually attempted get a line, so a build with no carboxyls does not
+clutter the legend with a permanent flat zero.
+
+{guilabel}`MDMC Summary` is the same analysis as a table instead of a trend: one row per
+move kind (again, only kinds attempted), each showing attempts, accepted count and the
+**cumulative** acceptance ratio for the whole run so far — the plot favors the windowed
+rate because it shows drift, the table favors the cumulative rate because it is the
+number that actually settles.
+
+Both tabs refresh from the very same `metrics.json` the Energy tab reads, so a completed
+run's acceptance analysis stays inspectable afterward exactly like the energy trace does,
+and {guilabel}`Export Data…` / {guilabel}`Export CSV…` write it out the same way every
+other Results tab's export button does.
 
 #### Cast follows the chemistry, frame by frame
 
@@ -365,3 +571,129 @@ same `functionalGroupLabels()` call, and reports whether the intact rings
 still percolate the periodic cell. Run against a whole MDMC trajectory, its
 intact-ring-fraction and largest-domain plots are the structural side of the
 oxidation-vs-conductivity trade-off the run traces out.
+
+## GO Functional Group Analysis — census and geometry
+
+{menuselection}`Modules --> Graphene Oxide --> GO Functional Group Analysis…`
+is a read-only analysis of a Graphene Oxide Build or a GO-MDMC trajectory:
+which groups are present and how much they distort the sheet around them.
+Current structure, or every frame of a loaded trajectory — the same scope
+radios {doc}`Analysis --> Benzene-Ring / sp2 Percolation Analysis…
+</analysis/percolation>` uses.
+
+Classification is, once again, `core::GrapheneOxideBuilder::
+findFunctionalGroups()` — the one implementation every GO module in this
+family reads from bonding, never a second one. Opening the dialog on a
+structure with no persisted classification (a project saved before it
+existed, or graphene oxide imported from anywhere else) works exactly the
+same way: nothing here needs the persisted fields at all, since the
+geometric measurements below have to read the frame's actual atoms
+regardless.
+
+**Census** — a table of instances and *surface carbons* per group (2 for an
+epoxide, 1 for the others), each group's surface concentration (instances
+over framework carbons), the pristine sp2 carbon's own share, how many basal
+(epoxide/hydroxyl) oxygens sit above vs. below the mean sheet plane, and how
+many antiposition pairs are present.
+
+**Geometry** — four distributions, each a histogram with mean and σ marked
+on it, resolved by environment:
+
+- **C-C bond length**, pristine (both endpoints unfunctionalized) vs.
+  functionalized-adjacent (either endpoint hosts a group) — the sp3
+  rehybridization signal.
+- **C-C-C angle**, resolved by whether the CENTER carbon is functionalized —
+  the sheet distortion right at a functionalized site vs. everywhere else.
+- **C-O-C angle**, epoxide only — the strained three-membered ring angle.
+- **C-O-H angle**, hydroxyl and carboxyl — both carry an explicit hydrogen on
+  their oxygen. Carbonyl (=O, no hydrogen at all) is reported as
+  **skipped**, by name, rather than silently missing from this distribution.
+
+For a trajectory, each distribution also gets an evolution plot: the MEAN of
+that environment's samples plotted against frame, so an MDMC run's effect on
+the local geometry (not just which groups are present) is visible over the
+course of the annealing. A frame with zero samples of an environment is a
+gap in that line, never a plotted zero.
+
+**Highlight** recolors the current structure by the chosen group kind (or
+"Pristine framework", or "All group kinds" — the same fixed key
+{ref}`per-frame-cast` uses for GO-MDMC) via the Cast machinery, always the
+current structure even when the scope above is the whole trajectory — the
+same convention RingPercolationDialog's own "Apply Coloring" follows.
+Results table, distributions and evolution plots all export: **Export
+CSV…** writes the full census and per-frame distribution means; **Export
+Plots…** saves whichever geometry tab is currently showing as a PNG.
+
+## GO Pair Correlation — is the decoration ordered or clustered?
+
+{menuselection}`Modules --> Graphene Oxide --> GO Pair Correlation…` asks a
+different question from the census above: not *how much* of each group is
+present, but *where* — do epoxides sit next to other epoxides, or does the
+decoration avoid putting two of the same kind near each other? This is the
+Warren-Cowley short-range-order question, borrowed directly from alloy
+theory.
+
+### The mapping
+
+Every framework carbon has a "species": its functionalization state —
+pristine, epoxide-C, hydroxyl-C, carboxyl-C or carbonyl-C — standing in for
+the chemical element a real alloy's Warren-Cowley parameter would use. Every
+site is still physically carbon; only the LABEL changes. This module reuses
+`core::computeWarrenCowley()` — the {doc}`Warren-Cowley Analysis
+</analysis/order>` module's own, already-tested SRO math — completely
+unchanged: its only new work is building a carbon-only structure with an
+internal, never-displayed fake atomic number standing in for each
+functionalization state (the same "sublattice only, spectators dropped"
+trick the SQS generator already uses to feed a non-trivial structure subset
+through the identical function), so the shell math, the periodic-image
+handling and the α formula are the alloy module's code, not a second
+implementation of it.
+
+$$\alpha_{ij}(n) = 1 - \frac{P_{j|i}(n)}{c_j}$$
+
+for coordination shell $n$, the probability $P_{j|i}(n)$ that a neighbor of
+an $i$-type site in that shell is of type $j$, and $c_j$ the overall
+concentration of $j$. Reading $\alpha_{ij}$ for two DIFFERENT species $i
+\neq j$ (the matrix's off-diagonal, and the number the shell heatmap and the
+evolution plot both show): $\alpha < 0$ is attraction/ordering between the
+two groups (unlike neighbors preferred), $\alpha > 0$ is
+clustering/repulsion-of-unlike (like neighbors preferred), $\alpha = 0$ is
+the random-decoration expectation. (The diagonal, $\alpha_{ii}$, carries the
+opposite sign convention by construction — a formula property of the
+multicomponent parameter, not a second rule to memorize.)
+
+### Shells
+
+{guilabel}`Shells` sets how many coordination shells to compute (default 3).
+The radius cutoffs are not a hardcoded lattice-sum formula — they are
+discovered empirically from a real pristine sheet's own bonding
+(`core::honeycombShellCutoffs()`), the same "measure it, do not assume it"
+discipline the shell-enumeration test applies: shell 1 has 3 neighbors
+(nearest C-C bond), shell 2 has 6 (next-nearest, same sublattice), shell 3
+has 3 (opposite sublattice, twice the bond length) — verified against a
+built sheet's actual coordination, not memorized.
+
+### Reading the results
+
+The **matrix** view shows one shell's full $\alpha_{ij}$ table, one row per
+central species and one column per neighbor species, shaded blue for
+$\alpha < 0$ and red for $\alpha > 0$ (white at zero) — pick the shell from
+the combo above it. Each cell also carries a **counting-statistics error
+bar**: $\sigma_p = \sqrt{p(1-p)/N}$ on the underlying neighbor-pair
+probability, propagated to $\sigma_\alpha = \sigma_p / c_j$ — the honest
+uncertainty a single structure's finite neighbor count carries, shown
+alongside the number rather than left implicit.
+
+For a trajectory, the **evolution** plot tracks one chosen $\alpha_{ij}$ at
+shell 1 against frame — the scientific question an MDMC run's Monte Carlo
+sampling actually answers: is it driving the decoration toward ordering or
+toward clustering? The statistics line above the plot reports the
+trajectory-averaged value with an autocorrelation-corrected standard error
+(`core::analyseSeries()`, the same convention
+{doc}`Thermodynamic Integration </simulations/thermodynamic_integration>`
+already established for MD/MC series, since naive $\sigma/\sqrt{N}$ across
+correlated frames under-reports the error) alongside the plain
+block-averaged figure as an independent cross-check.
+
+**Export CSV…** writes every shell's full matrix, every frame, with its
+counting error; **Export Plot…** saves the evolution plot.

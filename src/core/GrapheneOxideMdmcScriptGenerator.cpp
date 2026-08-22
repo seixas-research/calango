@@ -23,29 +23,41 @@ GrapheneOxideMdmcScriptGenerator::generate(const GrapheneOxideMdmcConfig& c)
            "import json\n"
            "import math\n"
            "import random\n"
+           "import time\n"
+           "from collections import deque\n"
            "\n"
            "import numpy as np\n"
            "from ase import Atoms\n"
            "from ase.io import read, write\n"
            "from ase.neighborlist import NeighborList, natural_cutoffs\n"
            "from ase import units\n"
+           "from ase.geometry import get_distances\n"
            "from ase.md.langevin import Langevin\n"
-           "from ase.md.velocitydistribution import MaxwellBoltzmannDistribution\n"
+           "from ase.md.velocitydistribution import (\n"
+           "    MaxwellBoltzmannDistribution, Stationary)\n"
            "\n"
            "# Imported unconditionally even for a constant-volume run: the\n"
            "# integrator choice below reads the name whichever branch it takes,\n"
            "# and an import that exists only in one configuration is a\n"
-           "# NameError waiting for the first person to flip the flag.\n"
+           "# NameError waiting for the first person to flip the flag. The\n"
+           "# INHOMOGENEOUS variant, deliberately: it is the one that takes a\n"
+           "# per-axis mask, and a sheet in vacuum must never have its vacuum\n"
+           "# axis scaled - see barostat_mask below.\n"
            "try:\n"
-           "    from ase.md.nptberendsen import NPTBerendsen\n"
+           "    from ase.md.nptberendsen import Inhomogeneous_NPTBerendsen\n"
            "except ImportError:  # constant pressure unavailable in this ASE\n"
-           "    NPTBerendsen = None\n";
+           "    Inhomogeneous_NPTBerendsen = None\n";
     out << "\n" << AseScriptGenerator::jsonLoggerPreamble() << "\n";
 
     // ---- Baked-in parameters -------------------------------------------
     out << "input_path = r\"" << c.inputStructure << "\"\n"
         << "output_path = r\"" << c.outputStructure << "\"\n"
-        << "trajectory_path = r\"" << c.trajectory << "\"\n"
+        // The two structure logs. `all_structures_path` is a fixed name -
+        // nothing outside this script chooses it. The accepted-structures
+        // file is the one GrapheneOxideMdmcConfig::trajectory names, which
+        // now has exactly one meaning: the file of accepted structures.
+        << "all_structures_path = r\"mdmc_all_structures.extxyz\"\n"
+        << "accepted_structures_path = r\"" << c.trajectory << "\"\n"
         << "temperature_K = " << c.temperatureK << "\n"
         << "mc_cycles = " << c.cycles << "\n"
         << "md_steps = " << c.mdStepsPerCycle << "\n"
@@ -54,15 +66,32 @@ GrapheneOxideMdmcScriptGenerator::generate(const GrapheneOxideMdmcConfig& c)
         << "both_faces = " << (c.bothFaces ? "True" : "False") << "\n"
         << "hydroxyl_antiposition = "
         << (c.hydroxylAntiposition ? "True" : "False") << "\n"
-        << "snapshot_interval = " << c.snapshotInterval << "\n"
         << "seed = " << c.seed << "\n"
         << "constant_pressure = " << (c.constantPressure ? "True" : "False")
         << "\n"
         << "pressure_GPa = " << c.pressureGpa << "\n"
+        << "equilibration_steps = " << c.equilibrationSteps << "\n"
+        << "equilibration_friction_per_fs = " << c.equilibrationFrictionPerFs
+        << "\n"
         << "viewport_every = " << c.viewportEveryCycles << "\n"
         << "stream_md_frames = " << (c.streamMdFrames ? "True" : "False")
         << "\n"
         << "\n"
+           // Elapsed wall time for the live Results panel. A MONOTONIC clock,
+           // never a subtraction of two wall-clock readings: the system clock
+           // can be stepped mid-run (ntp, a DST change) and the difference of
+           // two time.time() samples then comes out NEGATIVE, which is
+           // exactly the kind of counter this module may not produce.
+           "RUN_STARTED_AT = time.monotonic()\n"
+           "\n"
+           "\n"
+           "def _elapsed_seconds():\n"
+           "    \"\"\"Seconds since this run started. Monotonic, so it never "
+           "goes\n"
+           "    backwards and can never be negative.\"\"\"\n"
+           "    return max(0.0, time.monotonic() - RUN_STARTED_AT)\n"
+           "\n"
+           "\n"
            "rng = random.Random(seed)\n"
            "np.random.seed(seed)\n"
            "\n";
@@ -103,8 +132,22 @@ GrapheneOxideMdmcScriptGenerator::generate(const GrapheneOxideMdmcConfig& c)
 
 BOND_SCALE = 1.2  # natural_cutoffs are covalent radii; this is the usual slack
 
+# Two tolerances for two different questions. BOND_SCALE recognizes the
+# groups on the structure as LOADED - a cold, analytically built geometry,
+# where 1.2x covalent radii is the usual slack. SURVIVAL_SCALE decides
+# whether a group's own bonds are still there on a THERMAL snapshot, which
+# is what every check after a burst of dynamics looks at. The two are not
+# the same number: on a sheet under MACE-MP-0 with all bonds intact, the
+# longest O-H at 300 K came within 0.5 % of the 1.2x cutoff (1.158 A
+# against 1.164), and at 400 K three intact O-H bonds crossed it for 121
+# bond-steps out of 300 while only one crossed 1.3x - a hot, intact
+# hydroxyl was being called broken. A bond that has really gone is at
+# 2-2.5 A within a few femtoseconds and clears either number; the looser
+# one only stops the verdict "broken" from meaning "warm".
+SURVIVAL_SCALE = 1.3
 
-def bond_graph(system):
+
+def bond_graph(system, scale=BOND_SCALE):
     """Bonds as an adjacency list.
 
     skin=0.0 is not a detail. NeighborList defaults to skin=0.3 and adds it to
@@ -116,11 +159,14 @@ def bond_graph(system):
     The buffer exists for repeated MD queries on a list that is not rebuilt;
     this rebuilds every time, and wants the honest cutoff.
     """
-    cutoffs = [BOND_SCALE * r for r in natural_cutoffs(system)]
+    cutoffs = [scale * r for r in natural_cutoffs(system)]
     neighbor_list = NeighborList(cutoffs, skin=0.0, self_interaction=False,
                                  bothways=True)
     neighbor_list.update(system)
-    return [set(neighbor_list.get_neighbors(i)[0]) for i in range(len(system))]
+    # Plain ints, not numpy scalars: every host index downstream is logged,
+    # compared and serialized, and "np.int64(25)" in a log line is noise.
+    return [set(int(j) for j in neighbor_list.get_neighbors(i)[0])
+            for i in range(len(system))]
 
 
 def connected_components(graph):
@@ -363,8 +409,16 @@ def build_group(kind, hosts, positions, graph, framework_set, normal,
     """Atoms (symbols, positions) for `kind` attached at `hosts`."""
     if kind == "epoxide":
         a, b = hosts
-        mid = 0.5 * (positions[a] + positions[b])
-        half = 0.5 * np.linalg.norm(positions[a] - positions[b])
+        # Minimum-image bond vector. A bonded pair that straddles the
+        # periodic boundary has positions a whole cell apart, and the plain
+        # midpoint of those is the middle of the cell, not of the bond. The
+        # site graph hands out such pairs like any other (its bonds come
+        # from a periodic neighbour list), so without this every epoxide
+        # move onto a boundary bond put the oxygen over empty lattice and
+        # was rejected - sites the sampler could never actually reach.
+        bond = atoms.get_distance(a, b, mic=True, vector=True)
+        mid = positions[a] + 0.5 * bond
+        half = 0.5 * np.linalg.norm(bond)
         height = math.sqrt(max(CO_EPOXIDE ** 2 - half ** 2, 0.25))
         return ["O"], [mid + face * height * normal]
 
@@ -425,6 +479,47 @@ def build_group(kind, hosts, positions, graph, framework_set, normal,
         return ["C", "O", "O", "H"], [carbon, double_o, single_o, acidic_h]
 
     raise ValueError(f"unknown group kind: {kind}")
+
+
+# =====================================================================
+# Steric clearance of a proposal
+# =====================================================================
+# Two heavy atoms of DIFFERENT groups never closer than CLEARANCE_HEAVY,
+# and nothing closer to a hydrogen than CLEARANCE_HYDROGEN (which still
+# admits a hydrogen bond). Checked against the other groups' atoms only -
+# the framework carbons around a host sit where the lattice puts them, and
+# a group's geometry to its own hosts is the recipe's business, not a
+# clash. A proposal that fails is refused before any energy is evaluated.
+#
+# Wider, on purpose, than GrapheneOxideBuilder's own 1.55 A placement rule:
+# the builder's job is the motif space of the composition, and it admits an
+# epoxide next to a same-face hydroxyl (1.89 A O...O on the flat sheet) as
+# the real motif it is. This filter prices a BURST, not a placement - and
+# measured under MACE-MP-0 (small and medium alike) that contact is not a
+# configuration the dynamics relaxes, it is one the dynamics resolves by
+# opening the epoxide, so proposing it costs a full burst to be rejected
+# anyway. Edit the two numbers if your calculator keeps it.
+# Minimum-image throughout, for the same reason build_group is.
+
+CLEARANCE_HEAVY = 2.0
+CLEARANCE_HYDROGEN = 1.6
+CH_EDGE = 1.09
+
+
+def clearance_ok(system, members, new_positions, hosts, ignore=()):
+    symbols = system.get_chemical_symbols()
+    excluded = set(members) | set(hosts) | set(ignore) | framework_set
+    others = [i for i in range(len(system)) if i not in excluded]
+    if not others:
+        return True
+    _, distances = get_distances(np.array(new_positions),
+                                 system.get_positions()[others],
+                                 cell=system.cell, pbc=system.pbc)
+    new_is_h = np.array([symbols[i] == "H" for i in members])
+    other_is_h = np.array([symbols[i] == "H" for i in others])
+    limit = np.where(new_is_h[:, None] | other_is_h[None, :],
+                     CLEARANCE_HYDROGEN, CLEARANCE_HEAVY)
+    return bool(np.all(distances >= limit))
 
 
 def pair_hydroxyls(raw_groups, positions, framework, graph):
@@ -546,9 +641,8 @@ def topology_intact(kind, hosts, member_indices, system, graph):
     return False
 )PY";
 
-    // ---- The Monte Carlo loop -------------------------------------------
+    // ---- Equilibration and the Monte Carlo loop --------------------------
     out << R"PY(
-
 # =====================================================================
 # Assemble the initial state
 # =====================================================================
@@ -596,37 +690,280 @@ _calango_event("info", f"groups: {len(groups)} - " + ", ".join(
 # refuse - see the topology check below.
 reference_components = connected_components(graph0)
 
+# Which cell vectors a barostat may scale: the in-plane ones. Derived from
+# the sheet's own normal rather than from the pbc flags, so it is right
+# whatever the input file says about periodicity along the vacuum - a sheet
+# in vacuum has no meaningful stress along its normal, and scaling that axis
+# (which is what ase's isotropic NPTBerendsen does, atoms included) stretches
+# every out-of-plane bond along with a gap nothing is pushing on.
+_normal0 = sheet_normal(atoms.get_positions(), framework)
+_normal_axis = int(np.argmax(np.abs(_normal0)))
+barostat_mask = tuple(0 if k == _normal_axis else (1 if atoms.pbc[k] else 0)
+                      for k in range(3))
 
-def run_md(system):
+
+def update_host_fields(kind, members, old_hosts, new_hosts):
+    """Keep the per-carbon classification columns the builder wrote
+    ("go_group", "go_group_id", "go_pair_id") in step with a move that is
+    staying. The group's own atoms keep their values - they keep their
+    indices - so only the carbons change: the old hosts drop to -1, the
+    new hosts take the values of the group atom they now carry. Without
+    this the trajectory still says the carbons a group left are its hosts,
+    and every downstream reader that trusts the persisted classification
+    over bonding reads a decoration that no longer exists.
+    """
+    for field in ("go_group", "go_group_id", "go_pair_id"):
+        column = atoms.arrays.get(field)
+        if column is None:
+            continue
+        for host in old_hosts:
+            column[host] = -1
+        for k, host in enumerate(new_hosts):
+            # A hydroxyl pair's second half (O, H = members[2:]) sits on
+            # the second host; every other kind hangs off members[0].
+            source = members[2] if (kind == "hydroxyl_pair" and k == 1) \
+                else members[0]
+            column[host] = column[source]
+
+
+# =====================================================================
+# The exhaustive structure log
+# =====================================================================
+# The two files this run records, and the whole record it keeps besides
+# output_path's single best configuration:
+#
+#   all_structures_path       every structure this run visits: every
+#                             retained equilibration step, every MD step of
+#                             every cycle, and every Monte Carlo trial that
+#                             reached a verdict;
+#   accepted_structures_path  the accepted subset, in order, each frame
+#                             carrying its own 0-based acceptance ordinal.
+#
+# APPENDED to frame by frame rather than written once at the end, for the
+# reason every long run eventually needs: a walk that dies in cycle 900 of
+# 1000 still leaves the 900 cycles it did on disk. The cost is one
+# bond-graph rebuild per frame (the classification below is recomputed FOR
+# the frame, not copied off the input), which is small beside the energy
+# evaluation that frame already paid for.
+
+# The group-type encoding these two files carry. NOT the "Graphene Oxide
+# Build" contract's go_group encoding, and not reconcilable with it: that
+# one spends 0 on "epoxide" and marks a pristine carbon -1, while this one
+# reserves 0 for the pristine carbon and shifts every group up by one. Note
+# the order too - carbonyl before carboxyl, which is not the order the
+# contract's enum uses. The contract is untouched (the run still maintains
+# go_group and go_pair_id wherever they already exist, on the input
+# structure and on mdmc_optimized.extxyz); it is simply not re-exported
+# into these two files, which carry the two columns below and nothing else.
+#
+# collect_groups() never returns "hydroxyl_pair": an antiposition pair is a
+# property of how a MOVE is drawn, not a fifth kind of functional group, so
+# each half is typed here as the ordinary hydroxyl it is.
+GO_GROUP_TYPE_CODE = {"epoxide": 1, "hydroxyl": 2, "carbonyl": 3,
+                      "carboxyl": 4}
+
+
+def classification_columns(system):
+    """The two per-atom columns of a recorded frame, for THIS geometry.
+
+      go_group_type  0 pristine, 1 epoxide, 2 hydroxyl, 3 carbonyl,
+                     4 carboxyl;
+      go_group_id    -1 for an ungrouped atom, otherwise unique per group
+                     INSTANCE and shared by the group's own atoms AND its
+                     host carbons.
+
+    Recomputed rather than copied: the frames below are thermal snapshots
+    taken during the dynamics, while the columns the input file carries
+    describe the structure the BUILDER produced. A group that has just been
+    moved - or that the dynamics has opened - has to be described by the
+    frame it is in.
+
+    Judged at SURVIVAL_SCALE, the thermal tolerance, for exactly the reason
+    chemistry_survived() is: at the cold 1.2x cutoff a hot but perfectly
+    intact O-H reads as broken, and the hydroxyl carrying it would be
+    written out as a carbonyl plus a loose hydrogen.
+    """
+    graph = bond_graph(system, SURVIVAL_SCALE)
+    count = len(system)
+    go_group_type = np.zeros(count, dtype=int)
+    go_group_id = np.full(count, -1, dtype=int)
+    for group_id, (kind, members, hosts) in enumerate(
+            collect_groups(system, graph)):
+        # Host carbons included: an id shared by the group's own atoms and
+        # the carbons it sits on is what makes "every atom of group #7" a
+        # filter rather than a second bond analysis.
+        for index in list(members) + list(hosts):
+            go_group_type[index] = GO_GROUP_TYPE_CODE[kind]
+            go_group_id[index] = group_id
+    return {"go_group_type": go_group_type, "go_group_id": go_group_id}
+
+
+def frame_snapshot(system, phase, mc_cycle, md_step_in_cycle, total_energy,
+                   accepted, acceptance_ordinal=None):
+    """One recorded structure: a detached copy of `system` carrying the
+    classification columns and this frame's provenance.
+
+    A COPY, never the live object: the caller goes on integrating,
+    reverting and relocating, and a frame handed to the writer later would
+    otherwise describe whatever the run did next. dtype=int on every
+    column, so extended XYZ types them `I` and not `R` - these are labels,
+    and a reader that has to round 1.0000 back to an enum value is a reader
+    waiting to get it wrong.
+
+    Every counter here is 0-based and non-negative: cycle 0 is the first
+    Monte Carlo cycle, step 0 the first step of a burst, ordinal 0 the
+    first accepted structure. No -1 appears anywhere except inside the
+    contract columns, where it is the documented "no group" sentinel.
+
+    `accepted` is carried on every frame because the field is part of the
+    record's shape, but it only MEANS anything on a "mc_trial" frame, which
+    is the only kind a Metropolis verdict is ever passed for; an MD or
+    equilibration frame is not a judged state and reports False.
+    """
+    frame = system.copy()
+    # These files carry the two classification columns and NOTHING else the
+    # input happened to be decorated with. A copy inherits every per-atom
+    # array the structure was read with - the builder's own go_group,
+    # go_group_id, go_pair_id and edge among them - and re-exporting those
+    # here would put a second, differently-encoded copy of the same
+    # classification in the same frame, one of them stale. They are dropped
+    # rather than never created because the copy is where they arrive.
+    for name in [key for key in frame.arrays
+                 if key not in ("numbers", "positions", "momenta")]:
+        del frame.arrays[name]
+    # Set on the snapshot BEFORE it reaches the writer: ase serializes the
+    # arrays it finds on the object it is handed.
+    for name, column in classification_columns(system).items():
+        frame.arrays[name] = column
+    frame.info["mc_cycle"] = int(mc_cycle)
+    frame.info["md_step_in_cycle"] = int(md_step_in_cycle)
+    frame.info["phase"] = str(phase)
+    frame.info["total_energy"] = float(total_energy)
+    frame.info["accepted"] = bool(accepted)
+    if acceptance_ordinal is not None:
+        frame.info["acceptance_ordinal"] = int(acceptance_ordinal)
+    return frame
+
+
+# Frames that have actually REACHED DISK, by kind. Counted at the one place
+# a frame is written (append_frames below), which is what makes every number
+# the live Results panel reports equal to what a reader of these two files
+# would count for themselves: an equilibration chunk that is rewound never
+# reaches the writer, so it is never counted either. Every entry is a COUNT
+# - it starts at 0, only ever increases, and can never be negative.
+frames_written = {"equilibration": 0, "md": 0, "mc_trial": 0, "accepted": 0}
+
+
+def append_frames(path, frames):
+    """Append `frames` to an extended-XYZ file through ase's own writer.
+
+    ase's writer with append=True, not a hand-rolled one: an extended-XYZ
+    frame carries its own column header, and a writer of our own would be a
+    second implementation of a format ase already writes correctly.
+    """
+    if not frames:
+        return
+    write(path, frames, format="extxyz", append=True)
+    # AFTER the write, never before: a writer that raised put nothing on
+    # disk, and a counter incremented ahead of it would claim a frame no
+    # reader can find. The accepted-structures file is counted by PATH
+    # rather than by phase, because the frame it holds is the very same
+    # "mc_trial" snapshot that also went into the all-structures file.
+    for frame in frames:
+        key = ("accepted" if path == accepted_structures_path
+               else frame.info["phase"])
+        frames_written[key] += 1
+
+
+def record_structure(path, system, **fields):
+    """Snapshot `system` and append it - the one-frame case of the above."""
+    append_frames(path, [frame_snapshot(system, **fields)])
+
+
+# Truncated once, here, before anything appends. Both files are append
+# targets and a job directory can already hold the output of an earlier run
+# of this same script; without this a re-run silently concatenates onto the
+# previous run's frames, and every count taken off the file afterwards
+# (steps per cycle, accepted structures) is the sum of two runs.
+open(all_structures_path, "w").close()
+open(accepted_structures_path, "w").close()
+
+
+# =====================================================================
+# Dynamics
+# =====================================================================
+
+def thermostat_dynamics(system, friction):
+    """The integrator for one stretch of dynamics in the chosen ensemble.
+
+    `friction` (1/fs) is the thermostat coupling in BOTH ensembles: the
+    Langevin friction under NVT, and the Berendsen temperature-coupling
+    time 1/friction under NPT. ase's own default for that time, 500 fs, is
+    a production-MD value: against a burst of a few tens of femtoseconds
+    it leaves the dynamics effectively unthermostatted, which is how an NPT
+    run here used to be NVE with a slowly drifting cell.
+    """
+    if constant_pressure:
+        if Inhomogeneous_NPTBerendsen is None:
+            raise RuntimeError(
+                "Constant-pressure MDMC needs ase.md.nptberendsen, which this "
+                "ASE does not provide.")
+        return Inhomogeneous_NPTBerendsen(
+            system, timestep=timestep_fs * units.fs,
+            temperature_K=temperature_K,
+            taut=(1.0 / friction) * units.fs,
+            pressure_au=pressure_GPa * units.GPa,
+            compressibility_au=4.57e-5 / units.bar,
+            mask=barostat_mask)
+    return Langevin(system, timestep=timestep_fs * units.fs,
+                    temperature_K=temperature_K,
+                    friction=friction / units.fs)
+
+
+def run_md(system, steps, friction, cycle):
     """A short burst of dynamics at the target temperature.
 
     Short on purpose: this is not a relaxation, it is enough motion to let
     the neighbours accommodate the group that just moved. The run costs
     cycles x md_steps energy evaluations, so this is the wall clock.
+
+    Driven ONE STEP AT A TIME rather than as a single dynamics.run(steps)
+    with an observer attached, because every step is recorded and the count
+    has to be exact: ase's Dynamics.run() calls its observers at step 0 as
+    well as after each step, so an attached observer fires steps + 1 times
+    and a 5-step burst would leave 6 frames in the file. Stepping
+    explicitly makes the frame count exactly `steps` and the step index
+    0-based by construction. The integrator is still built ONCE per burst,
+    so the thermostat sees one continuous stretch of dynamics rather than
+    `steps` restarts.
     """
-    if md_steps <= 0:
+    if steps <= 0:
         return system.get_potential_energy()
     MaxwellBoltzmannDistribution(system, temperature_K=temperature_K)
-    if constant_pressure:
-        if NPTBerendsen is None:
-            raise RuntimeError(
-                "Constant-pressure MDMC needs ase.md.nptberendsen, which this "
-                "ASE does not provide.")
-        dynamics = NPTBerendsen(system, timestep=timestep_fs * units.fs,
-                                temperature_K=temperature_K,
-                                pressure_au=pressure_GPa * units.GPa,
-                                compressibility_au=4.57e-5 / units.bar)
-    else:
-        dynamics = Langevin(system, timestep=timestep_fs * units.fs,
-                            temperature_K=temperature_K,
-                            friction=friction_per_fs / units.fs)
-    dynamics.run(md_steps)
+    Stationary(system)
+    dynamics = thermostat_dynamics(system, friction)
+    for step in range(steps):
+        dynamics.run(1)
+        # The integrator has just evaluated forces at these positions, so
+        # under NVT this energy comes off the calculator's cache. Under NPT
+        # the barostat rescales after the step and it is a fresh
+        # evaluation - the price of recording an energy with every frame.
+        record_structure(all_structures_path, system, phase="md",
+                         mc_cycle=cycle, md_step_in_cycle=step,
+                         total_energy=system.get_potential_energy(),
+                         accepted=False)
     return system.get_potential_energy()
 
 
 def _viewport_due(cycle):
     """Is this cycle one the viewport should be shown?"""
     return viewport_every > 0 and cycle % viewport_every == 0
+
+
+def broken_groups(system, graph):
+    """Indices of the groups whose chemistry the dynamics did not preserve."""
+    return [index for index, (kind, members, hosts) in enumerate(groups)
+            if not topology_intact(kind, hosts, members, system, graph)]
 
 
 def chemistry_survived(system):
@@ -637,16 +974,342 @@ def chemistry_survived(system):
     looks excellent, and the structure is no longer graphene oxide. So the
     topology is checked before the energy is ever consulted.
     """
-    graph = bond_graph(system)
-    for (kind, members, hosts) in groups:
-        if not topology_intact(kind, hosts, members, system, graph):
-            return False
+    graph = bond_graph(system, SURVIVAL_SCALE)
+    if broken_groups(system, graph):
+        return False
     # Whatever fragment came off, the component count sees it.
     return connected_components(graph) == reference_components
 
 
+# =====================================================================
+# State bookkeeping: exact reversion
+# =====================================================================
+# The atom COUNT and ORDERING never change during the run. A move relocates
+# a group of the same kind, so its atoms keep their indices and only their
+# positions move. That is what makes reversion exact and cheap: restoring a
+# position array undoes everything, and no index anywhere - framework, site
+# graph, group inventory - has to be remapped.
+#
+# The CELL is part of the state too. Under NPT the barostat scales it during
+# every burst, accepted or not; a reversion that restored the positions but
+# kept the scaled cell left the lattice and its contents disagreeing about
+# the periodic boundary by a little more on every rejected move, until the
+# C-C bonds across it were visibly stretched.
+
+def checkpoint_state():
+    return (atoms.get_positions(), atoms.get_cell().copy(),
+            atoms.get_momenta())
+
+
+def restore_state(state):
+    positions, cell, momenta = state
+    atoms.set_cell(cell, scale_atoms=False)
+    atoms.set_positions(positions)
+    atoms.set_momenta(momenta)
+
+
+def site_state():
+    return (set(sites.free_basal), set(sites.free_edge),
+            set(sites.free_pairs), dict(sites.owner))
+
+
+def restore_sites(state):
+    sites.free_basal = set(state[0])
+    sites.free_edge = set(state[1])
+    sites.free_pairs = set(state[2])
+    sites.owner = dict(state[3])
+
+
+def relocate(index):
+    """Lift group `index` off its carbons and rebuild it at a freshly drawn
+    free site of its own kind. Returns (status, new_hosts):
+
+      "ok"        the group now sits at new_hosts, inventory and site graph
+                  updated;
+      "no_site"   saturated for this kind - nothing was drawn;
+      "clash"     the drawn site puts the rebuilt group on top of another;
+      "mismatch"  the recipe and the inventory disagree about the group.
+
+    On anything but "ok" the group is left LIFTED: the caller restores the
+    state it saved. Rebuilt from its recipe rather than transplanted
+    rigidly: after a burst of dynamics the old group carries accumulated
+    distortion, and moving that along would bias the energy of every later
+    move.
+    """
+    kind, members, hosts = groups[index]
+    region = GROUP_REGION[kind]
+    if kind == "hydroxyl" and is_edge.get(hosts[0], False):
+        # A phenolic hydroxyl (an imported structure's - the builder places
+        # hydroxyls on basal carbons only) stays on the rim: moving it onto
+        # the basal plane would leave a dangling edge carbon behind.
+        region = "edge"
+    for host in hosts:
+        sites.release(host)
+    if region == "pair":
+        target = sites.draw_pair(rng)
+        new_hosts = list(target) if target else None
+    else:
+        drawn = sites.draw_single(region == "edge", rng)
+        new_hosts = [drawn] if drawn is not None else None
+    if new_hosts is None:
+        return "no_site", None
+
+    positions = atoms.get_positions()
+    normal = sheet_normal(positions, framework)
+    face = 1.0
+    if region != "edge" and both_faces:
+        face = rng.choice([1.0, -1.0])
+    new_symbols, new_positions = build_group(
+        kind, new_hosts, positions, graph0, framework_set, normal, face, rng)
+    if len(new_symbols) != len(members):
+        # Refusing beats writing atoms into the wrong slots.
+        return "mismatch", None
+    cap = []
+    if region == "edge":
+        # An edge carbon carries either a group or a terminating hydrogen,
+        # never both, so the hydrogen on the new host moves to the old one
+        # - the edge's hydrogen inventory is conserved exactly like the
+        # groups are. Without this the group landed on top of the new
+        # host's hydrogen and the old host was left with a dangling bond.
+        cap = [j for j in bond_graph(atoms, SURVIVAL_SCALE)[new_hosts[0]]
+               if symbols[j] == "H" and j not in framework_set
+               and j not in members]
+        if len(cap) == 1:
+            old_host = hosts[0]
+            positions[cap[0]] = positions[old_host] + CH_EDGE * \
+                outward_direction(positions, old_host, graph0, framework_set,
+                                  normal)
+    if not clearance_ok(atoms, members, new_positions, new_hosts, ignore=cap):
+        return "clash", None
+    for atom_index, position in zip(members, new_positions):
+        positions[atom_index] = position
+    atoms.set_positions(positions)
+    for host in new_hosts:
+        sites.occupy(host, kind)
+    groups[index] = (kind, members, new_hosts)
+    return "ok", new_hosts
+
+
+# =====================================================================
+# Initial equilibration
+# =====================================================================
+# The builder places every group analytically on a FLAT sheet: each host
+# carbon is still planar sp2 where the chemistry wants a pyramidal sp3, so
+# the as-built structure carries forces of ~10 eV/A on the carbons and tens
+# of eV of strain in total. Released in one short burst that is a thermal
+# shock - a few thousand kelvin for a few femtoseconds - and what it breaks
+# first is whichever group was placed closest to a neighbour. The remedy is
+# not a different integrator but the dynamics run LONG enough, under a
+# thermostat coupled STRONGLY enough, to drain the strain as it is released;
+# and a group that still comes apart is RELOCATED (the sampler's own move,
+# with the inventory preserved) rather than the run abandoned. The run
+# refuses only when relocation stops helping - a temperature that breaks
+# chemistry at any site - or when the carbon framework itself comes apart.
+
+EQUILIBRATION_CHECK_EVERY = 10
+
+
+def equilibrate(system):
+    """Bring the as-built structure to the target temperature. Returns the
+    potential energy the Monte Carlo walk starts from and the number of
+    groups relocated on the way."""
+    relocations = 0
+    if equilibration_steps <= 0:
+        return system.get_potential_energy(), relocations
+    max_relocations = max(20, 3 * len(groups))
+    MaxwellBoltzmannDistribution(system, temperature_K=temperature_K)
+    Stationary(system)
+    dynamics = thermostat_dynamics(system, equilibration_friction_per_fs)
+    checkpoint = checkpoint_state()
+    done = 0
+    next_report = 100
+    while done < equilibration_steps:
+        chunk = min(EQUILIBRATION_CHECK_EVERY, equilibration_steps - done)
+        # One frame per step, HELD BACK until the chunk is known to have
+        # survived. A chunk whose chemistry broke is rewound below
+        # (restore_state, done -= chunk) and its steps did not happen as far
+        # as the rest of the run is concerned, so its frames must not reach
+        # the file either. What is written is then exactly
+        # equilibration_steps frames, indexed 0 .. equilibration_steps-1
+        # with no gaps and no repeats - `done` counts RETAINED steps, which
+        # is why it is the right base for the index.
+        pending = []
+        for step in range(chunk):
+            dynamics.run(1)
+            pending.append(frame_snapshot(
+                system, phase="equilibration",
+                # This stage runs before the first Monte Carlo cycle, so it
+                # carries cycle 0 - never -1: no counter in this run is
+                # ever negative - and the phase tag alone tells it apart.
+                mc_cycle=0, md_step_in_cycle=done + step,
+                total_energy=system.get_potential_energy(), accepted=False))
+        done += chunk
+        graph = bond_graph(system, SURVIVAL_SCALE)
+        broken = broken_groups(system, graph)
+        if not broken:
+            append_frames(all_structures_path, pending)
+            if connected_components(graph) != reference_components:
+                _calango_event(
+                    "error",
+                    "The carbon framework itself came apart during the "
+                    "initial equilibration - the temperature is far too high "
+                    "for this material.")
+                raise SystemExit(1)
+            checkpoint = checkpoint_state()
+            _calango_progress(done, TOTAL_EVALUATIONS)
+            if done >= next_report or done == equilibration_steps:
+                _calango_event(
+                    "info",
+                    f"equilibration {done}/{equilibration_steps} steps: "
+                    f"E = {system.get_potential_energy():.3f} eV, "
+                    f"T = {system.get_temperature():.0f} K")
+                next_report += 100
+            continue
+        # Something came apart in the last chunk: back to the last intact
+        # state, and move what broke.
+        restore_state(checkpoint)
+        done -= chunk
+        for index in broken:
+            if relocations >= max_relocations:
+                _calango_event(
+                    "error",
+                    f"The chemistry did not survive the initial equilibration "
+                    f"even after relocating {relocations} groups. The "
+                    f"temperature or the step count is too high for this "
+                    f"structure - nothing sampled from here would be graphene "
+                    f"oxide.")
+                raise SystemExit(1)
+            kind, members, old_hosts = groups[index]
+            old_hosts = list(old_hosts)
+            # A clashing draw is retried a few times: the site pool is
+            # random, and one unlucky draw must not abandon the group. A
+            # clash leaves the group lifted with its inventory entry
+            # unchanged (release() is idempotent), so relocate() can
+            # simply be asked again.
+            status, new_hosts = relocate(index)
+            tries = 1
+            while status == "clash" and tries < 8:
+                status, new_hosts = relocate(index)
+                tries += 1
+            if status != "ok":
+                _calango_event(
+                    "error",
+                    f"A {kind} on carbons {old_hosts} did not survive the "
+                    f"initial equilibration and no free site could take it "
+                    f"({status}).")
+                raise SystemExit(1)
+            relocations += 1
+            update_host_fields(kind, members, old_hosts, new_hosts)
+            _calango_event(
+                "warning",
+                f"equilibration: the {kind} on carbons {old_hosts} came apart "
+                f"after {done} steps - relocated to {new_hosts}")
+        # Fresh velocities for the whole system: the rebuilt atoms carry
+        # momenta from wherever they were, and the integrator is bound to
+        # the positions it was created with.
+        MaxwellBoltzmannDistribution(system, temperature_K=temperature_K)
+        Stationary(system)
+        dynamics = thermostat_dynamics(system, equilibration_friction_per_fs)
+        checkpoint = checkpoint_state()
+    return system.get_potential_energy(), relocations
+
+
+# =====================================================================
+# Per-move-class acceptance analysis
+# =====================================================================
+# The diagnostic a run's move mix needs: not just "the run accepted 40 %"
+# but "epoxide moves accept at 60 % while carboxyl moves are stuck near 0 %"
+# -- which is what actually tells someone their rim is saturated. Tracked
+# per KIND (the same five strings collect_groups()/pair_hydroxyls() use, an
+# antiposition pair counted separately from an ordinary hydroxyl), both
+# CUMULATIVE (the whole run so far) and WINDOWED (the last ACCEPTANCE_WINDOW
+# attempts of that kind, so a rate that has started drifting shows up long
+# before it moves the cumulative number).
+#
+# A "no site" cycle (the move was never generated at all -- see the
+# no_site counter above) is NOT an attempt of anything and is excluded here
+# too, for the identical reason it is excluded from `rejected_metropolis`.
+
+ACCEPTANCE_WINDOW = 50
+MOVE_KINDS = ("epoxide", "hydroxyl", "hydroxyl_pair", "carbonyl", "carboxyl")
+attempts_total = {k: 0 for k in MOVE_KINDS}
+accepted_total = {k: 0 for k in MOVE_KINDS}
+recent_outcomes = {k: deque(maxlen=ACCEPTANCE_WINDOW) for k in MOVE_KINDS}
+recent_overall = deque(maxlen=ACCEPTANCE_WINDOW)
+
+
+def _record_move(kind, was_accepted):
+    """One judged trial of `kind` -- rejected for a clash, for broken
+    topology, or by Metropolis, or accepted: either way a real attempt that
+    reached a verdict. Called at every point in the loop below where that
+    happens.
+    """
+    attempts_total[kind] += 1
+    recent_outcomes[kind].append(1 if was_accepted else 0)
+    recent_overall.append(1 if was_accepted else 0)
+    if was_accepted:
+        accepted_total[kind] += 1
+
+
+def _acceptance_fields():
+    """Flat kwargs for _calango_metric(): overall + per-kind cumulative and
+    windowed acceptance rate. A kind (or the whole run) with zero attempts
+    so far reports None, which _calango_metric OMITS rather than writing a
+    misleading 0 % or 100 % -- see its own "None fields are skipped"
+    docstring.
+    """
+    total_attempts = sum(attempts_total.values())
+    fields = {
+        "acceptance_cumulative":
+            (accepted / total_attempts) if total_attempts else None,
+        "acceptance_windowed":
+            (sum(recent_overall) / len(recent_overall))
+            if recent_overall else None,
+        # Raw counts alongside the rates: a live-running summary table has
+        # nothing else to read attempts/accepted from before the run
+        # finishes and mdmc_summary.json is written.
+        "acceptance_attempts": total_attempts,
+        "acceptance_accepted": accepted,
+    }
+    for k in MOVE_KINDS:
+        n = attempts_total[k]
+        fields[f"accept_{k}_cumulative"] = (accepted_total[k] / n) if n else None
+        window = recent_outcomes[k]
+        fields[f"accept_{k}_windowed"] = (
+            sum(window) / len(window) if window else None)
+        fields[f"accept_{k}_attempts"] = n
+        fields[f"accept_{k}_accepted"] = accepted_total[k]
+    return fields
+
+
+def _run_fields(cycle):
+    """Flat kwargs for _calango_metric(): the whole-run counters the live
+    "MDMC Summary" panel shows, sampled at the END of cycle `cycle`.
+
+    `cycle` is the 0-BASED index of the cycle that has just finished, so the
+    number of COMPLETED cycles reported here is `cycle + 1`: it reads 1 once
+    the first cycle is done and mc_cycles once the last is, never -1 and
+    never greater than the total. Every other value is read straight out of
+    frames_written, i.e. off what is actually in the two structure files, so
+    the panel's numbers and a reader's own counts cannot disagree.
+    """
+    return {
+        "mdmc_cycles_done": cycle + 1,
+        "mdmc_cycles_total": mc_cycles,
+        "mdmc_md_steps_done": frames_written["md"],
+        "mdmc_equilibration_steps_done": frames_written["equilibration"],
+        "mdmc_accepted": frames_written["accepted"],
+        "mdmc_elapsed_s": _elapsed_seconds(),
+    }
+
+
 kB = units.kB
-energy = run_md(atoms)
+# Progress is counted in energy evaluations -- the cost the wizard quotes --
+# so the bar moves through the equilibration instead of sitting at 0 % until
+# the first cycle: equilibration_steps up front, then md_steps per cycle.
+TOTAL_EVALUATIONS = equilibration_steps + mc_cycles * max(1, md_steps)
+_calango_progress(0, TOTAL_EVALUATIONS)
+energy, equilibration_relocations = equilibrate(atoms)
 if not chemistry_survived(atoms):
     _calango_event("error",
                    "The chemistry did not survive the initial equilibration. "
@@ -658,87 +1321,75 @@ if not chemistry_survived(atoms):
 initial_energy = energy
 best_energy = energy
 best_atoms = atoms.copy()
-_calango_event("info", f"initial energy after equilibration: {energy:.6f} eV")
+_calango_event("info", f"initial energy after equilibration: {energy:.6f} eV"
+                       + (f" ({equilibration_relocations} group(s) relocated)"
+                          if equilibration_relocations else ""))
+# The equilibrated structure is the state the walk starts from, and it is
+# the first REAL geometry of this run: the sheet has puckered under its
+# groups and thermalized. Shown unconditionally (subject to the throttle
+# being on at all), so a run that goes on to accept nothing still leaves
+# its result on screen rather than the flat as-built input it was given.
+if viewport_every > 0:
+    _stream_frame()
 
 accepted = 0
 rejected_topology = 0
 rejected_metropolis = 0
+rejected_clash = 0
 no_site = 0
-snapshots = [atoms.copy()] if snapshot_interval > 0 else []
 
-# The atom COUNT and ORDERING never change during the run. A move relocates
-# a group of the same kind, so its atoms keep their indices and only their
-# positions move. That is what makes reversion exact and cheap: restoring a
-# position array undoes everything, and no index anywhere - framework, site
-# graph, group inventory - has to be remapped.
-for cycle in range(1, mc_cycles + 1):
+# 0-BASED, deliberately: `cycle` is the index this run stamps on every
+# frame it records (atoms.info["mc_cycle"]) and on every metric sample, and
+# an index that starts at 1 in the file while the loop that produced it
+# counts from 0 is a mismatch every reader has to know about. Cycle 0 is
+# the first Monte Carlo cycle. Everywhere a COUNT of completed cycles is
+# wanted rather than an index - the progress bar below - it is written
+# `cycle + 1` explicitly.
+for cycle in range(mc_cycles):
     index = rng.randrange(len(groups))
     kind, members, hosts = groups[index]
-    region = GROUP_REGION[kind]
 
-    saved_positions = atoms.get_positions()
+    saved_atoms = checkpoint_state()
     saved_hosts = list(hosts)
-    saved_free_basal = set(sites.free_basal)
-    saved_free_edge = set(sites.free_edge)
-    saved_free_pairs = set(sites.free_pairs)
-    saved_owner = dict(sites.owner)
+    saved_sites = site_state()
 
     def revert():
-        atoms.set_positions(saved_positions)
+        restore_state(saved_atoms)
         groups[index] = (kind, members, saved_hosts)
-        sites.owner = saved_owner
-        sites.free_basal = saved_free_basal
-        sites.free_edge = saved_free_edge
-        sites.free_pairs = saved_free_pairs
+        restore_sites(saved_sites)
 
-    # ---- 1. Lift the group off its carbons -------------------------------
-    for host in hosts:
-        sites.release(host)
-
-    # ---- 2. Draw a new site of the kind this group needs -----------------
-    if region == "pair":
-        target = sites.draw_pair(rng)
-        new_hosts = list(target) if target else None
-    else:
-        drawn = sites.draw_single(region == "edge", rng)
-        new_hosts = [drawn] if drawn is not None else None
-
-    if new_hosts is None:
-        # Saturated for this group kind: the move was never generated, so it
-        # must not enter the acceptance statistics as a rejection.
+    # ---- 1-3. Lift the group, draw a new site of its kind, rebuild it ----
+    status, new_hosts = relocate(index)
+    move_generated = status == "ok"
+    if not move_generated:
+        # No trial configuration exists: relocate() left the group lifted
+        # and wrote no positions, so the state saved at the top of the cycle
+        # goes back. The cycle then goes on to run its burst anyway (see
+        # below) - which counter it increments depends only on WHY the move
+        # could not be made.
         revert()
-        no_site += 1
-        continue
-
-    # ---- 3. Rebuild the group at the new site ----------------------------
-    # Rebuilt from its recipe rather than transplanted rigidly: after a burst
-    # of dynamics the old group carries accumulated distortion, and moving
-    # that along would bias the energy of every later move.
-    positions = atoms.get_positions()
-    normal = sheet_normal(positions, framework)
-    face = 1.0
-    if region != "edge" and both_faces:
-        face = rng.choice([1.0, -1.0])
-
-    new_symbols, new_positions = build_group(
-        kind, new_hosts, positions, graph0, framework_set, normal, face, rng)
-    if len(new_symbols) != len(members):
-        # The recipe and the inventory disagree about what this group is.
-        # Refusing beats writing atoms into the wrong slots.
-        revert()
-        rejected_topology += 1
-        continue
-    for atom_index, position in zip(members, new_positions):
-        positions[atom_index] = position
-    atoms.set_positions(positions)
-
-    for host in new_hosts:
-        sites.occupy(host, kind)
-    groups[index] = (kind, members, new_hosts)
+        if status == "no_site":
+            # Saturated for this group kind: the move was never generated,
+            # so it must not enter the acceptance statistics as a rejection.
+            no_site += 1
+        elif status == "mismatch":
+            rejected_topology += 1
+        else:  # "clash"
+            # Judged and refused without an energy evaluation: the rebuilt
+            # group would sit on top of a neighbour, and the only way the
+            # dynamics resolves that is by breaking a bond.
+            rejected_clash += 1
+            _record_move(kind, False)
 
     # ---- 4. Relax, then check the chemistry survived ---------------------
+    # UNCONDITIONAL: every cycle runs its burst, including a cycle whose
+    # move could not be generated. That is what makes the recorded frame
+    # count md_steps x mc_cycles by construction rather than by luck - a
+    # cycle that returned early would leave a hole in the record - and a
+    # cycle with no move to judge is still a cycle of dynamics on the
+    # current state.
     try:
-        trial_energy = run_md(atoms)
+        burst_energy = run_md(atoms, md_steps, friction_per_fs, cycle)
         # The geometry the DYNAMICS produced, before it has been judged. Shows
         # the atoms moving; opt-in because a rejected move's geometry is not a
         # state of the ensemble and streaming it costs a frame either way.
@@ -748,38 +1399,133 @@ for cycle in range(1, mc_cycles + 1):
         _calango_event("warning",
                        f"cycle {cycle}: energy evaluation failed: {exc}")
         revert()
-        rejected_topology += 1
-        _calango_progress(cycle, mc_cycles)
+        if move_generated:
+            rejected_topology += 1
+        # This cycle is over too, and the panel's "cycles done" is a COUNT of
+        # cycles COMPLETED. Skipping the sample on this branch would leave
+        # the summary reporting one cycle fewer than the run actually ran -
+        # permanently, whenever the LAST cycle is the one whose calculator
+        # fell over. `energy` is the pre-cycle reference energy, which
+        # revert() has just made current again.
+        _calango_metric(cycle, energy=energy, **_acceptance_fields(),
+                        **_run_fields(cycle))
+        _calango_progress(equilibration_steps + (cycle + 1) * max(1, md_steps),
+                          TOTAL_EVALUATIONS)
         continue
 
     if not chemistry_survived(atoms):
+        if move_generated:
+            # The trial configuration, recorded BEFORE revert() puts the
+            # previous state back - after it, `atoms` no longer holds the
+            # trial at all. It was generated and it was judged (by the
+            # topology test rather than by Metropolis), so it is a trial
+            # this run visited and the record owes it a frame.
+            record_structure(all_structures_path, atoms, phase="mc_trial",
+                             mc_cycle=cycle, md_step_in_cycle=md_steps,
+                             total_energy=burst_energy, accepted=False)
+            rejected_topology += 1
+            _record_move(kind, False)
+        else:
+            # No move was generated, so this is not a rejected MOVE: the
+            # bare burst broke the chemistry on its own. Still refused - a
+            # state that is no longer graphene oxide is not one the walk may
+            # continue from - but reported rather than counted against the
+            # proposal statistics, which would blame a proposal that never
+            # existed.
+            _calango_event("warning",
+                           f"cycle {cycle}: the dynamics broke the chemistry "
+                           f"with no move to blame - reverted")
         revert()
-        rejected_topology += 1
-        _calango_metric(cycle, energy=energy)
-        _calango_progress(cycle, mc_cycles)
+        _calango_metric(cycle, energy=energy, **_acceptance_fields(),
+                        **_run_fields(cycle))
+        _calango_progress(equilibration_steps + (cycle + 1) * max(1, md_steps),
+                          TOTAL_EVALUATIONS)
+        continue
+
+    if not move_generated:
+        # Nothing to judge: this cycle's burst was plain dynamics on the
+        # current state, with intact chemistry, so it is kept - and the
+        # reference energy has to follow the state it describes, or the
+        # next cycle's Metropolis test would compare its trial against the
+        # energy of a configuration that no longer exists.
+        energy = burst_energy
+        # ...and a state the walk KEEPS is eligible to be the best one it
+        # found. output_path holds the BEST configuration of the run, not
+        # the best ACCEPTED one: this cycle's burst produced a real,
+        # chemistry-intact geometry that the walk went on to continue from,
+        # so refusing to compare it here would let the run reach a
+        # configuration better than anything it ever accepted and throw it
+        # away. Same test, same two assignments, as the accepted branch
+        # below.
+        if energy < best_energy:
+            best_energy = energy
+            best_atoms = atoms.copy()
+        _calango_metric(cycle, energy=energy, **_acceptance_fields(),
+                        **_run_fields(cycle))
+        _calango_progress(equilibration_steps + (cycle + 1) * max(1, md_steps),
+                          TOTAL_EVALUATIONS)
         continue
 
     # ---- 5. Metropolis ---------------------------------------------------
+    trial_energy = burst_energy
     delta = trial_energy - energy
-    if delta <= 0.0 or rng.random() < math.exp(-delta / (kB * temperature_K)):
+    move_accepted = delta <= 0.0 or rng.random() < math.exp(
+        -delta / (kB * temperature_K))
+    if move_accepted:
         energy = trial_energy
+        # 0-based and contiguous: the FIRST accepted structure is ordinal 0.
+        # Read BEFORE the counter is incremented, so nothing anywhere has to
+        # subtract one from a count - the arithmetic that produces a -1 the
+        # first time through when someone gets it backwards.
+        acceptance_ordinal = accepted
         accepted += 1
+        update_host_fields(kind, members, saved_hosts, new_hosts)
+        # Recorded after update_host_fields, so the frame carries the host
+        # carbons' classification as it now is rather than as it was before
+        # the group moved.
+        trial_frame = frame_snapshot(atoms, phase="mc_trial", mc_cycle=cycle,
+                                     md_step_in_cycle=md_steps,
+                                     total_energy=trial_energy, accepted=True)
+        append_frames(all_structures_path, [trial_frame])
+        # The identical structure in the accepted file, plus its ordinal.
+        # Copied rather than re-derived: Atoms.copy() carries the arrays and
+        # deep-copies info, and one classification pass per frame is enough.
+        accepted_frame = trial_frame.copy()
+        accepted_frame.info["acceptance_ordinal"] = acceptance_ordinal
+        append_frames(accepted_structures_path, [accepted_frame])
         if trial_energy < best_energy:
             best_energy = trial_energy
             best_atoms = atoms.copy()
-        if snapshot_interval > 0 and accepted % snapshot_interval == 0:
-            snapshots.append(atoms.copy())
         # An ACCEPTED move: a new state of the ensemble, with its topology
         # already validated. This is the one worth watching - it is the
         # discrete group hop the whole run exists to sample.
         if _viewport_due(cycle):
             _stream_frame()
     else:
+        # Recorded before revert(), for the same reason the topology
+        # rejection above is: afterwards the trial configuration is gone.
+        record_structure(all_structures_path, atoms, phase="mc_trial",
+                         mc_cycle=cycle, md_step_in_cycle=md_steps,
+                         total_energy=trial_energy, accepted=False)
         revert()
         rejected_metropolis += 1
+    _record_move(kind, move_accepted)
 
-    _calango_metric(cycle, energy=energy)
-    _calango_progress(cycle, mc_cycles)
+    # trial_delta: the energy difference the Metropolis test actually saw,
+    # accepted or not. It is the one number that says whether the burst is
+    # long enough - a freshly placed group carries a few eV of placement
+    # strain, and a burst too short to dissipate it hands Metropolis a
+    # trial energy biased upward by that much, so nothing is ever accepted.
+    _calango_metric(cycle, energy=energy, trial_delta=delta,
+                    **_acceptance_fields(), **_run_fields(cycle))
+    # cycle + 1, not cycle: this argument is a COUNT of completed cycles,
+    # not an index. With the 0-based loop above, passing `cycle` would stop
+    # the bar one burst short of TOTAL_EVALUATIONS and a finished run would
+    # report less than 100 %. Every branch of this loop passes the same
+    # expression, so progress rises by exactly one burst per cycle and never
+    # goes backwards.
+    _calango_progress(equilibration_steps + (cycle + 1) * max(1, md_steps),
+                          TOTAL_EVALUATIONS)
 
 if not sites.consistent():
     _calango_event("warning",
@@ -790,7 +1536,8 @@ acceptance = accepted / mc_cycles if mc_cycles else 0.0
 _calango_event("info",
                f"accepted {accepted}/{mc_cycles} ({100.0 * acceptance:.1f} %); "
                f"rejected {rejected_metropolis} by energy, "
-               f"{rejected_topology} by broken chemistry; "
+               f"{rejected_topology} by broken chemistry, "
+               f"{rejected_clash} by steric clash; "
                f"{no_site} cycles found no free site")
 if rejected_topology > 0.5 * mc_cycles:
     _calango_event("warning",
@@ -801,8 +1548,9 @@ if rejected_topology > 0.5 * mc_cycles:
 # The BEST configuration, not the last one: a finite-temperature walk ends
 # wherever it happens to be, and reporting that throws away the answer.
 write(output_path, best_atoms)
-if snapshots:
-    write(trajectory_path, snapshots)
+# No second end-of-run structure file: every accepted configuration is
+# already on disk, in order and with its acceptance ordinal, appended to
+# accepted_structures_path as it happened.
 
 summary = {
     "initial_energy_eV": float(initial_energy),
@@ -814,10 +1562,28 @@ summary = {
     "acceptance_ratio": acceptance,
     "rejected_metropolis": rejected_metropolis,
     "rejected_topology": rejected_topology,
+    "rejected_clash": rejected_clash,
     "cycles_without_site": no_site,
+    "equilibration_steps": equilibration_steps,
+    "equilibration_relocations": equilibration_relocations,
     "temperature_K": temperature_K,
     "md_steps_per_cycle": md_steps,
     "group_counts": counts,
+    # Per-move-kind acceptance -- the same figures the live "Acceptance"
+    # metrics carried throughout the run, at their final (whole-run
+    # cumulative) value. A kind never attempted reports 0 attempts and a
+    # null rate rather than being omitted, so the key set here is always
+    # the same five kinds regardless of what this particular run placed.
+    "acceptance_by_kind": {
+        k: {
+            "attempts": attempts_total[k],
+            "accepted": accepted_total[k],
+            "acceptance_ratio":
+                (accepted_total[k] / attempts_total[k])
+                if attempts_total[k] else None,
+        }
+        for k in MOVE_KINDS
+    },
 }
 with open("mdmc_summary.json", "w") as handle:
     json.dump(summary, handle, indent=2)
