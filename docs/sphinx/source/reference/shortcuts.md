@@ -23,7 +23,9 @@ steals a character from a search box.
 | {kbd}`F` | Reset camera — restore the saved default point of view, or frame the structure |
 | {kbd}`Delete` / {kbd}`Backspace` | Delete the selection (Selection mode) |
 
-The XY / XZ / YZ plane alignments, the fixed-angle axis rotations (X±, Y±,
+The viewport toolbar's FIRST button opens {doc}`Molecular Design
+</builders/molecular_design>` — the 2D sketcher — and has no key binding of its
+own. The XY / XZ / YZ plane alignments, the fixed-angle axis rotations (X±, Y±,
 Z± by an editable step), the field-of-view popup, and the display toggles
 (element symbols, atomic indices, hydrogens, gradient bonds) are
 **toolbar buttons on the viewport header with no key bindings** — the
@@ -52,6 +54,32 @@ toolbar is documented in {doc}`/viewport`.
 | {kbd}`Ctrl+B` | Bond editor | Edit |
 | {kbd}`Ctrl+P` | Preferences — application-wide, works from any window | Edit |
 | {kbd}`Ctrl+R` | Single-point calculation | Simulation |
+
+---
+
+## Molecular Design
+
+Live only while the {doc}`Molecular Design </builders/molecular_design>` window
+has focus — the sketcher's tool keys and the main window's viewport modes never
+see each other, which is what lets both be single letters. Remappable in
+{menuselection}`Edit --> Preferences --> Hotkeys` under **Molecular Design**.
+
+| Key | Tool |
+|---|---|
+| {kbd}`V` | Selection |
+| {kbd}`1` / {kbd}`2` / {kbd}`3` | Single / double / triple bond |
+| {kbd}`4` / {kbd}`5` | Wedge (bold) / hashed stereo bond |
+| {kbd}`C` | Chain |
+| {kbd}`L` | Atom label |
+| {kbd}`X` | Caption |
+| {kbd}`P` | Formal charge |
+| {kbd}`E` | Eraser |
+| {kbd}`B` | Ring template |
+| {kbd}`Y` | Tidy the drawing |
+| {kbd}`Ctrl+Return` | Send to 3D Viewport |
+
+Undo, redo, copy, paste and select-all use the application's own bindings
+inside the sketcher too, so a remap of {kbd}`Ctrl+Z` is a remap everywhere.
 
 ---
 

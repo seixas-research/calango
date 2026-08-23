@@ -6,6 +6,120 @@ replacing the active one or opening in a new tab. All of it runs through
 ASE, so a working Python environment is a prerequisite throughout this
 chapter.
 
+\section{Molecular Design --- the 2D sketcher}
+\label{sec:molecular-design}
+
+The \textbf{first button on the viewport toolbar} --- a benzene hexagon,
+ahead of the rotation-mode button --- opens \textbf{Molecular Design}, a
+chemical drawing program inside Calango. You sketch a molecule the way it
+is drawn on paper and send it to the 3D viewport as a real structure. It is
+the one entry in this chapter that needs \emph{no} Python environment: the
+sketch model, the SMILES parser and the 2D\,$\rightarrow$\,3D conversion are
+all native C++.
+
+The window is \textbf{modeless}, so the 3D viewport stays visible beside it,
+and it keeps its drawing for the rest of the session.
+
+\subsection{The three zones}
+
+A tool palette on the left (a two-column grid of icon-only buttons), the
+drawing canvas in the middle, and a compact output/appearance sidebar on the
+right.
+
+\subsection{Drawing}
+
+Select a bond tool and drag between two atoms to bond them, or into empty
+space to create a new atom on the far end. A plain click on an atom grows a
+bond in whichever direction around it is emptiest, so clicking the same
+carbon repeatedly walks out a chain. The free end snaps to the
+\textbf{30\textdegree{} family} at the standard bond length.
+
+\textbf{Drawing onto an existing bond cycles its order} --- single, double,
+triple, single. The \ui{Wedge} and \ui{Hash} tools mark stereochemistry with
+the narrow end on the atom the drag starts from; clicking a bond that
+already carries that mark reverses it.
+
+\textbf{Carbon vertices are not labelled} --- a line junction is a carbon.
+Heteroatoms show their symbol and their hydrogen count (\texttt{OH},
+\texttt{NH\textsubscript{2}}). Those hydrogens are implicit: counted, not
+drawn, taken from the standard valences (C~4, N~3, O~2, S~2/4/6, P~3/5,
+halogens~1), with the smallest valence that fits the drawn bonds winning. A
+formal charge shifts the valence the conventional way.
+
+An atom whose bonds exceed every valence its element has --- a pentavalent
+carbon --- is \textbf{circled and left alone} rather than refused. Chemists
+sketch intermediates.
+
+The ring palette covers cyclopropane through cyclooctane, benzene,
+cyclopentadiene and naphthalene. Clicking empty space stamps a ring; clicking
+an existing bond \emph{fuses} the ring onto it, reusing that bond's two atoms
+--- two benzenes fused this way give naphthalene, with the ring-junction
+carbons at the right valence.
+
+The \ui{Chain} tool drags out a zig-zag alkyl chain with a live length count;
+\ui{Tidy} regularizes bond lengths, angles and ring geometry over the
+selection, or over the whole canvas when nothing is selected.
+
+\subsection{SMILES}
+
+The \ui{SMILES} field reads and writes. It shows the SMILES of the drawing
+as you work, and typing a string draws that molecule. The parser is native
+and covers the \textbf{organic subset plus bracket atoms}: bare
+\texttt{B C N O P S F Cl Br I} and their aromatic forms, bracket atoms with a
+hydrogen count and formal charge, the bond symbols, branches, ring closures
+including \texttt{\%nn}, and aromatic rings kekulized on import.
+Stereochemistry, isotope labels and atom maps parse and are then
+\textbf{dropped}; wildcards and SMARTS syntax are refused. A refused string
+leaves the canvas untouched and says what was wrong and where.
+
+\subsection{Send to 3D Viewport}
+
+Builds a 3D structure and opens it in a new tab named after the formula,
+through the same import machinery every builder uses. \textbf{The selection
+wins}: with atoms selected only those are sent, otherwise every fragment on
+the canvas goes.
+
+Implicit hydrogens become real atoms and the geometry is relaxed against a
+\textbf{small molecular-mechanics force field written for this module} ---
+bond stretching from the covalent radii and bond order, angle bending from
+the coordination, an sp\textsuperscript{2} planarity restraint, a torsion
+term that keeps double bonds coplanar, and soft non-bonded repulsion.
+Perceived aromatic rings get one bond length for the whole ring rather than
+the alternating pair a Kekul\'e structure would otherwise relax to.
+
+\begin{calnote}[title={Accuracy}]
+This is a \textbf{clean-up, not a converged geometry}. It reproduces bond
+lengths to about 0.02\,\AA{} and angles to a couple of degrees for ordinary
+organic connectivity, and gets planarity and ring geometry right. It has no
+electrostatics, no hydrogen bonding, no dispersion, and it is not a
+conformational search. Run \menu{Simulation}\menusep\menu{Geometry
+Optimization} on the new tab for a real geometry.
+\end{calnote}
+
+Benzene, as the reference case: C\textsubscript{6}H\textsubscript{6}, planar
+to within $10^{-3}$\,\AA{} RMS, all six C--C bonds equal at
+\textbf{1.391\,\AA} (experiment 1.397\,\AA), C--H at \textbf{1.070\,\AA}
+(experiment 1.084\,\AA), every C--C--C angle 120.000\textdegree.
+
+\subsection{Export and appearance}
+
+\ui{Export image} saves a PNG at 3$\times$ for print or a
+resolution-independent SVG, optionally with a transparent background. The
+appearance controls set bond width, label size, element colours on/off
+(off gives a monochrome drawing, which is what most journals want), and
+whether the canvas follows the application theme --- by default it does not,
+staying \textbf{white} like every other 2D figure in Calango.
+
+\subsection{Keyboard}
+
+Scoped to the window, so the main window's viewport modes are untouched, and
+all remappable under \textbf{Molecular Design} in
+\menu{Edit}\menusep\menu{Preferences}\menusep\menu{Hotkeys}:
+\kbd{V} selection, \kbd{1}/\kbd{2}/\kbd{3} single/double/triple bond,
+\kbd{4}/\kbd{5} wedge/hash, \kbd{C} chain, \kbd{L} atom label,
+\kbd{X} caption, \kbd{P} charge, \kbd{E} eraser, \kbd{B} ring,
+\kbd{Y} tidy, \kbd{Ctrl+Return} send to the viewport.
+
 \section{Supercells}
 
 \menu{Edit}\menusep\menu{Unit Cell}\menusep\menu{Create Supercell} repeats

@@ -17,6 +17,27 @@ struct ShortcutAction {
     QString label;      ///< "Rotation mode", shown in the Hotkeys table
     QString category;   ///< "Viewport — Mouse Mode", the table's grouping column
     QKeySequence defaultKey;
+    /// WHERE the binding is live. Empty (the default) means application-wide:
+    /// the main window's own keys, which all compete for the same letters.
+    /// A non-empty scope names a window whose shortcuts are installed with
+    /// Qt::WidgetWithChildrenShortcut and are therefore invisible everywhere
+    /// else — "molecularDesign" is the first.
+    ///
+    /// This exists ONLY so that conflictFor() can tell a real collision from
+    /// an impossible one. Two actions in different scopes can hold the same
+    /// key because neither window is ever listening while the other has
+    /// focus; refusing that would spend the whole single-letter keyspace on
+    /// the first dialog that asked for it, and would tell a user remapping a
+    /// viewport mode that the key is taken by a tool in a window that is not
+    /// even open.
+    ///
+    /// THE `= {}` IS LOAD-BEARING. Every entry in the table below this struct
+    /// is an aggregate brace-initializer that lists only the first four
+    /// members, and a member with no default member initializer makes each of
+    /// those an instance of -Wmissing-field-initializers — twenty-odd new
+    /// warnings from adding one field. Both Clang and GCC exempt a member that
+    /// has one. Any field added after this needs the same treatment.
+    QString scope = {};
 };
 
 /// Central action -> key-binding table for every REMAPPABLE shortcut in the
@@ -70,13 +91,23 @@ public:
     };
     static const QVector<FixedShortcut>& fixedShortcuts();
 
-    /// What `key` would collide with among every remappable binding (other
-    /// than `excludeId`, when given, so an action does not "conflict with
-    /// itself" while re-typing its own current key) and every fixed
-    /// shortcut — the label of the clash, or empty when `key` is free (or
-    /// itself empty: "no shortcut" never conflicts with anything). Used by
-    /// both the Hotkeys tab's live capture warning and by anyone about to
-    /// call setBinding().
+    /// What `key` would collide with — the label of the clash, or empty when
+    /// `key` is free (or itself empty: "no shortcut" never conflicts with
+    /// anything). Used by both the Hotkeys tab's live capture warning and by
+    /// anyone about to call setBinding().
+    ///
+    /// `excludeId` is the action being re-bound: it is skipped, so an action
+    /// does not "conflict with itself" while its own current key is retyped,
+    /// AND its ShortcutAction::scope is the scope the comparison runs in.
+    /// Only actions in that same scope are considered — a key held by a
+    /// dialog-scoped tool is not a conflict for an application-wide action,
+    /// because the two are never listening at the same time. With no
+    /// `excludeId` the comparison runs application-wide.
+    ///
+    /// FIXED shortcuts are checked in every scope. They are menu
+    /// accelerators on the main window, which stays alive and reachable
+    /// underneath any modeless dialog, so a dialog key that duplicates one IS
+    /// a real ambiguity.
     static QString conflictFor(const QKeySequence& key,
                                const QString& excludeId = QString());
 };

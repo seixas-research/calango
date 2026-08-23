@@ -47,6 +47,8 @@
 #include "gui/MlwfSourceSelector.hpp"
 #include "gui/TopologyDialog.hpp"
 #include "gui/MaceTrainerDialog.hpp"
+#include "gui/MolecularDesignDialog.hpp"
+#include "gui/MoleculeCanvas.hpp"
 #include "gui/ElectronicBandsWizard.hpp"
 #include "gui/DislocationWizard.hpp"
 #include "gui/LiquidInterfaceWizard.hpp"
@@ -6297,6 +6299,117 @@ int main(int argc, char** argv)
               "the hcp curve is plotted at exactly 0 at Co (x=1)");
         check(std::abs(valueFor(QStringLiteral("hcp"), 0.0) - 38.5941328) < 1e-3,
               "and at Fe's own hcp-bcc lattice stability (0.4 eV/atom = 38.59 kJ/mol) at x=0");
+    }
+
+    std::printf("Molecular Design dialog:\n");
+    {
+        // The construction-order hazard here is real and specific: the
+        // constructor builds twelve exclusive tool buttons, then installs one
+        // QShortcut per tool that calls selectTool() — which reaches back into
+        // the button map — and then calls selectTool() itself before the two
+        // sidebars have finished laying out. A dialog that built its shortcuts
+        // before its buttons would dereference an empty map here.
+        MolecularDesignDialog dialog;
+        check(true, "constructs");
+
+        auto* canvas = dialog.canvas();
+        check(canvas != nullptr, "and owns a canvas");
+        check(dialog.findChild<QWidget*>(QStringLiteral("moleculeToolSidebar"))
+                  != nullptr,
+              "with the left tool sidebar");
+        check(dialog.findChild<QWidget*>(QStringLiteral("moleculeOutputSidebar"))
+                  != nullptr,
+              "and the right output sidebar");
+        check(dialog.findChild<QPushButton*>(QStringLiteral("sendToViewportButton"))
+                  != nullptr,
+              "and a Send to 3D Viewport button");
+
+        // Every ring the template palette offers reaches the combo, named, and
+        // carries its enum value as item data — which is what the tool reads
+        // when it stamps. A missing entry would be a template the user simply
+        // cannot select.
+        //
+        // NOT checked here: whether each item's ICON resolves. This binary
+        // bundles no assets/icons/ resource at all (only the application does),
+        // so every QIcon in it is legitimately null and an assertion on that
+        // could never pass. The icon-registry test owns that half, source-scan
+        // against the CMake resource list, and covers every ring glyph.
+        auto* rings = dialog.findChild<QComboBox*>(QStringLiteral("ringTemplateCombo"));
+        check(rings != nullptr, "the ring palette exists");
+        if (rings) {
+            const auto& templates = calango::core::ringTemplates();
+            check(rings->count() == static_cast<int>(templates.size()),
+                  "listing every ring template");
+            bool named = true;
+            bool addressable = true;
+            for (int i = 0; i < rings->count() && i < static_cast<int>(templates.size());
+                 ++i) {
+                named = named
+                    && rings->itemText(i)
+                        == QLatin1String(calango::core::ringTemplateName(templates[i]));
+                addressable = addressable
+                    && rings->itemData(i).toInt() == static_cast<int>(templates[i]);
+            }
+            check(named, "each named as the core table names it");
+            check(addressable,
+                  "and each carrying its template value, which is what the "
+                  "ring tool stamps from");
+        }
+
+        // SMILES in: a valid string draws, an invalid one changes nothing.
+        check(dialog.loadSmiles(QStringLiteral("c1ccccc1")),
+              "a valid SMILES string imports");
+        check(canvas && canvas->graph().atomCount() == 6,
+              "drawing six carbons");
+        check(!dialog.loadSmiles(QStringLiteral("c1cc")),
+              "an invalid one is refused");
+        check(canvas && canvas->graph().atomCount() == 6,
+              "and leaves the canvas exactly as it was");
+
+        // The output seam: the dialog hands MainWindow a finished Structure.
+        // MainWindow's own slot then calls addDocument() — the standard import
+        // machinery — which this binary does not build, so what is pinned here
+        // is the CONTRACT: one signal, carrying a real C6H6 and the tab name.
+        std::shared_ptr<calango::core::Structure> sent;
+        QString sentName;
+        QObject::connect(&dialog, &MolecularDesignDialog::structureReady,
+                         [&sent, &sentName](
+                             std::shared_ptr<calango::core::Structure> structure,
+                             const QString& name) {
+                             sent = std::move(structure);
+                             sentName = name;
+                         });
+        check(dialog.sendToViewport(), "Send to 3D Viewport succeeds");
+        check(sent != nullptr, "emitting a structure");
+        check(sent && sent->size() == 12,
+              "of twelve atoms — the six drawn carbons plus six hydrogens");
+        check(sent && sent->chemicalFormula() == "C6H6", "which is C6H6");
+        check(sentName == QStringLiteral("C6H6"),
+              "and the new tab is named after the formula");
+
+        // Undo takes the SMILES import back out.
+        check(canvas && canvas->canUndo(), "the import is undoable");
+        if (canvas) {
+            canvas->undo();
+            check(canvas->graph().atomCount() == 0,
+                  "and undoing it empties the canvas");
+            check(canvas->canRedo(), "with a redo available");
+            canvas->redo();
+            check(canvas->graph().atomCount() == 6, "which brings it back");
+        }
+
+        // Every tool is selectable, including from a sketch-modifying state.
+        if (canvas) {
+            for (int tool = 0; tool <= static_cast<int>(MoleculeCanvas::Tool::Ring);
+                 ++tool) {
+                canvas->setTool(static_cast<MoleculeCanvas::Tool>(tool));
+            }
+            check(canvas->tool() == MoleculeCanvas::Tool::Ring,
+                  "every tool can be selected in turn");
+        }
+
+        exerciseControls(&dialog);
+        check(true, "survives every control being toggled");
     }
 
     std::printf(failures == 0 ? "\nAll dialog construction checks passed.\n"

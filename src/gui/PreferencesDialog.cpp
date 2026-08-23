@@ -746,7 +746,11 @@ QWidget* PreferencesDialog::buildHotkeysTab()
         tr("Click a row's shortcut field, then press the new key or "
            "combination. A key already used elsewhere — including by a "
            "fixed, non-remappable shortcut — is refused rather than "
-           "silently duplicated."),
+           "silently duplicated.\n\n"
+           "A key may appear twice when the two actions live in different "
+           "windows: the Molecular Design tools are active only while that "
+           "window has focus, so they share the single-letter keyspace with "
+           "the main window's viewport modes rather than competing for it."),
         page);
     note->setWordWrap(true);
     layout->addWidget(note);

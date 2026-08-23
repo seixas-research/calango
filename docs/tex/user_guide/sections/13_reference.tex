@@ -38,6 +38,38 @@ around and is a no-op with a single tab open; both keys yield to the
 viewport losing focus, same as the letter shortcuts above.
 \end{calnote}
 
+\subsection{Molecular Design}
+
+Live only while the Molecular Design window (Section~\ref{sec:molecular-design})
+has focus, which is what lets both it and the viewport use single letters
+without either seeing the other's keys. All remappable, under
+\textbf{Molecular Design} in
+\menu{Edit}\menusep\menu{Preferences}\menusep\menu{Hotkeys}.
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+Key & Tool \\
+\midrule
+\kbd{V} & Selection \\
+\kbd{1} / \kbd{2} / \kbd{3} & Single / double / triple bond \\
+\kbd{4} / \kbd{5} & Wedge (bold) / hashed stereo bond \\
+\kbd{C} & Chain \\
+\kbd{L} & Atom label \\
+\kbd{X} & Caption \\
+\kbd{P} & Formal charge \\
+\kbd{E} & Eraser \\
+\kbd{B} & Ring template \\
+\kbd{Y} & Tidy the drawing \\
+\kbd{Ctrl}+\kbd{Return} & Send to 3D Viewport \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Undo, redo, copy, paste and select-all use the application's own bindings
+inside the sketcher too, so remapping \kbd{Ctrl}+\kbd{Z} remaps it everywhere.
+
 \subsection{Application}
 
 \begin{center}

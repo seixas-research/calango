@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.8.39
+    VERSION 26.8.40
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -169,6 +169,15 @@ qt_add_executable(calango
     src/core/HydrogenBonds.cpp
     src/core/HydrogenCompletion.hpp
     src/core/HydrogenCompletion.cpp
+    # Molecular Design: the 2D sketch model, its SMILES layer, and the
+    # 2D -> 3D embedding the "Send to 3D Viewport" button runs. All three are
+    # Qt-free and Python-free, like the polymer/ice/graphene-oxide builders.
+    src/core/MoleculeGraph.hpp
+    src/core/MoleculeGraph.cpp
+    src/core/Smiles.hpp
+    src/core/Smiles.cpp
+    src/core/MoleculeEmbed3d.hpp
+    src/core/MoleculeEmbed3d.cpp
     src/core/Distributions.hpp
     src/core/Distributions.cpp
     src/core/StructureFactor.hpp
@@ -510,6 +519,10 @@ qt_add_executable(calango
     src/gui/BondEditorDialog.cpp
     src/gui/PeriodicTableDialog.hpp
     src/gui/PeriodicTableDialog.cpp
+    src/gui/MoleculeCanvas.hpp
+    src/gui/MoleculeCanvas.cpp
+    src/gui/MolecularDesignDialog.hpp
+    src/gui/MolecularDesignDialog.cpp
     src/gui/SlabWizard.hpp
     src/gui/SlabWizard.cpp
     src/gui/PreferencesDialog.hpp
@@ -882,7 +895,9 @@ qt_add_resources(calango "icons"
         assets/icons/align-item-vertical-center-line.svg
         assets/icons/anticlockwise-2-line.svg
         assets/icons/arrow-go-back-line.svg
+        assets/icons/arrow-go-forward-line.svg
         assets/icons/atom-line.svg
+        assets/icons/atom-label-line.svg
         assets/icons/box-1-fill.svg
         assets/icons/box-3-line.svg
         assets/icons/brush-fill.svg
@@ -930,6 +945,28 @@ qt_add_resources(calango "icons"
         assets/icons/gradient.svg
         assets/icons/stairs-fill.svg
         assets/icons/hexagon-fill.svg
+        # Molecular Design's tool palette. RemixIcon ships no chemistry set,
+        # so the bond-order, stereo, chain and ring glyphs are drawn for this
+        # application; they follow the RemixIcon `-line` naming convention so
+        # the icon-registry test sees them like any other.
+        assets/icons/bond-single-line.svg
+        assets/icons/bond-double-line.svg
+        assets/icons/bond-triple-line.svg
+        assets/icons/bond-wedge-line.svg
+        assets/icons/bond-hash-line.svg
+        assets/icons/chain-zigzag-line.svg
+        assets/icons/text-caption-line.svg
+        assets/icons/molecule-benzene-line.svg
+        assets/icons/ring-3-line.svg
+        assets/icons/ring-4-line.svg
+        assets/icons/ring-5-line.svg
+        assets/icons/ring-6-line.svg
+        assets/icons/ring-7-line.svg
+        assets/icons/ring-8-line.svg
+        assets/icons/ring-benzene-line.svg
+        assets/icons/ring-cyclopentadiene-line.svg
+        assets/icons/ring-naphthalene-line.svg
+        assets/icons/clipboard-line.svg
         assets/icons/home-2-fill.svg
         assets/icons/home-office-fill.svg
         assets/icons/community-fill.svg
@@ -1725,6 +1762,22 @@ if(CALANGO_BUILD_TESTS)
     target_include_directories(calango_hcomplete_test PRIVATE src)
     add_test(NAME hydrogen_completion COMMAND calango_hcomplete_test)
 
+    # Molecular Design: the sketch model's valence arithmetic and ring
+    # templates, the SMILES parser/writer, the 2D layout and Tidy, and the
+    # 2D -> 3D pipeline "Send to 3D Viewport" runs — with benzene as the
+    # end-to-end proof, through both the ring template and SMILES.
+    add_executable(calango_molecular_design_test
+        tests/MolecularDesignTest.cpp
+        src/core/MoleculeGraph.cpp
+        src/core/Smiles.cpp
+        src/core/MoleculeEmbed3d.cpp
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+    )
+    target_include_directories(calango_molecular_design_test PRIVATE src)
+    add_test(NAME molecular_design COMMAND calango_molecular_design_test)
+
     # Shader compilation: a GLSL error renders nothing instead of crashing, so
     # without this a broken shader ships as a black viewport. Needs a real GL
     # 3.3 context and self-skips when there is none.
@@ -2015,6 +2068,19 @@ if(CALANGO_BUILD_TESTS)
         # already here for the magnetic-space-group dialog.
         src/gui/StructureEditorDialog.cpp
         src/gui/PeriodicTableDialog.cpp
+        # The Molecular Design sketcher. Its canvas builds a QLineEdit inline
+        # editor from a mouse handler and its dialog wires twelve exclusive
+        # tool buttons and a shortcut per tool from the constructor — both are
+        # exactly the construction-order hazard this test exists for. The
+        # 2D -> 3D pipeline it drives is asserted separately (and Qt-free) by
+        # the `molecular_design` test; what is exercised HERE is that the
+        # dialog builds, that its tools are reachable, and that
+        # "Send to 3D Viewport" emits a structure.
+        src/gui/MoleculeCanvas.cpp
+        src/gui/MolecularDesignDialog.cpp
+        src/core/MoleculeGraph.cpp
+        src/core/Smiles.cpp
+        src/core/MoleculeEmbed3d.cpp
         src/python_bridge/AseBridge.cpp
         src/core/PdbxFile.cpp
         # The "Source MLWF process" step and two of the three dialogs that
@@ -3809,6 +3875,7 @@ if(CALANGO_BUILD_TESTS)
         gw_qp_parser gw_silicon hubbard_linear_response hydrogen_bonds
         hydrogen_completion ice_builder kpath_table lammps_environment
         lammps_scripts ldos_h2o mace_trainer_preflight magnetic_space_group materials_project_mp1434
+        molecular_design
         monte_carlo_swap nlopt_parser noise_ramp
         optics_2d_observables optics_broadening
         optics_silicon orchestration_batch orchestration_handoff

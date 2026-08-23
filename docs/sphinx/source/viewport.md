@@ -1,6 +1,6 @@
 # The 3D viewport
 
-The viewport is an instanced OpenGL 3.3 canvas — spheres, bond cylinders, and arrows are drawn in single instanced calls, so structures with tens of thousands of atoms rotate interactively. A dedicated toolbar sits between the tab bar and the canvas and carries everything camera-related: interaction modes, projection, alignment, fixed-angle rotation, and display toggles.
+The viewport is an instanced OpenGL 3.3 canvas — spheres, bond cylinders, and arrows are drawn in single instanced calls, so structures with tens of thousands of atoms rotate interactively. A dedicated toolbar sits between the tab bar and the canvas: the Molecular Design sketcher first, then everything camera-related — interaction modes, projection, alignment, fixed-angle rotation, and display toggles.
 
 % TODO screenshot: the full viewport toolbar, annotated with the mode cluster (R/T/S/I), measurement pair (D/A), camera group (F/O), XY/XZ/YZ alignment, and the angle-step spinner with the six axis buttons
 ```{figure} /_static/img/viewport_toolbar.png
@@ -10,6 +10,20 @@ The viewport is an instanced OpenGL 3.3 canvas — spheres, bond cylinders, and 
 
 The viewport toolbar. Every camera command lives here — there is no View → Alignment submenu.
 ```
+
+---
+
+## Molecular Design
+
+The **first button on the toolbar**, before the interaction-mode cluster and
+separated from it, is a benzene hexagon that opens
+{doc}`Molecular Design </builders/molecular_design>` — Calango's 2D chemical
+sketcher. It sits ahead of the mouse modes because it is not one of them: every
+other button on this toolbar changes what a drag *does* to the structure on
+screen, while this one opens a window that *creates* a structure.
+
+The window is modeless, so the viewport stays visible and usable beside it, and
+it keeps its drawing for the rest of the session.
 
 ---
 

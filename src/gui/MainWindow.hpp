@@ -44,6 +44,7 @@ namespace calango::gui {
 class BrandingPanel;
 class JobLogWidget;
 class NebDialog;
+class MolecularDesignDialog;
 class PointOfViewDialog;
 class SimulationWizardBase;
 class MetricPlotWidget;
@@ -430,6 +431,11 @@ private Q_SLOTS:
     void resetLayout();
     /// View toolbar → "Set point-of-view…": the modeless camera editor.
     void showPointOfView();
+    /// Open (or re-show) the Molecular Design sketcher. Modeless and
+    /// single-instance for the same reason the point-of-view editor is: the
+    /// user wants the 3D viewport beside the drawing, and the drawing has to
+    /// survive closing the window within a session.
+    void showMolecularDesign();
     /// View toolbar → "Reset camera" [F]: apply the default point-of-view the
     /// user stored in ~/.calango/settings.json, or auto-frame the structure
     /// when none has been stored.
@@ -994,6 +1000,11 @@ private:
     bool restoringPointOfView_ = false;
     /// The modeless Set Point-of-View editor; null when it is not open.
     PointOfViewDialog* povDialog_ = nullptr;
+    /// The modeless Molecular Design sketcher; null until first opened.
+    /// KEPT ALIVE across close/reopen (no WA_DeleteOnClose) — unlike the
+    /// point-of-view editor, this window holds a document the user is
+    /// authoring, and destroying it on close would throw the sketch away.
+    MolecularDesignDialog* molecularDesignDialog_ = nullptr;
     FilmProductionDialog* filmDialog_ = nullptr;
     FilmTimelineWidget* filmTimeline_ = nullptr;
     QAction* filmModeAction_ = nullptr;

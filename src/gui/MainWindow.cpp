@@ -24,6 +24,7 @@
 #include "gui/XrdDialog.hpp"
 #include "gui/DatabaseImportDialog.hpp"
 #include "gui/ExamplesDialog.hpp"
+#include "gui/MolecularDesignDialog.hpp"
 #include "gui/NanoBuilderDialog.hpp"
 #include "gui/PointOfViewDialog.hpp"
 #include "gui/RayTraceDialog.hpp"
@@ -481,6 +482,32 @@ MainWindow::MainWindow(QWidget* parent)
     frameToolbar->setIconSize(QSize(22, 22));
     frameToolbar->setMovable(false);
     frameToolbar->setToolButtonStyle(Qt::ToolButtonIconOnly);
+
+    // --- Molecular Design, FIRST on the toolbar ---------------------------
+    //
+    // Ahead of the mouse modes, and separated from them, because it is not one
+    // of them: every other button here changes what a drag DOES to the
+    // structure on screen, while this one opens a window that CREATES a
+    // structure. Putting it first also matches where a sketcher lives in every
+    // chemistry package that has one.
+    //
+    // Icon-only with no text, like every other button on this toolbar. The
+    // glyph is a benzene hexagon with its three inner bonds, drawn for this
+    // button (assets/icons/molecule-benzene-line.svg) because RemixIcon has no
+    // chemistry set — see the ring-template glyphs beside it.
+    QAction* molecularDesignAction = frameToolbar->addAction(tr("Molecular Design"));
+    ui::IconManager::bind(molecularDesignAction,
+                          QStringLiteral("molecule-benzene-line"));
+    molecularDesignAction->setToolTip(
+        tr("Molecular Design — sketch a molecule in 2D (bonds, rings, "
+           "heteroatoms, stereo bonds, SMILES)\nand send it to a new 3D "
+           "viewport tab with hydrogens added and the geometry cleaned "
+           "up.\n\n"
+           "Opens beside the viewport rather than over it, and keeps its "
+           "drawing for the rest of the session."));
+    connect(molecularDesignAction, &QAction::triggered, this,
+            &MainWindow::showMolecularDesign);
+    frameToolbar->addSeparator();
 
     // --- Mouse interaction modes (exclusive, single-letter hotkeys) --------
     // Plain-letter shortcuts are safe: Qt's ShortcutOverride lets text
@@ -6339,6 +6366,37 @@ void MainWindow::showPointOfView()
     connect(povDialog_, &QObject::destroyed, this,
             [this] { povDialog_ = nullptr; });
     povDialog_->show();
+}
+
+void MainWindow::showMolecularDesign()
+{
+    if (!molecularDesignDialog_) {
+        molecularDesignDialog_ = new MolecularDesignDialog(this);
+        // NOT WA_DeleteOnClose: the sketch is a document the user is
+        // authoring, and a closed-and-reopened window that came back empty
+        // would be a data-loss bug wearing a window decoration. It is a child
+        // of the main window, so it still dies with the application.
+        connect(molecularDesignDialog_, &MolecularDesignDialog::structureReady,
+                this,
+                [this](std::shared_ptr<core::Structure> structure,
+                       const QString& name) {
+                    if (!structure || structure->empty())
+                        return;
+                    // Straight through the standard import machinery — the
+                    // same call every builder makes, so the new tab is a
+                    // workspace like any other: undoable, saveable, and
+                    // available to every wizard.
+                    addDocument(structure, name);
+                    statusBar()->showMessage(
+                        tr("Molecular Design: opened %1 (%2 atoms) in a new "
+                           "tab.")
+                            .arg(name)
+                            .arg(structure->size()));
+                });
+    }
+    molecularDesignDialog_->show();
+    molecularDesignDialog_->raise();
+    molecularDesignDialog_->activateWindow();
 }
 
 void MainWindow::rememberCastOpacities()

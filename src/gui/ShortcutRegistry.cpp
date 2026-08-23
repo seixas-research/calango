@@ -80,6 +80,82 @@ QVector<ShortcutAction> defaultActions()
          QObject::tr("Panels"), QKeySequence(Qt::CTRL | Qt::Key_8)},
         {QStringLiteral("panel.toggle.results"), QObject::tr("Toggle Results panel"),
          QObject::tr("Panels"), QKeySequence(Qt::CTRL | Qt::Key_9)},
+
+        // --- Molecular Design ------------------------------------------------
+        //
+        // SCOPED TO THE DIALOG (Qt::WidgetWithChildrenShortcut), which is what
+        // lets the sketcher have single-letter tool keys at all: the viewport's
+        // own R/T/S/I/D/A/F/O are live in the main window and these are live in
+        // the sketcher, and neither ever sees the other's keys.
+        //
+        // conflictFor() reads that scope, so X and Y below may — and do —
+        // duplicate keys an application-wide action can still be bound to.
+        // Only FIXED shortcuts are checked here as well as everywhere else:
+        // the main window's menu accelerators stay live underneath a modeless
+        // dialog, so a Ctrl+P here would be a real ambiguity.
+        //
+        // The keys themselves: the bond family takes the digits, which nothing
+        // in the application uses unmodified, and the rest are mnemonic — V
+        // for the arrow (as in every drawing program), C for Chain, L for
+        // Label, X for teXt, P for the Plus/minus charge tool, E for Eraser,
+        // B for the ring (whose default template is Benzene), Y for tidY.
+        {QStringLiteral("moleculardesign.tool.select"),
+         QObject::tr("Selection tool"), QObject::tr("Molecular Design"),
+         QKeySequence(Qt::Key_V),
+         QStringLiteral("molecularDesign")},
+        {QStringLiteral("moleculardesign.tool.singleBond"),
+         QObject::tr("Single bond tool"), QObject::tr("Molecular Design"),
+         QKeySequence(Qt::Key_1),
+         QStringLiteral("molecularDesign")},
+        {QStringLiteral("moleculardesign.tool.doubleBond"),
+         QObject::tr("Double bond tool"), QObject::tr("Molecular Design"),
+         QKeySequence(Qt::Key_2),
+         QStringLiteral("molecularDesign")},
+        {QStringLiteral("moleculardesign.tool.tripleBond"),
+         QObject::tr("Triple bond tool"), QObject::tr("Molecular Design"),
+         QKeySequence(Qt::Key_3),
+         QStringLiteral("molecularDesign")},
+        {QStringLiteral("moleculardesign.tool.wedgeBond"),
+         QObject::tr("Wedge (bold) bond tool"), QObject::tr("Molecular Design"),
+         QKeySequence(Qt::Key_4),
+         QStringLiteral("molecularDesign")},
+        {QStringLiteral("moleculardesign.tool.hashBond"),
+         QObject::tr("Hashed bond tool"), QObject::tr("Molecular Design"),
+         QKeySequence(Qt::Key_5),
+         QStringLiteral("molecularDesign")},
+        {QStringLiteral("moleculardesign.tool.chain"),
+         QObject::tr("Chain tool"), QObject::tr("Molecular Design"),
+         QKeySequence(Qt::Key_C),
+         QStringLiteral("molecularDesign")},
+        {QStringLiteral("moleculardesign.tool.atomLabel"),
+         QObject::tr("Atom label tool"), QObject::tr("Molecular Design"),
+         QKeySequence(Qt::Key_L),
+         QStringLiteral("molecularDesign")},
+        {QStringLiteral("moleculardesign.tool.caption"),
+         QObject::tr("Caption tool"), QObject::tr("Molecular Design"),
+         QKeySequence(Qt::Key_X),
+         QStringLiteral("molecularDesign")},
+        {QStringLiteral("moleculardesign.tool.charge"),
+         QObject::tr("Formal charge tool"), QObject::tr("Molecular Design"),
+         QKeySequence(Qt::Key_P),
+         QStringLiteral("molecularDesign")},
+        {QStringLiteral("moleculardesign.tool.eraser"),
+         QObject::tr("Eraser tool"), QObject::tr("Molecular Design"),
+         QKeySequence(Qt::Key_E),
+         QStringLiteral("molecularDesign")},
+        {QStringLiteral("moleculardesign.tool.ring"),
+         QObject::tr("Ring template tool"), QObject::tr("Molecular Design"),
+         QKeySequence(Qt::Key_B),
+         QStringLiteral("molecularDesign")},
+        {QStringLiteral("moleculardesign.tidy"),
+         QObject::tr("Tidy the drawing"), QObject::tr("Molecular Design"),
+         QKeySequence(Qt::Key_Y),
+         QStringLiteral("molecularDesign")},
+        {QStringLiteral("moleculardesign.sendToViewport"),
+         QObject::tr("Send the drawing to the 3D viewport"),
+         QObject::tr("Molecular Design"),
+         QKeySequence(Qt::CTRL | Qt::Key_Return),
+         QStringLiteral("molecularDesign")},
     };
 }
 
@@ -188,8 +264,16 @@ QString ShortcutRegistry::conflictFor(const QKeySequence& key,
     if (key.isEmpty())
         return QString(); // "no shortcut" never conflicts with anything
 
+    // The scope the comparison runs in comes from the action being re-bound;
+    // with no excludeId it is the application-wide one. See the header for why
+    // two scopes may hold the same key.
+    const ShortcutAction* subject = excludeId.isEmpty() ? nullptr : find(excludeId);
+    const QString scope = subject ? subject->scope : QString();
+
     for (const ShortcutAction& action : actions()) {
         if (action.id == excludeId)
+            continue;
+        if (action.scope != scope)
             continue;
         if (binding(action.id) == key)
             return action.label;
