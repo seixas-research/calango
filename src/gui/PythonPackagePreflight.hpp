@@ -14,6 +14,15 @@ namespace calango::gui {
 /// generalize to "is package X importable under env Y".
 struct PythonPackagePreflightResult {
     bool available = false;
+    /// Whether the interpreter actually RAN and gave an answer.
+    ///
+    /// Separate from `available` because the two failures are not the same
+    /// thing and must not be acted on the same way: an interpreter that
+    /// answered "no such module" is evidence the package is missing, while
+    /// one that could not be started or timed out is evidence of nothing.
+    /// A caller that refuses to launch on the second is grounding a working
+    /// setup over a probe that never happened.
+    bool interpreterAnswered = false;
     /// The package's own reported `__version__`, when it has one and the
     /// import succeeded. Empty otherwise — never fabricated.
     QString version;

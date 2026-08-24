@@ -2189,8 +2189,12 @@ void MainWindow::createMenusAndDocks()
     jobTabs->addTab(plotPage(forcePlot_), tr("Force"));
     jobTabs->addTab(plotPage(pressurePlot_), tr("Pressure"));
 
-    // GO/MCMD's tab here: Acceptance (a live multi-series plot — the overall
-    // rate CUMULATIVE and WINDOWED, plus one windowed line per move kind).
+    // GO/MCMD's tab here: Acceptance — ONE curve, the cumulative Metropolis
+    // acceptance rate against MC cycle. It used to carry up to seven series
+    // (cumulative and windowed overall, plus a windowed line per move kind);
+    // the per-move-kind breakdown is still computed and still in
+    // metrics.json, and the Summary window shows it as a table and exports
+    // it as CSV. See updateMcmdAcceptancePlot() for the reasoning.
     // Present unconditionally, like Pressure already is for a non-NPT run —
     // empty and showing a placeholder for any job that is not GO/MCMD,
     // populated the moment its metrics.json carries "acceptance_cumulative"
@@ -10185,23 +10189,29 @@ void MainWindow::updateMcmdAcceptancePlot(const ProcessRecord& record)
         if (it != record.extraSeries.end() && !it->second.empty())
             series[label] = toMultiSamples(it->second);
     };
-    // The overall rate BOTH ways: cumulative (the whole run so far) and
-    // windowed (the last ACCEPTANCE_WINDOW attempts), which is what says
-    // whether a rate that looks fine over the run has already started
-    // drifting. Both come from _acceptance_fields(), which has emitted them
-    // side by side all along; only the cumulative one was never plotted.
-    addIfPresent("acceptance_cumulative", tr("Overall (cumulative)"));
-    addIfPresent("acceptance_windowed", tr("Overall (windowed)"));
-    // The per-move-kind lines are kept, as additional series — the plot takes
-    // N named series and this data is a superset, so nothing is lost. They
-    // carry the "(windowed)" qualifier now that a cumulative line shares the
-    // axes: a bare "Epoxide" beside "Overall (windowed)" would not say which
-    // of the two it is.
-    addIfPresent("accept_epoxide_windowed", tr("Epoxide (windowed)"));
-    addIfPresent("accept_hydroxyl_windowed", tr("Hydroxyl (windowed)"));
-    addIfPresent("accept_hydroxyl_pair_windowed", tr("Hydroxyl pair (windowed)"));
-    addIfPresent("accept_carbonyl_windowed", tr("Carbonyl (windowed)"));
-    addIfPresent("accept_carboxyl_windowed", tr("Carboxyl (windowed)"));
+    // ONE CURVE: the cumulative Metropolis acceptance rate.
+    //
+    // The tab used to carry up to seven — cumulative and windowed overall,
+    // plus a windowed line per move kind — which is a monitoring console
+    // rather than a diagnostic. Reading "is this run accepting anything?"
+    // off seven overlapping traces is harder than off one, and that is the
+    // question the tab exists to answer.
+    //
+    // CUMULATIVE rather than windowed, deliberately: it is the conventional
+    // single-number story for a Monte Carlo run ("this run accepted 28 %"),
+    // it is the number the Summary window and mcmd_summary.json already
+    // report, and it does not wander with the window length. The windowed
+    // trace answers a different and narrower question — has the rate started
+    // drifting — which is worth having but is not the headline.
+    //
+    // NOTHING IS LOST. Every series is still computed by
+    // _acceptance_fields() and still written to metrics.json, so:
+    //   * the Summary window's per-move-kind table reads them (attempts,
+    //     accepted and ratio per kind);
+    //   * that window's CSV export carries them;
+    //   * metrics.json itself has them for any external analysis.
+    // Only this PLOT simplifies.
+    addIfPresent("acceptance_cumulative", tr("Metropolis acceptance"));
     mcmdAcceptancePlot_->clear();
     mcmdAcceptancePlot_->setSeries(series);
 }

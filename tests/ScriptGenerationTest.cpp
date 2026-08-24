@@ -2948,6 +2948,106 @@ int main(int argc, char** argv)
                       "including its fixed-density band pass");
     }
 
+    // -- The Acceptance tab plots ONE curve; the breakdown still exists --
+    //
+    // The tab simplified to the cumulative Metropolis rate. That is a PLOT
+    // change only: the per-move-kind series must still be computed and
+    // written, because the Summary window's table and its CSV export read
+    // them out of metrics.json. Asserted on the GENERATOR, which is what
+    // decides whether the data exists at all.
+    std::printf("Acceptance metrics survive the single-curve plot:\n");
+    {
+        GrapheneOxideMcmdConfig cfg;
+        const std::string script =
+            GrapheneOxideMcmdScriptGenerator::generate(cfg);
+
+        checkContains(script, "\"acceptance_cumulative\":",
+                      "the cumulative rate — the one curve the tab plots");
+        checkContains(script, "\"acceptance_windowed\":",
+                      "the windowed rate is still recorded, just not "
+                      "plotted");
+        checkContains(script, "fields[f\"accept_{k}_windowed\"]",
+                      "and the per-move-kind windowed rate as well");
+        checkContains(script, "fields[f\"accept_{k}_attempts\"]",
+                      "with the attempts the Summary table divides by");
+        checkContains(script, "fields[f\"accept_{k}_accepted\"]",
+                      "and the accepted count it shows beside them");
+        checkContains(script, "\"acceptance_attempts\":",
+                      "plus the overall attempts, which is the field the "
+                      "Summary window gates its whole table on");
+    }
+
+    // -- Every ML engine's pre-flight module IS the one it imports -------
+    //
+    // The pre-flight refuses a launch whose ML package is not importable,
+    // naming the package. That is only useful if the name it checks is the
+    // name the script opens with, so the two are compared here rather than
+    // kept in step by hand.
+    std::printf("ML potential package mapping matches the imports:\n");
+    {
+        for (const CalculatorKind kind :
+             {CalculatorKind::Mace, CalculatorKind::MatterSim,
+              CalculatorKind::ChgNet, CalculatorKind::DeepMd,
+              CalculatorKind::FairChem}) {
+            const char* module = mlipPythonModule(kind);
+            CalculatorConfig cfg;
+            cfg.calculator = kind;
+            const std::string snippet =
+                AseScriptGenerator::calculatorSnippet(cfg);
+            const std::string wanted = std::string("from ") + module;
+            checkContains(snippet, wanted,
+                          std::string("the ") + toString(kind)
+                              + " script imports the module its pre-flight "
+                                "checks");
+        }
+    }
+
+    // -- The GO relaxation's convergence test (proc_1_linux_cuda) --------
+    //
+    // A real run died at the FIRST relaxation, before any Monte Carlo
+    // cycle, with
+    //
+    //   TypeError: Optimizer.converged() missing 1 required positional
+    //   argument: 'gradient'
+    //
+    // ase's Optimizer.converged() signature has drifted: it used to take no
+    // required argument. Nothing about the criterion changed, so the
+    // generated script applies it directly instead of calling an API that
+    // moves under it.
+    std::printf("GO relaxation convergence (ase-version independent):\n");
+    {
+        GrapheneOxideMcmdConfig cfg;
+        cfg.relaxation = GoMcRelaxation::Optimization;
+        const std::string script =
+            GrapheneOxideMcmdScriptGenerator::generate(cfg);
+
+        checkNotContains(script, "optimizer.converged()",
+                          "ase's Optimizer.converged() is never called — its "
+                          "signature is not stable across ase releases");
+        checkContains(script, "def _relax_converged(target):",
+                      "the criterion is applied directly instead");
+        checkContains(script,
+                      "np.sqrt((forces ** 2).sum(axis=1)).max() "
+                      "< optimizer_fmax",
+                      "as the largest per-row force norm against "
+                      "optimizer_fmax — ase's own rule, including its "
+                      "strict <");
+        checkContains(script, "target.get_forces()",
+                      "read off the OPTIMIZER'S TARGET, so a cell filter's "
+                      "stress rows count exactly as ase counts them");
+        checkContains(script, "if _relax_converged(target):",
+                      "and it is what the step loop breaks on");
+
+        // The MD module never relaxes, so it never had this failure -- the
+        // reason the defect looked calculator-specific rather than
+        // ase-version-specific.
+        GrapheneOxideMcmdConfig md;
+        md.relaxation = GoMcRelaxation::MolecularDynamics;
+        checkNotContains(GrapheneOxideMcmdScriptGenerator::generate(md),
+                          "optimizer.converged()",
+                          "and the MD module calls it nowhere either");
+    }
+
     // -- The convergence sweeps with VASP (Task 4, 2026-08-24) -----------
     std::printf("Convergence sweeps with VASP:\n");
     {

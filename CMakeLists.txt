@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.8.44
+    VERSION 26.8.45
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -3548,6 +3548,16 @@ if(CALANGO_BUILD_TESTS)
                 $<TARGET_FILE:calango_script_test>)
     set_tests_properties(graphene_oxide_mcmd_mace PROPERTIES TIMEOUT 1800)
 
+    # The GO relaxation must not depend on ase's Optimizer.converged()
+    # signature -- the defect behind proc_1_linux_cuda. Imposes the newer
+    # ase signature on this machine's ase and runs the generated script
+    # under it.
+    add_test(NAME go_relax_ase_api
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/go_relax_ase_api_test.py
+                $<TARGET_FILE:calango_script_test>)
+    set_tests_properties(go_relax_ase_api PROPERTIES TIMEOUT 600)
+
     # GO Grand Canonical MC: the algorithmic invariants (stoichiometry read
     # off the group recipes, and the SIGN of mu in the acceptance criterion),
     # from the shipped script. No calculator, so it runs everywhere.
@@ -3853,6 +3863,13 @@ if(CALANGO_BUILD_TESTS)
     add_test(NAME docs_version_sync
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/docs_version_sync_test.py)
+    # README.md and the Sphinx landing page carry the SAME badge row, in the
+    # same order, with C++/Qt versions read out of this file rather than
+    # trusted. Two hand-maintained copies of one row is exactly the pair that
+    # drifts -- and had.
+    add_test(NAME docs_badge_parity
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/docs_badge_parity_test.py)
     add_test(NAME docs_ui_labels
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/docs_ui_labels_test.py)
@@ -3934,6 +3951,7 @@ if(CALANGO_BUILD_TESTS)
     set(CALANGO_DOCS_TESTS
         docs_version_sync       # one version string, everywhere a reader sees it
         docs_ui_labels          # the manual may not name a control that is gone
+        docs_badge_parity       # README and the landing page agree
         docs_sphinx_build)      # the site still builds
 
     # Everything else: physics, numerics, crystallography, parsers of
@@ -3956,7 +3974,7 @@ if(CALANGO_BUILD_TESTS)
         graphene_2d_bands_qe graphene_2d_bands_siesta
         graphene_oxide graphene_oxide_group_analysis graphene_oxide_mcmd_antiposition
         graphene_oxide_mcmd_mace graphene_oxide_mcmd_flake
-        graphene_oxide_gcmc graphene_oxide_gcmc_mace
+        graphene_oxide_gcmc graphene_oxide_gcmc_mace go_relax_ase_api
         graphene_oxide_pair_correlation
         graphene_oxide_percolation
         graphene_oxide_percolation_mcmd graphene_oxide_sites graphene_tetrahedron

@@ -33,6 +33,9 @@ PythonPackagePreflightResult checkPythonPackage(const QString& pythonExecutable,
                 .arg(moduleName, pythonExecutable);
         return result;
     }
+    // Past this point the interpreter started, ran and exited: whatever it
+    // reports is an answer about the module, not about the interpreter.
+    result.interpreterAnswered = true;
     if (probe.exitCode() != 0) {
         // The interpreter's own ImportError text, trimmed to its last line
         // (a traceback's actual message) rather than the whole dump.

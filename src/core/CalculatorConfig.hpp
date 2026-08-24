@@ -168,6 +168,45 @@ constexpr bool isMlipCalculator(CalculatorKind kind)
         || kind == CalculatorKind::FairChem;
 }
 
+/// The top-level Python module an ML potential's generated script imports,
+/// or nullptr for an engine that needs none.
+///
+/// Exists so a missing package is caught BEFORE a job is staged and
+/// launched, with a message naming what to install, rather than as a raw
+/// ModuleNotFoundError traceback in a log the user has to go find. The name
+/// is the IMPORT name, which is what a pre-flight can test and is not always
+/// the pip name (deepmd-kit imports as `deepmd`, orb-models as `orb_models`)
+/// -- the installation hint that goes with it is the wizard's business.
+constexpr const char* mlipPythonModule(CalculatorKind kind)
+{
+    switch (kind) {
+    case CalculatorKind::Mace:      return "mace";
+    case CalculatorKind::MatterSim: return "mattersim";
+    case CalculatorKind::ChgNet:    return "chgnet";
+    case CalculatorKind::DeepMd:    return "deepmd";
+    case CalculatorKind::NequIp:    return "nequip";
+    case CalculatorKind::Allegro:   return "nequip";  // Allegro ships in it
+    case CalculatorKind::FairChem:  return "fairchem";
+    default:                        return nullptr;
+    }
+}
+
+/// The `pip install` name for `mlipPythonModule(kind)`, where the two
+/// differ. Shown in the pre-flight message so the fix is copy-pasteable.
+constexpr const char* mlipPipPackage(CalculatorKind kind)
+{
+    switch (kind) {
+    case CalculatorKind::Mace:      return "mace-torch";
+    case CalculatorKind::MatterSim: return "mattersim";
+    case CalculatorKind::ChgNet:    return "chgnet";
+    case CalculatorKind::DeepMd:    return "deepmd-kit";
+    case CalculatorKind::NequIp:    return "nequip";
+    case CalculatorKind::Allegro:   return "nequip";
+    case CalculatorKind::FairChem:  return "fairchem-core";
+    default:                        return nullptr;
+    }
+}
+
 /// Which family an engine belongs to.
 ///
 /// This exists to give the engine dropdown ONE ordering, defined here rather

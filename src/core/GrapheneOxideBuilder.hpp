@@ -121,6 +121,24 @@ public:
     struct Config {
         Base base = Base::PeriodicSheet;
 
+        /// Vacuum CLEARANCE, in angstrom — the empty space between the
+        /// structure and its nearest periodic image.
+        ///
+        /// One number governs both bases, because it answers the same
+        /// question for both: how far apart must a copy be to stop
+        /// interacting? For a PERIODIC SHEET it is the gap above and below,
+        /// so the cell along the vacuum axis is 2x this. For a NANOFLAKE it
+        /// is the padding on all six faces of the box the flake sits in.
+        ///
+        /// 10 A by default. The functional groups stand ~1.5 A off the
+        /// plane, so a hydroxyl and its own image are ~17 A apart at the
+        /// default and still ~10 A apart at the 6 A floor -- far enough that
+        /// nothing overlaps, close enough that a plane-wave run is cheaper.
+        /// Below ~6 A the 2D-detection heuristics downstream stop being
+        /// reliable (see the range on the wizard's own spin box), which is
+        /// why that is the floor rather than a smaller one.
+        double vacuumAngstrom = 10.0;
+
         // -- Base::PeriodicSheet ------------------------------------------
         Lattice lattice = Lattice::Rectangular;
         int supercell[2] = {4, 4};

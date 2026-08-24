@@ -28,13 +28,15 @@ constexpr double kDeg = kPi / 180.0;
 constexpr double kLatticeA = 2.46;
 constexpr double kCC = kLatticeA / 1.7320508075688772; // a / sqrt(3) = 1.42 Å
 
-// Vacuum along z. Enough that periodic images of the functional groups do not
-// interact — the groups themselves stand ~1.5 Å off the plane, so a thinner
-// slab than this would have them talking to their own image.
-constexpr double kVacuum = 20.0;
-// A finite flake is a molecule in a box: the same 10 Å clearance the sheet
-// gets above and below, applied on all six faces.
-constexpr double kFlakePad = kVacuum * 0.5;
+// Vacuum CLEARANCE default, in angstrom -- the gap between the structure and
+// its nearest periodic image. Configurable per build
+// (Config::vacuumAngstrom); this is only the fallback for the callers that
+// have no Config in hand.
+//
+// Enough that periodic images of the functional groups do not interact: the
+// groups stand ~1.5 A off the plane, so a hydroxyl and its own image sit
+// ~17 A apart here.
+constexpr double kVacuumClearance = 10.0;
 
 // Basal (sp3, out-of-plane) chemistry.
 constexpr double kCO_epoxide = 1.44;
@@ -178,6 +180,11 @@ Framework buildFramework(const Config& config)
 {
     Framework fw;
     fw.periodic = config.base == Base::PeriodicSheet;
+    // Clamped rather than trusted: the wizard's spin box has a floor, but a
+    // Config can also arrive from a saved project or a headless caller, and
+    // a zero or negative clearance would put the sheet on top of its own
+    // image.
+    const double vacuum = std::max(1.0, config.vacuumAngstrom);
 
     if (fw.periodic) {
         const int nx = std::max(1, config.supercell[0]);
@@ -213,14 +220,16 @@ Framework buildFramework(const Config& config)
                     Atom atom;
                     atom.atomicNumber = kZ_C;
                     atom.position = Vec3{site.x + shift.x, site.y + shift.y,
-                                         kVacuum * 0.5};
+                                         vacuum};
                     fw.carbons.addAtom(atom);
                 }
             }
         }
+        // 2 x the clearance: `vacuum` above the sheet and `vacuum` below,
+        // with the sheet itself at the midpoint.
         fw.carbons.setCell(UnitCell(Vec3{a1.x * nx, a1.y * nx, 0.0},
                                     Vec3{a2.x * ny, a2.y * ny, 0.0},
-                                    Vec3{0.0, 0.0, kVacuum}));
+                                    Vec3{0.0, 0.0, 2.0 * vacuum}));
     } else {
         for (const Vec3& p : nanoflakeCarbons(config.flakeIndex)) {
             Atom atom;
@@ -323,11 +332,16 @@ Framework buildFramework(const Config& config)
     return fw;
 }
 
-/// Fit an orthorhombic box with `kFlakePad` of vacuum on every side around a
+/// Fit an orthorhombic box with `pad` of vacuum on every side around a
 /// finite structure, translating it to sit inside. A cluster still needs a cell
 /// because every plane-wave code demands one; what it must not have is a
 /// neighbour.
-void fitFlakeCell(Structure& structure)
+///
+/// `pad` is the SAME number the periodic sheet uses as its clearance above
+/// and below (Config::vacuumAngstrom) -- one setting, one meaning: how far
+/// apart must a copy be. The sheet spends it on two faces and a flake on
+/// six, which is a property of the geometry, not a second decision.
+void fitFlakeCell(Structure& structure, double pad = kVacuumClearance)
 {
     if (structure.empty())
         return;
@@ -342,13 +356,13 @@ void fitFlakeCell(Structure& structure)
         hi.z = std::max(hi.z, atom.position.z);
     }
     for (Atom& atom : structure.atoms()) {
-        atom.position.x += kFlakePad - lo.x;
-        atom.position.y += kFlakePad - lo.y;
-        atom.position.z += kFlakePad - lo.z;
+        atom.position.x += pad - lo.x;
+        atom.position.y += pad - lo.y;
+        atom.position.z += pad - lo.z;
     }
-    structure.setCell(UnitCell(Vec3{hi.x - lo.x + 2 * kFlakePad, 0.0, 0.0},
-                               Vec3{0.0, hi.y - lo.y + 2 * kFlakePad, 0.0},
-                               Vec3{0.0, 0.0, hi.z - lo.z + 2 * kFlakePad},
+    structure.setCell(UnitCell(Vec3{hi.x - lo.x + 2 * pad, 0.0, 0.0},
+                               Vec3{0.0, hi.y - lo.y + 2 * pad, 0.0},
+                               Vec3{0.0, 0.0, hi.z - lo.z + 2 * pad},
                                {false, false, false}));
 }
 
@@ -720,7 +734,7 @@ Structure GrapheneOxideBuilder::pristine(const Config& config)
                 kZ_H, c + fw.outward[static_cast<std::size_t>(i)] * kCH_edge));
         }
     }
-    fitFlakeCell(structure);
+    fitFlakeCell(structure, std::max(1.0, config.vacuumAngstrom));
     return structure;
 }
 
@@ -1375,7 +1389,7 @@ Structure GrapheneOxideBuilder::build(const Config& config, Report* report)
     for (const Atom& atom : attachments)
         structure.addAtom(atom);
     if (!fw.periodic)
-        fitFlakeCell(structure);
+        fitFlakeCell(structure, std::max(1.0, config.vacuumAngstrom));
 
     // --- Accounting ---------------------------------------------------------
     local.functionalizedCarbons = static_cast<int>(

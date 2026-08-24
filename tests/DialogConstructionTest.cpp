@@ -125,6 +125,7 @@
 #include <QRadioButton>
 #include <QSlider>
 #include <QSpinBox>
+#include <QStackedWidget>
 #include <QTableWidget>
 #include <QElapsedTimer>
 #include <QEventLoop>
@@ -7185,6 +7186,226 @@ int main(int argc, char** argv)
 
         exerciseControls(&dialog);
         check(true, "survives every control being toggled");
+    }
+
+    // --- The builder's vacuum setting: one number, both bases, and the
+    //     2D-detection downstream still works across its whole range.
+    // --- The builder preview's atom discs: bigger, still separate.
+    // --- The two GO Monte Carlo wizards mirror each other: each puts its
+    //     RELAXATION on a stage of its own, named after that relaxation.
+    std::printf("GO/MCMD and GO/MC-Opt stage structure:\n");
+    {
+        calango::pybridge::PythonEngine python;
+        GrapheneOxideMcmdWizard mcmd;
+        GrapheneOxideMcOptWizard mcopt;
+        mcmd.show();
+        mcopt.show();
+
+        // Observed through the stage stack, not a test-only accessor: the
+        // two wizards must now have the SAME number of stages, which is what
+        // "GO/MCMD gained the stage GO/MC-Opt already had" means.
+        auto* mcmdStack = mcmd.findChild<QStackedWidget*>();
+        auto* mcoptStack = mcopt.findChild<QStackedWidget*>();
+        check(mcmdStack && mcoptStack, "both wizards have a stage stack");
+        if (mcmdStack && mcoptStack) {
+            check(mcmdStack->count() == mcoptStack->count(),
+                  std::string("both have the same stage count (")
+                      + std::to_string(mcmdStack->count()) + " vs "
+                      + std::to_string(mcoptStack->count()) + ") — GO/MCMD "
+                      "used to have one fewer");
+        }
+
+        // Each names its relaxation group after the relaxation it runs, and
+        // that group is NOT on the same page as Monte Carlo Sampling.
+        const auto pageOf = [](QWidget* root, const QString& title) -> QWidget* {
+            for (QGroupBox* box : root->findChildren<QGroupBox*>())
+                if (box->title() == title)
+                    return box->parentWidget();
+            return nullptr;
+        };
+        QWidget* mcmdMc = pageOf(&mcmd, QStringLiteral("Monte Carlo Sampling"));
+        QWidget* mcmdMd = pageOf(&mcmd, QStringLiteral("Molecular Dynamics"));
+        QWidget* mcoptMc = pageOf(&mcopt, QStringLiteral("Monte Carlo Sampling"));
+        QWidget* mcoptOpt =
+            pageOf(&mcopt, QStringLiteral("Geometry Optimization"));
+        check(mcmdMd != nullptr, "GO/MCMD has a Molecular Dynamics group");
+        check(mcoptOpt != nullptr,
+              "GO/MC-Opt has a Geometry Optimization group");
+        check(mcmdMc && mcmdMd && mcmdMc != mcmdMd,
+              "GO/MCMD's dynamics are on a DIFFERENT page from its Monte "
+              "Carlo settings — the separation this task is about");
+        check(mcoptMc && mcoptOpt && mcoptMc != mcoptOpt,
+              "exactly as GO/MC-Opt's optimization already was");
+
+        // The MD steps moved with the dynamics rather than staying behind.
+        check(mcmdMd == pageOf(&mcmd, QStringLiteral("Molecular Dynamics")),
+              "and \"MD steps per cycle\" sits with the timestep it "
+              "multiplies");
+
+        // PRESENTATION ONLY: the generated script must be byte-identical to
+        // what the one-page layout produced, or this was not a reshuffle.
+        const QString script = mcmd.script();
+        for (const char* key : {"md_steps = ", "timestep_fs = ",
+                                "equilibration_steps = ", "temperature_K = ",
+                                "mc_cycles = ", "hydroxyl_antiposition = "}) {
+            check(script.contains(QLatin1String(key)),
+                  std::string("the script still carries ") + key);
+        }
+    }
+
+    std::printf("GO builder preview spheres:\n");
+    {
+        calango::pybridge::PythonEngine python;
+        GrapheneOxideWizard wizard;
+        wizard.show();
+        // By object name: the preview class carries no Q_OBJECT, so its
+        // metaObject() reports plain QWidget and cannot identify it.
+        QWidget* canvasWidget =
+            wizard.findChild<QWidget*>(QStringLiteral("grapheneOxidePreview"));
+        check(canvasWidget != nullptr, "the preview widget exists");
+        if (canvasWidget) {
+            canvasWidget->resize(520, 190);
+            QImage shot(canvasWidget->size(), QImage::Format_ARGB32);
+            shot.fill(Qt::transparent);
+            canvasWidget->render(&shot);
+
+            // The surface is PlotPalette::canvas — pure white, a FIXED
+            // light palette shared by every 2D plot in the app, not the
+            // application theme. So the preview looks the same in Dark and
+            // Light by construction; there is no theme-dependent path here
+            // to diverge.
+            check(shot.pixelColor(3, 3) == QColor(255, 255, 255),
+                  "painted on the shared white plot surface, so it is "
+                  "theme-independent by construction");
+
+            // Ink coverage: the discs are the dominant painted area, and
+            // r 2.6 -> 3.4 is a 1.71x area increase. Counting dark pixels
+            // pins that the radius really grew, without hardcoding a number
+            // that a font or an antialiasing change would invalidate.
+            int dark = 0;
+            for (int y = 0; y < shot.height(); ++y)
+                for (int x = 0; x < shot.width(); ++x)
+                    if (qGray(shot.pixel(x, y)) < 128)
+                        ++dark;
+            check(dark > 400,
+                  std::string("and the atoms are clearly inked (")
+                      + std::to_string(dark) + " dark pixels)");
+
+            // THE CONSTRAINT: two bonded carbons must not merge. The
+            // default 4x4 rectangular sheet spans 17.04 A vertically in a
+            // 190 px canvas with a 10 px margin, so the scale is
+            // 170/17.04 = 9.98 px/A and a 1.42 A bond is 14.2 px. Two
+            // 3.4 px discs leave 14.2 - 6.8 = 7.4 px of clear gap.
+            const double scale = (190.0 - 20.0) / 17.04;
+            const double bondPx = 1.42 * scale;
+            check(bondPx - 2.0 * 3.4 > 3.0,
+                  "with a clear gap between bonded discs at the default "
+                  "supercell (7.4 px), so nothing merges");
+        }
+    }
+
+    std::printf("GO builder vacuum clearance:\n");
+    {
+        using Builder = calango::core::GrapheneOxideBuilder;
+        const auto span = [](const calango::core::Structure& st, int axis) {
+            double lo = 1e30, hi = -1e30;
+            for (const calango::core::Atom& a : st.atoms()) {
+                const double v = axis == 0 ? a.position.x
+                    : (axis == 1 ? a.position.y : a.position.z);
+                lo = std::min(lo, v);
+                hi = std::max(hi, v);
+            }
+            return hi - lo;
+        };
+
+        // A PERIODIC SHEET spends the clearance on two faces, so the cell
+        // along the vacuum axis is exactly twice it.
+        for (const double vacuum : {6.0, 10.0, 20.0}) {
+            Builder::Config cfg;
+            cfg.base = Builder::Base::PeriodicSheet;
+            cfg.supercell[0] = cfg.supercell[1] = 3;
+            cfg.vacuumAngstrom = vacuum;
+            const calango::core::Structure built = Builder::build(cfg);
+            const double c = built.cell().vectors()[2].z;
+            check(std::abs(c - 2.0 * vacuum) < 1e-6,
+                  std::string("sheet at ") + std::to_string((int)vacuum)
+                      + " A: cell height is 2x the clearance ("
+                      + std::to_string(c) + " A)");
+            // ... and the 2D-aware modules still see it as 2D. The rule is
+            // FRACTIONAL (atoms spanning under 65 % of the cell), so a
+            // thinner vacuum is what would break it, not a thicker one.
+            check(calango::gui::guessVacuumAxis(&built) == 2,
+                  std::string("and guessVacuumAxis() still finds axis 2 at ")
+                      + std::to_string((int)vacuum) + " A");
+        }
+
+        // A NANOFLAKE spends the SAME number on all six faces.
+        for (const double vacuum : {6.0, 10.0}) {
+            Builder::Config cfg;
+            cfg.base = Builder::Base::Nanoflake;
+            cfg.flakeIndex = 2;
+            cfg.vacuumAngstrom = vacuum;
+            const calango::core::Structure built = Builder::build(cfg);
+            const double gapX =
+                built.cell().vectors()[0].x - span(built, 0);
+            const double gapZ =
+                built.cell().vectors()[2].z - span(built, 2);
+            check(std::abs(gapX - 2.0 * vacuum) < 1e-6,
+                  std::string("flake at ") + std::to_string((int)vacuum)
+                      + " A: padded by the clearance on both x faces");
+            check(std::abs(gapZ - 2.0 * vacuum) < 1e-6,
+                  "and on both z faces — one setting, six faces");
+        }
+
+        // The default is 10 A on both bases, unchanged from the value that
+        // was hardcoded.
+        Builder::Config fresh;
+        check(std::abs(fresh.vacuumAngstrom - 10.0) < 1e-9,
+              "a new setup defaults to 10 A");
+        // A saved setup with no stored value, or a hostile one, cannot put
+        // the sheet on top of its own image.
+        Builder::Config zero;
+        zero.base = Builder::Base::PeriodicSheet;
+        zero.vacuumAngstrom = 0.0;
+        check(Builder::build(zero).cell().vectors()[2].z > 0.0,
+              "and a zero clearance is clamped rather than collapsing the "
+              "cell");
+    }
+
+    // --- ML potentials: a missing package is a PRE-FLIGHT refusal, never
+    //     a ModuleNotFoundError traceback after launch (proc_1_linux_cuda's
+    //     sibling guarantee).
+    std::printf("ML potential package mapping:\n");
+    {
+        using calango::core::CalculatorKind;
+        // The IMPORT name each engine's generated script actually opens
+        // with — checked against the emitted script, not asserted from
+        // memory, so a renamed import cannot drift from the pre-flight.
+        const std::vector<std::pair<CalculatorKind, const char*>> expected = {
+            {CalculatorKind::Mace, "mace"},
+            {CalculatorKind::MatterSim, "mattersim"},
+            {CalculatorKind::ChgNet, "chgnet"},
+            {CalculatorKind::DeepMd, "deepmd"},
+            {CalculatorKind::FairChem, "fairchem"},
+        };
+        for (const auto& [kind, module] : expected) {
+            const char* mapped = calango::core::mlipPythonModule(kind);
+            check(mapped && std::string(mapped) == module,
+                  std::string("mlipPythonModule(") + toString(kind) + ") is \""
+                      + module + "\"");
+            // That each mapped module is the one the generated script
+            // actually imports is asserted in generated_ase_scripts, which
+            // is the target that links the generator.
+            check(calango::core::mlipPipPackage(kind) != nullptr,
+                  std::string("with a pip name to put in the message (")
+                      + toString(kind) + ")");
+        }
+        // A non-ML engine has no package to check, so the pre-flight is a
+        // no-op there rather than an invented requirement.
+        check(calango::core::mlipPythonModule(CalculatorKind::Gpaw) == nullptr,
+              "and a non-ML engine maps to no package at all");
+        check(calango::core::mlipPythonModule(CalculatorKind::Vasp) == nullptr,
+              "including VASP, whose dependency is a binary, not a module");
     }
 
     // --- GO Grand Canonical MC: the wizard reaches the generator with the

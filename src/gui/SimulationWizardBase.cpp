@@ -12,6 +12,7 @@
 #include "gui/PythonHighlighter.hpp"
 #include "gui/RunCommands.hpp"
 #include "gui/ScriptStaging.hpp"
+#include "gui/PythonPackagePreflight.hpp"
 #include "gui/VaspPotcarPreflight.hpp"
 #include "python_bridge/PythonEngine.hpp"
 
@@ -192,7 +193,8 @@ void SimulationWizardBase::buildUi()
     // local-only and says so.
     connect(runLocalButton_, &QPushButton::clicked, this, [this] {
         if (!preflightVaspPotcar(RunTarget::Local)
-            || !preflightVaspNcl(RunTarget::Local) || !preflightSecondary()
+            || !preflightVaspNcl(RunTarget::Local)
+            || !preflightMlipPackage(RunTarget::Local) || !preflightSecondary()
             || !preflightGpawMpi() || !preflightVaspHubbardConsistency()
             || !preflightVaspHybrid())
             return;
@@ -201,7 +203,8 @@ void SimulationWizardBase::buildUi()
     });
     connect(runRemoteButton_, &QPushButton::clicked, this, [this] {
         if (!preflightVaspPotcar(RunTarget::Remote)
-            || !preflightVaspNcl(RunTarget::Remote) || !preflightSecondary()
+            || !preflightVaspNcl(RunTarget::Remote)
+            || !preflightMlipPackage(RunTarget::Remote) || !preflightSecondary()
             || !preflightVaspHubbardConsistency() || !preflightVaspHybrid())
             return;
         action_ = Action::RunRemote;
@@ -1563,6 +1566,45 @@ bool SimulationWizardBase::preflightVaspPotcar(RunTarget target)
              "here.");
     QMessageBox::warning(this, tr("VASP POTCAR directory"),
                          tr("%1\n\n%2").arg(result.errorMessage, advice));
+    return false;
+}
+
+bool SimulationWizardBase::preflightMlipPackage(RunTarget target)
+{
+    // Local only. A remote job runs under the cluster's own interpreter,
+    // which this process cannot import from; probing THIS machine and
+    // refusing on it would block a perfectly good submission. Same reasoning
+    // preflightGpawMpi() documents for the Cores setting.
+    if (target != RunTarget::Local)
+        return true;
+    const core::CalculatorKind kind = selectedCalculator();
+    const char* module = core::mlipPythonModule(kind);
+    if (!module)
+        return true;
+
+    const auto result =
+        checkPythonPackage(pythonExecutable(), QString::fromLatin1(module));
+    if (result.available)
+        return true;
+    // A probe that never ran (no interpreter, a timeout) is NOT evidence the
+    // package is missing, and refusing on it would ground a working setup.
+    // Only an interpreter that answered, and answered "no", stops a launch.
+    if (!result.interpreterAnswered)
+        return true;
+
+    const char* pip = core::mlipPipPackage(kind);
+    QMessageBox::warning(
+        this, tr("%1 is not installed").arg(toString(kind)),
+        tr("The Python interpreter this run would use cannot import "
+           "<b>%1</b>, which %2 needs:<br><br><tt>%3</tt><br><br>"
+           "Nothing was launched. Install it into that interpreter:"
+           "<br><br><tt>pip install %4</tt><br><br>"
+           "or point Preferences → Run at an interpreter that already has "
+           "it. Launching without it fails inside the generated script with "
+           "a ModuleNotFoundError, in a log you would have to go and find.")
+            .arg(QString::fromLatin1(module), toString(kind),
+                 pythonExecutable().toHtmlEscaped(),
+                 QString::fromLatin1(pip)));
     return false;
 }
 

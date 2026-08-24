@@ -133,6 +133,9 @@ private:
     QGroupBox* sheetBox_ = nullptr;
     QComboBox* latticeCombo_ = nullptr;
     QSpinBox* supercellSpin_[2] = {nullptr, nullptr};
+    /// Vacuum clearance, in angstrom. Applies to BOTH bases — the sheet's
+    /// gap above and below, and the flake box's padding on every face.
+    QDoubleSpinBox* vacuumSpin_ = nullptr;
     QGroupBox* flakeBox_ = nullptr;
     QComboBox* generationCombo_ = nullptr;
     QCheckBox* hydrogenCheck_ = nullptr;

@@ -1270,6 +1270,34 @@ def _optimizer_target(system):
     return _CellFilter(system, mask=periodic)
 
 
+def _relax_converged(target):
+    """Has `target` reached optimizer_fmax?
+
+    Computed here rather than through ase's Optimizer.converged(), whose
+    SIGNATURE has drifted between ase releases. It used to take no required
+    argument; on a newer ase `gradient` is a REQUIRED POSITIONAL one, and a
+    run there dies at the very first relaxation with
+
+        TypeError: Optimizer.converged() missing 1 required positional
+        argument: 'gradient'
+
+    -- before a single Monte Carlo cycle, which is why it reads to a user as
+    "the simulation does not start". Nothing about the CRITERION changed
+    across those versions, so it is applied directly instead of through an
+    API that moves: the largest per-row force norm against the same
+    optimizer_fmax, with ase's own strict `<`.
+
+    `target` is the atoms, or the cell filter when the cell relaxes -- in
+    which case the filter's extra stress rows enter the norm exactly as ase
+    counts them, because they are rows of the same forces array ase would
+    have compared.
+    """
+    forces = np.asarray(target.get_forces(), dtype=float)
+    if forces.size == 0:
+        return True
+    return bool(np.sqrt((forces ** 2).sum(axis=1)).max() < optimizer_fmax)
+
+
 def run_relax(system, cycle, phase="relax"):
     """Relax `system` to optimizer_fmax. Returns (energy, converged, steps).
 
@@ -1288,9 +1316,9 @@ def run_relax(system, cycle, phase="relax"):
                                 **({"maxstep": optimizer_max_step}
                                    if optimizer_class is not MDMin else {}))
     # ase's Optimizer.run() is what normally sets this, and this function
-    # drives step() itself - without it converged() compares a float against
-    # None and the first cycle dies with a TypeError. Set the way run() sets
-    # it, so "converged" means exactly what it means everywhere else in ase.
+    # drives step() itself. Kept in step with run()'s own bookkeeping so any
+    # ase internal that consults it sees a sane value -- the convergence
+    # TEST below no longer goes through ase, see _relax_converged().
     optimizer.fmax = optimizer_fmax
     steps = 0
     pending = None
@@ -1307,9 +1335,9 @@ def run_relax(system, cycle, phase="relax"):
                                  md_step_in_cycle=steps - 1,
                                  total_energy=system.get_potential_energy(),
                                  accepted=False)
-        if optimizer.converged():
+        if _relax_converged(target):
             break
-    converged = bool(optimizer.converged())
+    converged = _relax_converged(target)
     return system.get_potential_energy(), converged, steps
 
 

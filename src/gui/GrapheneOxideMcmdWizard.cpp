@@ -137,9 +137,14 @@ QString GrapheneOxideMcmdWizard::secondSettingsHeader() const
 {
     // Empty under GO/MCMD: the base drops a second stage whose header is
     // empty, so that module's three-stage flow is untouched.
+    // Both modules name their relaxation stage after the relaxation it
+    // configures -- "Geometry Optimization" for GO/MC-Opt, "Molecular
+    // Dynamics" for GO/MCMD. GO/MCMD used to return an EMPTY header, which
+    // is what dropped the stage entirely and left its MD settings crowded
+    // onto the Monte Carlo page.
     return relaxationMode() == core::GoMcRelaxation::Optimization
         ? tr("Geometry Optimization")
-        : QString();
+        : tr("Molecular Dynamics");
 }
 
 QWidget* GrapheneOxideMcmdWizard::buildSecondSettingsPage()
@@ -154,6 +159,136 @@ QWidget* GrapheneOxideMcmdWizard::buildSecondSettingsPage()
     // is empty there — so its flow is unchanged.
     auto* page = new QWidget(this);
     auto* layout = new QVBoxLayout(page);
+
+    if (relaxationMode() == core::GoMcRelaxation::MolecularDynamics) {
+        // GO/MCMD's own relaxation stage, mirroring GO/MC-Opt's below: the
+        // dynamics that relax a proposal before it is judged, on a stage of
+        // their own, separate from the Monte Carlo that proposes it. Same
+        // split, same reason, same place in the flow.
+        //
+        // "MD steps per cycle" comes here with them. It sat under Monte
+        // Carlo Sampling because it is counted per cycle, but what it sets
+        // is the length of the burst -- an MD quantity, and hard to read
+        // apart from the timestep it multiplies.
+        //
+        // The TEMPERATURE deliberately stays on the Monte Carlo page. It is
+        // one number used twice (GrapheneOxideMcmdConfig::temperatureK): the
+        // thermostat target AND the Metropolis parameter. GO/MC-Opt runs no
+        // dynamics at all and still needs it, so an MD-only home would take
+        // it away from that module entirely.
+        auto* dynamicsBox = new QGroupBox(tr("Molecular Dynamics"), page);
+        auto* dynamicsForm = new QFormLayout(dynamicsBox);
+
+        ensemble_ = new QComboBox(dynamicsBox);
+        ensemble_->addItem(tr("NVT — Langevin thermostat"), 0);
+        ensemble_->addItem(tr("NPT — Berendsen barostat"), 1);
+        ensemble_->setToolTip(
+            tr("NVT holds the cell fixed and is what a decoration study wants: the "
+               "question is where the groups sit, not what the lattice does.\n\n"
+               "NPT lets the cell respond, which matters when heavy oxidation is "
+               "expected to buckle or expand the sheet. It needs a cell, so it is "
+               "unavailable for a finite nanoflake."));
+        dynamicsForm->addRow(tr("Ensemble:"), ensemble_);
+
+        pressure_ = new QDoubleSpinBox(dynamicsBox);
+        pressure_->setRange(-10.0, 100.0);
+        pressure_->setDecimals(3);
+        pressure_->setValue(0.0);
+        pressure_->setSuffix(tr(" GPa"));
+        dynamicsForm->addRow(tr("Pressure:"), pressure_);
+
+        timestep_ = new QDoubleSpinBox(dynamicsBox);
+        timestep_->setRange(0.1, 5.0);
+        timestep_->setDecimals(2);
+        timestep_->setSingleStep(0.25);
+        timestep_->setValue(0.5);
+        timestep_->setSuffix(tr(" fs"));
+        timestep_->setToolTip(
+            tr("Integration step. Graphene oxide carries O–H and C–H stretches, "
+               "whose periods are ~10 fs, so a step much above 1 fs integrates "
+               "them badly and heats the system artificially — which this run "
+               "would then read as broken chemistry."));
+        dynamicsForm->addRow(tr("Timestep:"), timestep_);
+
+        friction_ = new QDoubleSpinBox(dynamicsBox);
+        friction_->setRange(0.001, 1.0);
+        friction_->setDecimals(3);
+        friction_->setSingleStep(0.005);
+        friction_->setValue(0.02);
+        friction_->setSuffix(tr(" fs⁻¹"));
+        friction_->setToolTip(
+            tr("Thermostat coupling for the per-cycle burst: the Langevin "
+               "friction under NVT, and 1/(Berendsen temperature time) under NPT, "
+               "so it means the same thing in both ensembles.\n\n"
+               "Larger than a production-MD value on purpose — a burst is only a "
+               "few tens of femtoseconds long — though at this length the burst "
+               "is mostly a thermal perturbation of an already-equilibrated "
+               "structure whatever the coupling."));
+        dynamicsForm->addRow(tr("Friction:"), friction_);
+
+        equilibrationSteps_ = new QSpinBox(dynamicsBox);
+        equilibrationSteps_->setRange(0, 100000);
+        equilibrationSteps_->setValue(10);
+        equilibrationSteps_->setSpecialValueText(tr("none"));
+        equilibrationSteps_->setToolTip(
+            tr("Molecular-dynamics steps run ONCE, before the first cycle, to "
+               "bring the as-built structure to the target temperature.\n\n"
+               "The builder places every group on a flat sheet: each host carbon "
+               "is still planar where the chemistry wants it pyramidal, so the "
+               "as-built structure carries ~10 eV/Å on its carbons and tens of eV "
+               "of strain. Released in a single short burst that is a thermal "
+               "shock, and the group placed closest to a neighbour comes apart. "
+               "This stage drains it gradually instead: the chemistry is checked "
+               "every few steps, and a group that still opens is relocated to a "
+               "fresh free site — the sampler's own move, inventory preserved — "
+               "with the dynamics resuming from the last intact state. The run "
+               "refuses only when relocating stops helping.\n\n"
+               "The default is deliberately short: this stage costs one energy "
+               "evaluation per step before any sampling has started, and the "
+               "protocol is many cheap cycles. A few hundred steps (100–300 fs) "
+               "is what a sheet needs to pucker and thermalize fully — raise it "
+               "for an as-built structure carrying more strain than a burst can "
+               "drain. \"none\" starts the walk from the as-built geometry's own "
+               "energy."));
+        dynamicsForm->addRow(tr("Equilibration steps:"), equilibrationSteps_);
+
+        equilibrationFriction_ = new QDoubleSpinBox(dynamicsBox);
+        equilibrationFriction_->setRange(0.001, 1.0);
+        equilibrationFriction_->setDecimals(3);
+        equilibrationFriction_->setSingleStep(0.01);
+        equilibrationFriction_->setValue(0.1);
+        equilibrationFriction_->setSuffix(tr(" fs⁻¹"));
+        equilibrationFriction_->setToolTip(
+            tr("Thermostat coupling during the equilibration. Stronger than the "
+               "per-cycle value because this stage has the as-built strain to "
+               "drain as it is released: with a 50 fs time constant that energy "
+               "becomes a thermal shock before the thermostat sees it; with 10 fs "
+               "it is carried away as it appears."));
+        dynamicsForm->addRow(tr("Equilibration friction:"), equilibrationFriction_);
+        layout->addWidget(dynamicsBox);
+        mdSteps_ = new QSpinBox(dynamicsBox);
+        mdSteps_->setRange(0, 10000);
+        mdSteps_->setValue(5);
+        mdSteps_->setToolTip(
+            tr("Molecular-dynamics steps run after each move, before the energy is "
+               "judged.\n\n"
+               "The burst is the only relaxation in the run. Many cheap cycles "
+               "with a short burst each is the protocol's own regime. A longer "
+               "burst judges a move more fairly — measured under MACE-MP-0 at 300 K with "
+               "a 0.5 fs step, the leftover placement strain is within the "
+               "thermal noise by 80–120 steps and the burst carries the sheet's "
+               "own relaxation by 200. The per-cycle ΔE is recorded as "
+               "trial_delta in metrics.json; if it sits eV above zero cycle "
+               "after cycle, lengthen the burst.\n\n"
+               "The run costs cycles × steps energy evaluations. This is NOT "
+               "what brings the as-built structure to temperature — that is the "
+               "separate equilibration stage below, run once.\n\n"
+               "Zero evaluates the energy without any dynamics — the cheapest, "
+               "crudest setting."));
+        dynamicsForm->addRow(tr("MD steps per cycle:"), mdSteps_);
+        layout->addStretch(1);
+        return page;
+    }
 
     auto* optBox = new QGroupBox(tr("Geometry Optimization"), page);
     auto* optForm = new QFormLayout(optBox);
@@ -318,28 +453,6 @@ QWidget* GrapheneOxideMcmdWizard::buildSettingsPage()
     // hidden-but-created control would fix the symptom; not creating one the
     // module has no use for is the actual answer, and collectConfig() already
     // guards every read of it.
-    if (relaxationMode() == core::GoMcRelaxation::MolecularDynamics) {
-        mdSteps_ = new QSpinBox(samplingBox);
-        mdSteps_->setRange(0, 10000);
-        mdSteps_->setValue(5);
-        mdSteps_->setToolTip(
-            tr("Molecular-dynamics steps run after each move, before the energy is "
-               "judged.\n\n"
-               "The burst is the only relaxation in the run. Many cheap cycles "
-               "with a short burst each is the protocol's own regime. A longer "
-               "burst judges a move more fairly — measured under MACE-MP-0 at 300 K with "
-               "a 0.5 fs step, the leftover placement strain is within the "
-               "thermal noise by 80–120 steps and the burst carries the sheet's "
-               "own relaxation by 200. The per-cycle ΔE is recorded as "
-               "trial_delta in metrics.json; if it sits eV above zero cycle "
-               "after cycle, lengthen the burst.\n\n"
-               "The run costs cycles × steps energy evaluations. This is NOT "
-               "what brings the as-built structure to temperature — that is the "
-               "separate equilibration stage below, run once.\n\n"
-               "Zero evaluates the energy without any dynamics — the cheapest, "
-               "crudest setting."));
-        samplingForm->addRow(tr("MD steps per cycle:"), mdSteps_);
-    }
 
     hydroxylAntipositionBox_ = new QCheckBox(
         tr("Hydroxyls antiposition — move each pair as one unit"),
@@ -384,97 +497,6 @@ QWidget* GrapheneOxideMcmdWizard::buildSettingsPage()
     // shared tail is finishSettingsPage(), and both exits go through it.
     if (relaxationMode() == core::GoMcRelaxation::Optimization)
         return finishSettingsPage(page, layout);
-
-    auto* dynamicsBox = new QGroupBox(tr("Molecular Dynamics"), page);
-    auto* dynamicsForm = new QFormLayout(dynamicsBox);
-
-    ensemble_ = new QComboBox(dynamicsBox);
-    ensemble_->addItem(tr("NVT — Langevin thermostat"), 0);
-    ensemble_->addItem(tr("NPT — Berendsen barostat"), 1);
-    ensemble_->setToolTip(
-        tr("NVT holds the cell fixed and is what a decoration study wants: the "
-           "question is where the groups sit, not what the lattice does.\n\n"
-           "NPT lets the cell respond, which matters when heavy oxidation is "
-           "expected to buckle or expand the sheet. It needs a cell, so it is "
-           "unavailable for a finite nanoflake."));
-    dynamicsForm->addRow(tr("Ensemble:"), ensemble_);
-
-    pressure_ = new QDoubleSpinBox(dynamicsBox);
-    pressure_->setRange(-10.0, 100.0);
-    pressure_->setDecimals(3);
-    pressure_->setValue(0.0);
-    pressure_->setSuffix(tr(" GPa"));
-    dynamicsForm->addRow(tr("Pressure:"), pressure_);
-
-    timestep_ = new QDoubleSpinBox(dynamicsBox);
-    timestep_->setRange(0.1, 5.0);
-    timestep_->setDecimals(2);
-    timestep_->setSingleStep(0.25);
-    timestep_->setValue(0.5);
-    timestep_->setSuffix(tr(" fs"));
-    timestep_->setToolTip(
-        tr("Integration step. Graphene oxide carries O–H and C–H stretches, "
-           "whose periods are ~10 fs, so a step much above 1 fs integrates "
-           "them badly and heats the system artificially — which this run "
-           "would then read as broken chemistry."));
-    dynamicsForm->addRow(tr("Timestep:"), timestep_);
-
-    friction_ = new QDoubleSpinBox(dynamicsBox);
-    friction_->setRange(0.001, 1.0);
-    friction_->setDecimals(3);
-    friction_->setSingleStep(0.005);
-    friction_->setValue(0.02);
-    friction_->setSuffix(tr(" fs⁻¹"));
-    friction_->setToolTip(
-        tr("Thermostat coupling for the per-cycle burst: the Langevin "
-           "friction under NVT, and 1/(Berendsen temperature time) under NPT, "
-           "so it means the same thing in both ensembles.\n\n"
-           "Larger than a production-MD value on purpose — a burst is only a "
-           "few tens of femtoseconds long — though at this length the burst "
-           "is mostly a thermal perturbation of an already-equilibrated "
-           "structure whatever the coupling."));
-    dynamicsForm->addRow(tr("Friction:"), friction_);
-
-    equilibrationSteps_ = new QSpinBox(dynamicsBox);
-    equilibrationSteps_->setRange(0, 100000);
-    equilibrationSteps_->setValue(10);
-    equilibrationSteps_->setSpecialValueText(tr("none"));
-    equilibrationSteps_->setToolTip(
-        tr("Molecular-dynamics steps run ONCE, before the first cycle, to "
-           "bring the as-built structure to the target temperature.\n\n"
-           "The builder places every group on a flat sheet: each host carbon "
-           "is still planar where the chemistry wants it pyramidal, so the "
-           "as-built structure carries ~10 eV/Å on its carbons and tens of eV "
-           "of strain. Released in a single short burst that is a thermal "
-           "shock, and the group placed closest to a neighbour comes apart. "
-           "This stage drains it gradually instead: the chemistry is checked "
-           "every few steps, and a group that still opens is relocated to a "
-           "fresh free site — the sampler's own move, inventory preserved — "
-           "with the dynamics resuming from the last intact state. The run "
-           "refuses only when relocating stops helping.\n\n"
-           "The default is deliberately short: this stage costs one energy "
-           "evaluation per step before any sampling has started, and the "
-           "protocol is many cheap cycles. A few hundred steps (100–300 fs) "
-           "is what a sheet needs to pucker and thermalize fully — raise it "
-           "for an as-built structure carrying more strain than a burst can "
-           "drain. \"none\" starts the walk from the as-built geometry's own "
-           "energy."));
-    dynamicsForm->addRow(tr("Equilibration steps:"), equilibrationSteps_);
-
-    equilibrationFriction_ = new QDoubleSpinBox(dynamicsBox);
-    equilibrationFriction_->setRange(0.001, 1.0);
-    equilibrationFriction_->setDecimals(3);
-    equilibrationFriction_->setSingleStep(0.01);
-    equilibrationFriction_->setValue(0.1);
-    equilibrationFriction_->setSuffix(tr(" fs⁻¹"));
-    equilibrationFriction_->setToolTip(
-        tr("Thermostat coupling during the equilibration. Stronger than the "
-           "per-cycle value because this stage has the as-built strain to "
-           "drain as it is released: with a 50 fs time constant that energy "
-           "becomes a thermal shock before the thermostat sees it; with 10 fs "
-           "it is carried away as it appears."));
-    dynamicsForm->addRow(tr("Equilibration friction:"), equilibrationFriction_);
-    layout->addWidget(dynamicsBox);
 
     return finishSettingsPage(page, layout);
 }

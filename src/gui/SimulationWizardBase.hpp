@@ -553,6 +553,17 @@ private:
     /// true) for every calculator other than VASP, and for VASP runs that
     /// are not Non-Collinear.
     bool preflightVaspNcl(RunTarget target);
+
+    /// Refuse a LOCAL launch whose ML potential's Python package is not
+    /// importable by the interpreter that would run it.
+    ///
+    /// The established pattern (MaceTrainerDialog's own torch/mace check),
+    /// applied where it was missing: every ML engine's generated script
+    /// opens with `from <package> import ...`, so a missing package used to
+    /// surface as a ModuleNotFoundError traceback minutes after launch, in
+    /// a log file. A probe that cannot run is not treated as a missing
+    /// package -- only an interpreter that answered "no" stops the launch.
+    bool preflightMlipPackage(RunTarget target);
     /// A second, independent preflight check run alongside
     /// preflightVaspPotcar(), for anything the concrete wizard wants
     /// checked before Run (Local)/Run (Remote) that is not the VASP POTCAR

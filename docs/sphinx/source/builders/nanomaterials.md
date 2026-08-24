@@ -191,9 +191,22 @@ applies.
   orthogonal axes make later supercells and interfaces easier to reason about).
 - {guilabel}`Supercell (nx · ny)` — each 1–40, default 4 × 4.
 
-The sheet is built in the $xy$ plane with a fixed **20 Å vacuum** along $z$ — the groups
-stand roughly 1.5 Å off the plane, and a thinner cell would have them interacting with
-their own image.
+The sheet is built in the $xy$ plane, with the vacuum set below.
+
+- {guilabel}`Vacuum clearance` — 6–60 Å, default **10 Å**. The empty space between the
+  structure and its nearest periodic image, and it governs **both bases**:
+
+  | Base | What the number is |
+  |---|---|
+  | Periodic sheet | the gap above **and** below, so the cell along $z$ is **twice** it (20 Å at the default) |
+  | Nanoflake | the padding on **all six faces** of the box the flake sits in |
+
+  The functional groups stand roughly 1.5 Å off the plane, so at the default a hydroxyl
+  sits about 17 Å from its own image. The 6 Å floor is where the downstream 2D-aware
+  modules are still safe: their vacuum-axis detection is *fractional* — an axis counts as
+  vacuum when the atoms span under 65 % of the cell along it — so a decorated sheet
+  roughly 3 Å thick in a 12 Å cell is still detected at 75 % emptiness, with plenty of
+  margin. Smaller values save plane-wave cost but stop being a vacuum.
 
 **Nanoflake** — a finite, hexagonal, all-armchair $D_{6h}$ graphene molecule with both
 regions: a basal interior and a hydrogen-terminated rim.
@@ -234,6 +247,13 @@ it is not a sketch that has to be kept in step by hand.
 - A **nanoflake** is drawn without a box — it sits in a vacuum cell, and
   drawing that would suggest it means something — with its edge hydrogens as
   smaller, paler dots.
+
+Atoms are drawn as discs sized for **reading which sites can oxidize**, which is what
+stage 1 is for. At the default 4 × 4 supercell the sheet fits the preview at about
+10 px/Å, so a 1.42 Å C–C bond spans ~14 px and the 3.4 px discs leave ~7 px of clear
+gap between bonded neighbours. Discs begin to touch only past roughly an 8 × 8
+supercell, where the whole picture is dense whatever the radius. This sizing is the
+preview's alone — the 3D viewport's own representation defaults are untouched.
 
 It is the substrate only: functional groups are placed in stage 2 and are not
 shown here. Above roughly 2400 carbons the drawing is dropped, because past

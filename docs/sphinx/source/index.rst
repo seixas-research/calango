@@ -9,21 +9,34 @@
      </a>
 
      <!-- BADGES -->
+     <!-- Same set, same order, same style as README.md:
+          License, C++, Qt6, ASE, Manual, then the installers, then
+          the repository. Kept in step by hand; the badge test in
+          docs_badge_parity checks that they have not drifted. -->
      <p>
        <a href="https://github.com/seixas-research/calango/blob/main/LICENSE">
-         <img src="https://img.shields.io/badge/License-MIT-red?style=for-the-badge" alt="license">
-       </a>
-       <a href="https://github.com/seixas-research/calango">
-         <img src="https://img.shields.io/badge/GitHub-calango-181717?style=for-the-badge&logo=github" alt="github">
+         <img src="https://img.shields.io/badge/License-MIT-red?style=for-the-badge" alt="license: mit">
        </a>
        <a href="https://isocpp.org/">
-         <img src="https://img.shields.io/badge/C%2B%2B-20-00599C?style=for-the-badge&logo=cplusplus&logoColor=white" alt="c++20">
+         <img src="https://img.shields.io/badge/C%2B%2B-20-00599C?style=for-the-badge&amp;logo=cplusplus&amp;logoColor=white" alt="c++20">
        </a>
        <a href="https://www.qt.io/">
-         <img src="https://img.shields.io/badge/Qt-6.4%2B-41CD52?style=for-the-badge&logo=qt&logoColor=white" alt="qt6">
+         <img src="https://img.shields.io/badge/Qt-6.4%2B-41CD52?style=for-the-badge&amp;logo=qt&amp;logoColor=white" alt="qt 6.4+">
        </a>
        <a href="https://wiki.fysik.dtu.dk/ase/">
          <img src="https://img.shields.io/badge/ASE-3.2x-4B8BBE?style=for-the-badge" alt="ase">
+       </a>
+       <a href="https://calango.readthedocs.io/">
+         <img src="https://img.shields.io/readthedocs/calango?style=for-the-badge&amp;logo=readthedocs&amp;logoColor=white&amp;label=Manual" alt="on-line manual">
+       </a>
+       <a href="https://calango.readthedocs.io/en/latest/installation.html">
+         <img src="https://img.shields.io/badge/macOS-.dmg-000000?style=for-the-badge&amp;logo=apple&amp;logoColor=white" alt="macos .dmg">
+       </a>
+       <a href="https://calango.readthedocs.io/en/latest/installation.html">
+         <img src="https://img.shields.io/badge/Debian%2FUbuntu-.deb-A81D33?style=for-the-badge&amp;logo=debian&amp;logoColor=white" alt="debian/ubuntu .deb">
+       </a>
+       <a href="https://github.com/seixas-research/calango">
+         <img src="https://img.shields.io/badge/GitHub-calango-181717?style=for-the-badge&amp;logo=github" alt="github">
        </a>
      </p>
 

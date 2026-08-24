@@ -157,7 +157,23 @@ protected:
             const bool hydrogen = atom.atomicNumber == 1;
             painter.setBrush(hydrogen ? PlotPalette::placeholder
                                       : PlotPalette::text);
-            const double radius = hydrogen ? 1.6 : 2.6;
+            // DEVICE PIXELS, not angstrom: project() has already applied the
+            // fit-to-canvas scale, so what decides whether two bonded atoms
+            // merge is the radius against 1.42 A x that scale.
+            //
+            // 3.4 px (was 2.6, x1.31). The default 4x4 rectangular sheet
+            // fits the 190 px-tall canvas at ~10 px/A, so a C-C bond spans
+            // ~14.2 px and the gap between two bonded spheres goes 9.0 px ->
+            // 7.4 px: visibly bigger discs, still clearly separate. Merging
+            // would only begin once the scale falls under ~4.8 px/A, which
+            // for this lattice is about an 8x8 supercell; the old radius
+            // merged at about 11x11. Beyond either the picture is a solid
+            // block whatever the radius, which is a zoom limit rather than
+            // something a radius choice fixes.
+            //
+            // Hydrogens keep their 0.62 ratio to the heavy atoms -- they are
+            // edge termination, not what anyone is looking at here.
+            const double radius = hydrogen ? 2.1 : 3.4;
             painter.drawEllipse(project(atom.position), radius, radius);
         }
     }
@@ -388,6 +404,38 @@ GrapheneOxideWizard::GrapheneOxideWizard(QWidget* parent)
            "studies and a mistake otherwise."));
     flakeForm->addRow(hydrogenCheck_);
     stage1Layout->addWidget(flakeBox_);
+
+    // -- Vacuum ------------------------------------------------------------
+    //
+    // OUTSIDE both base boxes, because it applies to both and means the same
+    // thing in each: how far the structure is from its nearest periodic
+    // image. A sheet spends it on two faces (the cell along the vacuum axis
+    // is twice this), a flake on all six. Putting it inside one of the boxes
+    // would hide it whenever the other base is selected.
+    auto* vacuumBox = new QGroupBox(tr("Vacuum"), stage1);
+    auto* vacuumForm = new QFormLayout(vacuumBox);
+    vacuumSpin_ = new QDoubleSpinBox(vacuumBox);
+    vacuumSpin_->setObjectName(QStringLiteral("goVacuumSpin"));
+    vacuumSpin_->setRange(6.0, 60.0);
+    vacuumSpin_->setDecimals(1);
+    vacuumSpin_->setSingleStep(1.0);
+    vacuumSpin_->setValue(10.0);
+    vacuumSpin_->setSuffix(tr(" Å"));
+    vacuumSpin_->setToolTip(
+        tr("Empty space between the structure and its nearest periodic "
+           "image.\n\n"
+           "Periodic sheet: the gap above AND below, so the cell along the "
+           "vacuum axis is twice this.\n"
+           "Nanoflake: the padding on all six faces of its box.\n\n"
+           "The functional groups stand about 1.5 Å off the plane, so at the "
+           "10 Å default a hydroxyl is ~17 Å from its own image. The 6 Å "
+           "floor keeps the gap wide enough that the downstream 2D-aware "
+           "modules still recognise the sheet as two-dimensional; smaller "
+           "values save plane-wave cost but stop being a vacuum."));
+    vacuumForm->addRow(tr("Vacuum clearance:"), vacuumSpin_);
+    stage1Layout->addWidget(vacuumBox);
+    connect(vacuumSpin_, &QDoubleSpinBox::valueChanged, this,
+            [this] { refreshSummary(); });
 
     baseSummary_ = new QLabel(stage1);
     baseSummary_->setWordWrap(true);
@@ -671,6 +719,8 @@ void GrapheneOxideWizard::setConfig(const Builder::Config& config)
 
     if (hydroxylAntipositionCheck_)
         hydroxylAntipositionCheck_->setChecked(config.hydroxylAntiposition);
+    if (vacuumSpin_)
+        vacuumSpin_->setValue(config.vacuumAngstrom);
     if (bothFacesCheck_)
         bothFacesCheck_->setChecked(config.bothFaces);
     if (seedSpin_)
@@ -681,6 +731,8 @@ void GrapheneOxideWizard::setConfig(const Builder::Config& config)
 core::GrapheneOxideBuilder::Config GrapheneOxideWizard::config() const
 {
     Builder::Config config;
+    if (vacuumSpin_)
+        config.vacuumAngstrom = vacuumSpin_->value();
     config.base = static_cast<Base>(baseCombo_->currentData().toInt());
     config.lattice = static_cast<Lattice>(latticeCombo_->currentData().toInt());
     config.supercell[0] = supercellSpin_[0]->value();

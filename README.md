@@ -12,9 +12,13 @@
 **Calango** is a desktop application for computational materials science. It brings three things together in one window: an interactive viewer for building, editing and inspecting atomic structures; a calculator-agnostic environment for setting up, orchestrating and running simulations; and a set of viewers that turn the output of those simulations back into figures you can read.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-red?style=for-the-badge)](LICENSE)
-[![macOS .dmg](https://img.shields.io/badge/macOS-.dmg-000000?style=for-the-badge&logo=apple&logoColor=white)](docs/tex/packaging/packaging.pdf)
-[![Debian](https://img.shields.io/badge/Debian%2FUbuntu-.deb-A81D33?style=for-the-badge&logo=debian&logoColor=white)](docs/tex/packaging/packaging.pdf)
+[![C++20](https://img.shields.io/badge/C%2B%2B-20-00599C?style=for-the-badge&logo=cplusplus&logoColor=white)](https://isocpp.org/)
+[![Qt 6.4+](https://img.shields.io/badge/Qt-6.4%2B-41CD52?style=for-the-badge&logo=qt&logoColor=white)](https://www.qt.io/)
 [![ASE](https://img.shields.io/badge/ASE-3.2x-4B8BBE?style=for-the-badge)](https://wiki.fysik.dtu.dk/ase/)
+[![On-line manual](https://img.shields.io/readthedocs/calango?style=for-the-badge&logo=readthedocs&logoColor=white&label=Manual)](https://calango.readthedocs.io/)
+[![macOS .dmg](https://img.shields.io/badge/macOS-.dmg-000000?style=for-the-badge&logo=apple&logoColor=white)](https://calango.readthedocs.io/en/latest/installation.html)
+[![Debian/Ubuntu .deb](https://img.shields.io/badge/Debian%2FUbuntu-.deb-A81D33?style=for-the-badge&logo=debian&logoColor=white)](https://calango.readthedocs.io/en/latest/installation.html)
+[![GitHub](https://img.shields.io/badge/GitHub-calango-181717?style=for-the-badge&logo=github)](https://github.com/seixas-research/calango)
 
 <!-- screenshot placeholder: assets/calango/screenshot_main.png — main window with a structure loaded -->
 
