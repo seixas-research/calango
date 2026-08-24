@@ -210,6 +210,23 @@ enum class OrchestrationTask {
     /// runnable, the same "source of its own structures" shape Container
     /// has, just reached through a wizard instead of a bespoke editor.
     Dsim,
+    /// Graphene Oxide Builder — a structure SOURCE, like Container: it
+    /// generates a decorated sheet or flake from its own configuration rather
+    /// than transforming one that arrives. In the Transform family because it
+    /// runs in process (the builder is native C++ and needs no interpreter,
+    /// no calculator and no launch command), which is what that family
+    /// actually decides.
+    GrapheneOxideBuild,
+    /// GO/MCMD — hybrid MD / Monte Carlo refinement of a Graphene Oxide
+    /// Build's decoration. An ordinary Simulation: one structure in, one job,
+    /// results out, configured by an ordinary SimulationWizardBase.
+    GrapheneOxideMcmd,
+    /// GO/MC-Opt — the same Monte Carlo with each proposed move relaxed to a
+    /// local minimum instead of through a burst of dynamics. A Simulation for
+    /// exactly the same reasons as GrapheneOxideMcmd, and a separate node
+    /// rather than a mode of it because a pipeline names which sampler it
+    /// used.
+    GrapheneOxideMcOpt,
 };
 
 /// Which of the three groups a task belongs to. The Add Process list is
@@ -358,6 +375,12 @@ public:
     const SupercellSpec& supercell() const { return supercell_; }
     void setSupercell(const SupercellSpec& spec);
 
+    const GrapheneOxideBuildSpec& grapheneOxideBuild() const
+    {
+        return grapheneOxideBuild_;
+    }
+    void setGrapheneOxideBuild(const GrapheneOxideBuildSpec& spec);
+
     const DefectSpec& defectSpec() const { return defects_; }
     void setDefectSpec(const DefectSpec& spec);
 
@@ -489,6 +512,7 @@ private:
     QString configuredRunCommand_;
     QList<BatchItem> batchItems_;
     SupercellSpec supercell_;
+    GrapheneOxideBuildSpec grapheneOxideBuild_;
     DefectSpec defects_;
     RandomNoiseSpec randomNoise_;
     TdbGeneratorSpec tdb_;
@@ -723,6 +747,8 @@ public:
     static QList<OrchestrationNodeItem::BatchItem>
     readStructuresFromFile(const QString& path, QString* error);
     /// Set a Supercell node's repetitions. Same invalidation rule.
+    void setNodeGrapheneOxideBuild(OrchestrationNodeItem* node,
+                                  const GrapheneOxideBuildSpec& spec);
     void setNodeSupercell(OrchestrationNodeItem* node,
                           const SupercellSpec& spec);
     /// Set a Defect Generator node's recipe. Same invalidation rule.

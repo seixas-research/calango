@@ -31,6 +31,7 @@
 #include "gui/RdfDialog.hpp"
 #include "gui/GrapheneOxideGroupAnalysisDialog.hpp"
 #include "gui/GrapheneOxidePairCorrelationDialog.hpp"
+#include "gui/PiPercolationDialog.hpp"
 #include "gui/RingPercolationDialog.hpp"
 #include "gui/BondEditorDialog.hpp"
 #include "gui/CellAxesTabs.hpp"
@@ -91,8 +92,9 @@
 #include "gui/NonlinearOpticsWizard.hpp"
 #include "gui/OpticsWizard.hpp"
 #include "gui/OverlayPanel.hpp"
-#include "gui/GoMdmcLiveTabs.hpp"
-#include "gui/GrapheneOxideMdmcWizard.hpp"
+#include "gui/GoMcmdLiveTabs.hpp"
+#include "gui/GrapheneOxideMcOptWizard.hpp"
+#include "gui/GrapheneOxideMcmdWizard.hpp"
 #include "gui/GrapheneOxideWizard.hpp"
 #include "gui/GrainCasts.hpp"
 #include "gui/FileOpenRouting.hpp"
@@ -133,7 +135,7 @@
 #include "gui/ScriptViewerDialog.hpp"
 #include "gui/SettingsManager.hpp"
 #include "gui/ShortcutRegistry.hpp"
-#include "gui/MdmcSummaryDialog.hpp"
+#include "gui/McmdSummaryDialog.hpp"
 #include "gui/MaceTrainerDialog.hpp"
 #include "gui/SystemStatusBar.hpp"
 #include "gui/ThemeManager.hpp"
@@ -1605,18 +1607,14 @@ void MainWindow::createMenusAndDocks()
     // Warren-Cowley (short-range order) moved to Modules → Alloys.
     analysisMenu->addAction(tr("Local &Entropy Analysis…"),
                             this, &MainWindow::showLocalEntropy);
-    // Graphene-oxide-specific, but still a real-space measurement built on
-    // the same bonds this block already reads — one level further than
-    // coordination number: rings are cycles in the bond graph, and sp2
-    // domains are the rings' own adjacency graph. Meaningless (reports zero
-    // rings) on a structure with no carbon framework, so it stays here
-    // rather than gathering its own top-level menu for one entry.
-    analysisMenu->addAction(tr("&Benzene-Ring / sp2 Percolation Analysis…"),
-                            this, &MainWindow::showRingPercolation)
-        ->setToolTip(tr("Six-membered carbon rings intact/disrupted from the "
-                        "Graphene Oxide Builder's own functional-group "
-                        "classification, grouped into connected sp2 domains, "
-                        "with a periodic percolation check per axis"));
+    // "Benzene-Ring / sp2 Percolation Analysis" (now "Aromatic Percolation
+    // Analysis") used to sit here, on the
+    // grounds that it is a real-space measurement built on the same bonds as
+    // the entries above. It is now "Aromatic Percolation Analysis" under
+    // Modules -> Graphene Oxide, with the rest of that module: it reads the
+    // Graphene Oxide Builder's OWN functional-group classification, and on a
+    // structure without one it reports zero rings — which makes it a module
+    // tool that happens to measure real space, not a general one.
 
     analysisMenu->addSeparator();
     // -- The same structure in reciprocal space ------------------------------
@@ -1857,22 +1855,48 @@ void MainWindow::createMenusAndDocks()
                                  &MainWindow::openGrapheneOxideBuilder)
         ->setToolTip(tr("Functionalized graphene: epoxides, hydroxyls, "
                         "carboxyls and carbonyls at target coverages"));
-    grapheneOxideMenu->addAction(tr("GO-&MDMC…"), this, &MainWindow::openGoMdmc)
+    grapheneOxideMenu->addAction(tr("GO/&MCMD…"), this, &MainWindow::openGoMcmd)
         ->setToolTip(tr("Hybrid MD / Monte Carlo annealing of a Graphene "
-                        "Oxide Build's functional-group arrangement"));
+                        "Oxide Build's functional-group arrangement — each "
+                        "proposed move relaxed by a short burst of dynamics, "
+                        "so the walk samples the thermal ensemble"));
+    grapheneOxideMenu
+        ->addAction(tr("GO/MC-&Opt…"), this, &MainWindow::openGoMcOpt)
+        ->setToolTip(tr("The same Monte Carlo, with each proposed move "
+                        "relaxed to a local minimum (force criterion, choice "
+                        "of optimizer) instead of through dynamics — so the "
+                        "acceptance test compares two minima. Costs more per "
+                        "cycle and samples minima rather than a canonical "
+                        "ensemble"));
     grapheneOxideMenu->addSeparator();
     grapheneOxideMenu
         ->addAction(tr("GO Functional &Group Analysis…"), this,
                     &MainWindow::showGrapheneOxideGroupAnalysis)
         ->setToolTip(tr("Group census and bond-length/angle distortion "
                         "around functional groups, from a Graphene Oxide "
-                        "Build or GO-MDMC trajectory"));
+                        "Build or GO/MCMD / GO/MC-Opt trajectory"));
     grapheneOxideMenu
         ->addAction(tr("GO &Pair Correlation…"), this,
                     &MainWindow::showGrapheneOxidePairCorrelation)
         ->setToolTip(tr("Warren-Cowley short-range order of the functional-"
                         "group decoration — does MC sampling drive ordering "
                         "or clustering?"));
+    grapheneOxideMenu
+        ->addAction(tr("&Aromatic Percolation Analysis…"), this,
+                    &MainWindow::showRingPercolation)
+        ->setToolTip(tr("Six-membered aromatic carbon rings intact/disrupted "
+                        "from the Graphene Oxide Builder's own functional-"
+                        "group classification, grouped into connected sp2 "
+                        "domains, with a periodic percolation check per axis"));
+    grapheneOxideMenu
+        ->addAction(tr("&π Percolation Analysis…"), this,
+                    &MainWindow::showPiPercolation)
+        ->setToolTip(tr("The conjugated carbon network — every carbon that "
+                        "still carries a p orbital, joined by C–C bonds, with "
+                        "no ring requirement. Weaker than the aromatic "
+                        "criterion and closer to what carries a current: a "
+                        "chain threading between oxidized sites conducts and "
+                        "contains no intact hexagon"));
 
     // The "Workflow" menu and its single "Add Workflow…" action are gone: the
     // node canvas is now a permanent dock in the bottom row (see below) rather
@@ -2002,15 +2026,15 @@ void MainWindow::createMenusAndDocks()
     splitDockWidget(overlayDock, processDock, Qt::Vertical);
     connect(processPanel_, &ProcessManagerPanel::loadResultRequested,
             this, &MainWindow::onProcessResultRequested);
-    // Double-click. A GO-MDMC row opens that run's Summary window — during
+    // Double-click. A GO/MCMD row opens that run's Summary window — during
     // the run (live counters) or after it (the persisted ones); every other
     // row keeps "load this run's result", which is what double-click did for
-    // every row, GO-MDMC included, before the Summary moved out of the
+    // every row, GO/MCMD included, before the Summary moved out of the
     // Results dock.
     connect(processPanel_, &ProcessManagerPanel::taskActivated, this,
             [this](int id, const QString& name, const QString& directory) {
-                if (name == goMdmcTaskLabel()) {
-                    showMdmcSummary(id, name);
+                if (isGoMonteCarloTask(name)) {
+                    showMcmdSummary(id, name);
                     return;
                 }
                 onProcessResultRequested(directory);
@@ -2155,17 +2179,17 @@ void MainWindow::createMenusAndDocks()
     jobTabs->addTab(plotPage(forcePlot_), tr("Force"));
     jobTabs->addTab(plotPage(pressurePlot_), tr("Pressure"));
 
-    // GO-MDMC's tab here: Acceptance (a live multi-series plot — the overall
+    // GO/MCMD's tab here: Acceptance (a live multi-series plot — the overall
     // rate CUMULATIVE and WINDOWED, plus one windowed line per move kind).
     // Present unconditionally, like Pressure already is for a non-NPT run —
-    // empty and showing a placeholder for any job that is not GO-MDMC,
+    // empty and showing a placeholder for any job that is not GO/MCMD,
     // populated the moment its metrics.json carries "acceptance_cumulative"
     // (see readMetricsJson()/pollLiveMetrics()).
     //
-    // The run's COUNTERS used to sit beside it as a second tab, "MDMC
-    // Summary". They are a window of their own now (MdmcSummaryDialog),
+    // The run's COUNTERS used to sit beside it as a second tab, "MCMD
+    // Summary". They are a window of their own now (McmdSummaryDialog),
     // opened when a run finishes and by double-clicking its row in the
-    // Processes panel — see MainWindow::showMdmcSummary(). A plot belongs in
+    // Processes panel — see MainWindow::showMcmdSummary(). A plot belongs in
     // this dock; a block of numbers you want to watch while the run moves in
     // the viewport does not.
     MultiSeriesPlotWidget::PlotSpec acceptanceSpec;
@@ -2176,22 +2200,22 @@ void MainWindow::createMenusAndDocks()
     acceptanceSpec.yAxisLabel = tr("Acceptance rate");
     acceptanceSpec.xAxisLabel = tr("MC cycle");
     acceptanceSpec.placeholder =
-        tr("GO-MDMC's acceptance rate — cumulative and windowed, overall and "
+        tr("GO/MCMD's acceptance rate — cumulative and windowed, overall and "
            "per move kind — will appear here during a run");
     acceptanceSpec.exportBaseName = QStringLiteral("acceptance.csv");
-    mdmcAcceptancePlot_ = new MultiSeriesPlotWidget(acceptanceSpec, jobTabs);
+    mcmdAcceptancePlot_ = new MultiSeriesPlotWidget(acceptanceSpec, jobTabs);
     {
         auto* page = new QWidget(jobTabs);
         auto* layout = new QVBoxLayout(page);
         layout->setContentsMargins(0, 0, 0, 2);
         layout->setSpacing(2);
-        layout->addWidget(mdmcAcceptancePlot_, 1);
+        layout->addWidget(mcmdAcceptancePlot_, 1);
         auto* row = new QHBoxLayout;
         row->addStretch(1);
         auto* exportButton = new QPushButton(tr("Export Data…"), page);
         row->addWidget(exportButton);
         layout->addLayout(row);
-        connect(exportButton, &QPushButton::clicked, mdmcAcceptancePlot_,
+        connect(exportButton, &QPushButton::clicked, mcmdAcceptancePlot_,
                 &MultiSeriesPlotWidget::exportData);
         jobTabs->addTab(page, tr("Acceptance"));
     }
@@ -2971,7 +2995,7 @@ void MainWindow::applyFrameCastOverride(Document* doc, int frameIndex)
         // count — notifyStructureChanged() already ran setStructure() above,
         // which clears atomCasts on an atom-count mismatch; an override
         // recorded against a differently-sized frame (should not happen in
-        // practice — MDMC never changes atom count — but a hand-edited
+        // practice — MCMD never changes atom count — but a hand-edited
         // project file could claim otherwise) is silently skipped rather
         // than corrupting the render with out-of-range cast indices.
         if (it->second.size() == doc->structure->size())
@@ -7108,7 +7132,7 @@ void MainWindow::showGrapheneOxideGroupAnalysis()
                                  tr("Open a structure first."));
         return;
     }
-    // No pre-flight classification check, unlike GO-MDMC: the analysis is
+    // No pre-flight classification check, unlike GO/MCMD: the analysis is
     // read-only and core::analyzeGrapheneOxideGroups() already reports "zero
     // groups found" gracefully from bonding alone for any structure that
     // simply is not graphene oxide, rather than refusing to open.
@@ -7138,7 +7162,7 @@ void MainWindow::showRingPercolation()
 {
     Document* doc = currentDocument();
     if (!doc || !doc->structure || doc->structure->empty()) {
-        QMessageBox::information(this, tr("Benzene-Ring / sp2 Percolation Analysis"),
+        QMessageBox::information(this, tr("Aromatic Percolation Analysis"),
                                  tr("Open a structure first."));
         return;
     }
@@ -7148,6 +7172,26 @@ void MainWindow::showRingPercolation()
     // styleChanged() itself), but the Representation dock only reflects a
     // change made outside its own controls through this explicit sync.
     connect(&dialog, &RingPercolationDialog::castsApplied, this, [this] {
+        notifyStructureChanged(false);
+        if (representationPanel_)
+            representationPanel_->syncFromViewport();
+    });
+    dialog.exec();
+}
+
+void MainWindow::showPiPercolation()
+{
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()) {
+        QMessageBox::information(this, tr("π Percolation Analysis"),
+                                 tr("Open a structure first."));
+        return;
+    }
+    PiPercolationDialog dialog(doc->structure, doc->frames, viewport_, this);
+    // Same Cast hand-off as its aromatic sibling: the dialog has already
+    // repainted the viewport, and this is what makes the Representation dock
+    // reflect a change made outside its own controls.
+    connect(&dialog, &PiPercolationDialog::castsApplied, this, [this] {
         notifyStructureChanged(false);
         if (representationPanel_)
             representationPanel_->syncFromViewport();
@@ -8093,7 +8137,7 @@ QColor grapheneOxidePristineCastColor()
 /// than saturated primaries so they read on both the Light and Dark themes
 /// and against the viewport's optional white floor. Shared by
 /// applyFunctionalGroupCasts() (one-shot builder) and
-/// setUpFunctionalGroupCastKey() (the MDMC per-frame key) so the two can
+/// setUpFunctionalGroupCastKey() (the MCMD per-frame key) so the two can
 /// never drift apart — a FIXED key deliberately not drawn from the shared
 /// kQualitativePalette in StructureRenderer, so a figure in a paper and a
 /// figure on screen agree, and a structure carrying only carbonyls does not
@@ -8193,7 +8237,7 @@ void MainWindow::setUpFunctionalGroupCastKey()
 
     // The SAME fixed key applyFunctionalGroupCasts() uses, but created
     // UNCONDITIONALLY for all four groups rather than only the ones present
-    // in one particular structure: an MDMC run's whole point is relocating
+    // in one particular structure: an MCMD run's whole point is relocating
     // groups between frames, so "which cast slot is epoxide" has to be a
     // property of the RUN, not of whichever frame happened to set it up
     // first.
@@ -8212,7 +8256,7 @@ void MainWindow::setUpFunctionalGroupCastKey()
         style.castStyles.push_back(cast);
     }
     style.colorMode = render::ColorMode::Cast;
-    // First activation from inside an MDMC run: an MDMC that starts from
+    // First activation from inside an MCMD run: an MCMD that starts from
     // bare graphene never goes through applyFunctionalGroupCasts() (there
     // was nothing to colour until the first group appeared), so nothing has
     // told the Representation dock yet. Tell it the same way that function
@@ -8234,7 +8278,7 @@ void MainWindow::redefineFunctionalGroupCastForFrame(Document* doc,
         return;
 
     using Builder = core::GrapheneOxideBuilder;
-    // A streamed or loaded MDMC frame is a thermal snapshot, and the
+    // A streamed or loaded MCMD frame is a thermal snapshot, and the
     // application-wide 1.15x bond tolerance reads a hot, intact bond as
     // broken -- two of six epoxides recoloured as carbonyls on one 335 K
     // frame. The thermal tolerance is the one the run itself judges its
@@ -8370,13 +8414,31 @@ void MainWindow::openGrapheneOxideBuilder()
     }
     statusBar()->showMessage(message);
 
-    // The MDMC refinement is no longer chained from here — it is its own
-    // module, GO-MDMC (Modules → Graphene Oxide → "GO-MDMC…"), reached
-    // through openGoMdmc() with this document offered as one of its eligible
+    // The MCMD refinement is no longer chained from here — it is its own
+    // module, GO/MCMD (Modules → Graphene Oxide → "GO/MCMD…"), reached
+    // through openGoMcmd() with this document offered as one of its eligible
     // inputs.
 }
 
-void MainWindow::openGoMdmc()
+void MainWindow::openGoMcmd()
+{
+    // GO/MCMD: the thermostatted-burst module.
+    GrapheneOxideMcmdWizard wizard(this);
+    runGoMonteCarlo(wizard, goMcmdTaskLabel());
+}
+
+void MainWindow::openGoMcOpt()
+{
+    // GO/MC-Opt: the same launcher, the same eligibility rules, the same
+    // staging — the only difference is which wizard configures the run and
+    // which label the process carries. Sharing runGoMonteCarlo() is what
+    // keeps "which documents may be refined" from having two answers.
+    GrapheneOxideMcOptWizard wizard(this);
+    runGoMonteCarlo(wizard, goMcOptTaskLabel());
+}
+
+void MainWindow::runGoMonteCarlo(GrapheneOxideMcmdWizard& wizard,
+                                 const QString& taskLabel)
 {
     using Builder = core::GrapheneOxideBuilder;
 
@@ -8408,7 +8470,7 @@ void MainWindow::openGoMdmc()
 
     if (candidates.empty()) {
         QMessageBox::information(
-            this, tr("GO-MDMC"),
+            this, taskLabel,
             tr("No open document carries a Graphene Oxide classification. "
                "Build one first with Modules → Graphene Oxide → Graphene "
                "Oxide Builder…, or open a graphene oxide structure that "
@@ -8420,7 +8482,7 @@ void MainWindow::openGoMdmc()
     if (candidates.size() > 1) {
         bool ok = false;
         const QString picked = QInputDialog::getItem(
-            this, tr("GO-MDMC — Select Build"),
+            this, tr("%1 — Select Build").arg(taskLabel),
             tr("Which Graphene Oxide Build should this run refine?"), labels,
             0, false, &ok);
         if (!ok)
@@ -8440,7 +8502,6 @@ void MainWindow::openGoMdmc()
                "predates the persisted Graphene Oxide Build contract."));
     }
 
-    GrapheneOxideMdmcWizard wizard(this);
     wizard.setInputBuild(*structure);
     if (wizard.exec() != QDialog::Accepted)
         return;
@@ -8465,12 +8526,19 @@ void MainWindow::openGoMdmc()
         hpcDock_->show();
         hpcDock_->raise();
         const int taskId =
-            processPanel_->registerTask(tr("Remote GO-MDMC"), jobDir);
+            processPanel_->registerTask(
+                tr("Remote %1").arg(taskLabel), jobDir);
         processPanel_->setTaskStatus(taskId, ProcessManagerPanel::Status::Running);
-        hpcPanel_->submitStagedJob(jobDir,
-                                      QStringLiteral("graphene_oxide_mdmc"),
-                                      wizard.calculatorKind());
-        statusBar()->showMessage(tr("Submitting GO-MDMC run to the cluster…"));
+        // The submission slug tells the two modules apart on the cluster
+        // side, where only the staged directory travels.
+        hpcPanel_->submitStagedJob(
+            jobDir,
+            taskLabel == goMcOptTaskLabel()
+                ? QStringLiteral("graphene_oxide_mc_opt")
+                : QStringLiteral("graphene_oxide_mcmd"),
+            wizard.calculatorKind());
+        statusBar()->showMessage(
+            tr("Submitting %1 run to the cluster…").arg(taskLabel));
         return;
     }
     if (wizard.action() != SimulationWizardBase::Action::RunLocal)
@@ -8480,17 +8548,17 @@ void MainWindow::openGoMdmc()
     // through the queue rather than written onto a document here.
     //
     // It used to be applied straight to liveDoc_ after the runScript() call
-    // below, which worked only when the run started SYNCHRONOUSLY: a GO-MDMC
+    // below, which worked only when the run started SYNCHRONOUSLY: a GO/MCMD
     // submitted while another job was running got queued, liveDoc_ was still
     // the other job's tab (or null), and the setting was silently dropped —
     // a hole the old code documented rather than closed. Staged here, it
-    // survives the wait and reaches setUpGoMdmcLiveFiles() with its run.
-    pendingMdmcCastPerFrame_ = wizard.castPerFrame();
+    // survives the wait and reaches setUpGoMcmdLiveFiles() with its run.
+    pendingMcmdCastPerFrame_ = wizard.castPerFrame();
 
     // expectFrames: the run produces frames, so the live tabs follow the
-    // annealing rather than waiting for the end. GO-MDMC is the one such run
-    // that takes NO stdout-streamed tab — see gui/GoMdmcLiveTabs.hpp.
-    runScript(wizard.script(), wizard.pythonExecutable(), goMdmcTaskLabel(),
+    // annealing rather than waiting for the end. GO/MCMD is the one such run
+    // that takes NO stdout-streamed tab — see gui/GoMcmdLiveTabs.hpp.
+    runScript(wizard.script(), wizard.pythonExecutable(), taskLabel,
               true, wizard.calculatorKind(), wizard.runCommand());
 }
 
@@ -9122,6 +9190,37 @@ std::unique_ptr<SimulationWizardBase> makeOrchestrationWizard(
         return std::make_unique<ThermodynamicIntegrationWizard>(
             request.structure);
 
+    // Both graphene-oxide samplers take their Build through the ordinary
+    // geometry hand-off, and setInputBuild() is what reads the classification
+    // off it — the functional-group count, the basal/edge split and whether
+    // the hydroxyls were placed as antiposition pairs all come from the
+    // structure's own fields rather than from a caller that says so.
+    //
+    // A node whose parent has not run yet has no structure to read, and the
+    // wizard is opened anyway (that is the point of configuring ahead of
+    // time): setInputBuild() is simply not called, and the wizard shows its
+    // "no build yet" substrate summary until the node is reconfigured after
+    // the parent produces one.
+    case OrchestrationTask::GrapheneOxideMcmd: {
+        auto wizard = std::make_unique<GrapheneOxideMcmdWizard>();
+        if (request.structure)
+            wizard->setInputBuild(*request.structure);
+        return wizard;
+    }
+    case OrchestrationTask::GrapheneOxideMcOpt: {
+        auto wizard = std::make_unique<GrapheneOxideMcOptWizard>();
+        if (request.structure)
+            wizard->setInputBuild(*request.structure);
+        return wizard;
+    }
+    // Not a SimulationWizardBase at all: the Graphene Oxide Builder is a
+    // Transform, configured by its own QWizard on the canvas (see
+    // OrchestrationWindow's editGrapheneOxideBuild()), so nothing here builds
+    // one. Listed explicitly rather than left to a default arm — this switch
+    // is exhaustive on purpose, and the omission of a node that DOES need a
+    // wizard has to keep failing to compile.
+    case OrchestrationTask::GrapheneOxideBuild:
+        return nullptr;
     case OrchestrationTask::Dsim:
         // Unlike every other case here, DsimWizard does not read
         // request.structure at all — its Stage 1 builds its own N-structure
@@ -9727,13 +9826,13 @@ void MainWindow::syncResultsToProcess(int id)
     if (r.hasPressTarget)
         pressurePlot_->setTarget(r.pressTarget);
     jobLogWidget_->restoreLog(r.log);
-    // GO-MDMC's Acceptance tab reconnects the same way the four fixed ones do
+    // GO/MCMD's Acceptance tab reconnects the same way the four fixed ones do
     // — the "reopen the panel on an already-running job" case this function's
     // own lazy-hydration block above exists for.
-    updateMdmcAcceptancePlot(r);
+    updateMcmdAcceptancePlot(r);
     // The Summary WINDOW is deliberately not repainted from here: it is bound
     // to a process of its own, which need not be the one just selected in
-    // this dock. It follows its own run through refreshMdmcSummaryDialog().
+    // this dock. It follows its own run through refreshMcmdSummaryDialog().
 }
 
 void MainWindow::onEnergySample(int step, double value)
@@ -9886,7 +9985,7 @@ bool MainWindow::readMetricsJson(const QString& directory,
     record.pressure.clear();
     record.extraSeries.clear();
     // Every field name a metric entry carries besides these five is a
-    // candidate for extraSeries — GO-MDMC's "acceptance_cumulative",
+    // candidate for extraSeries — GO/MCMD's "acceptance_cumulative",
     // "accept_epoxide_windowed", etc. today, some other job type's own
     // metric tomorrow. Generic on purpose: no new field name here should
     // ever need a matching C++ change to become visible somewhere.
@@ -9944,7 +10043,7 @@ void MainWindow::pollLiveMetrics()
     // be the one selected in the Results dock — so it is refreshed here,
     // ahead of the selected-process early return below, from the records the
     // loop has just re-read.
-    refreshMdmcSummaryDialog();
+    refreshMcmdSummaryDialog();
     if (it == processRecords_.end())
         return;
     // Repaint the four metric plots + progress bar from the freshly-read data.
@@ -9963,15 +10062,15 @@ void MainWindow::pollLiveMetrics()
     forcePlot_->setSamples(toSamples(r.force));
     pressurePlot_->setSamples(toSamples(r.pressure));
 
-    // GO-MDMC's Acceptance tab, driven by the SAME poll — see
+    // GO/MCMD's Acceptance tab, driven by the SAME poll — see
     // readMetricsJson()'s generic extraSeries capture. Empty (placeholder)
     // for any job whose metrics.json carries none of these field names.
-    updateMdmcAcceptancePlot(r);
+    updateMcmdAcceptancePlot(r);
 }
 
-void MainWindow::updateMdmcAcceptancePlot(const ProcessRecord& record)
+void MainWindow::updateMcmdAcceptancePlot(const ProcessRecord& record)
 {
-    if (!mdmcAcceptancePlot_)
+    if (!mcmdAcceptancePlot_)
         return;
     const auto toMultiSamples =
         [](const std::vector<std::pair<int, double>>& v) {
@@ -10004,14 +10103,14 @@ void MainWindow::updateMdmcAcceptancePlot(const ProcessRecord& record)
     addIfPresent("accept_hydroxyl_pair_windowed", tr("Hydroxyl pair (windowed)"));
     addIfPresent("accept_carbonyl_windowed", tr("Carbonyl (windowed)"));
     addIfPresent("accept_carboxyl_windowed", tr("Carboxyl (windowed)"));
-    mdmcAcceptancePlot_->clear();
-    mdmcAcceptancePlot_->setSeries(series);
+    mcmdAcceptancePlot_->clear();
+    mcmdAcceptancePlot_->setSeries(series);
 }
 
-void MainWindow::showMdmcSummary(int processId, const QString& label)
+void MainWindow::showMcmdSummary(int processId, const QString& label)
 {
-    if (!mdmcSummaryDialog_) {
-        mdmcSummaryDialog_ = new MdmcSummaryDialog(this);
+    if (!mcmdSummaryDialog_) {
+        mcmdSummaryDialog_ = new McmdSummaryDialog(this);
         // NOT WA_DeleteOnClose: closing the window is not the same as being
         // done with the run it was showing, and a re-open should come back
         // with the same numbers rather than an empty frame.
@@ -10020,19 +10119,19 @@ void MainWindow::showMdmcSummary(int processId, const QString& label)
     const QString name = !label.isEmpty()      ? label
         : it != processRecords_.end()          ? it->second.label
                                                : QString();
-    mdmcSummaryDialog_->bindProcess(processId, name,
+    mcmdSummaryDialog_->bindProcess(processId, name,
                                     processId == currentTaskId_);
-    refreshMdmcSummaryDialog();
-    mdmcSummaryDialog_->show();
-    mdmcSummaryDialog_->raise();
-    mdmcSummaryDialog_->activateWindow();
+    refreshMcmdSummaryDialog();
+    mcmdSummaryDialog_->show();
+    mcmdSummaryDialog_->raise();
+    mcmdSummaryDialog_->activateWindow();
 }
 
-void MainWindow::refreshMdmcSummaryDialog()
+void MainWindow::refreshMcmdSummaryDialog()
 {
-    if (!mdmcSummaryDialog_ || !mdmcSummaryDialog_->isVisible())
+    if (!mcmdSummaryDialog_ || !mcmdSummaryDialog_->isVisible())
         return;
-    const int id = mdmcSummaryDialog_->processId();
+    const int id = mcmdSummaryDialog_->processId();
     if (id < 0)
         return;
     auto it = processRecords_.find(id);
@@ -10043,20 +10142,20 @@ void MainWindow::refreshMdmcSummaryDialog()
     // Results selector does when it lands on such a record.
     if (it->second.extraSeries.empty() && !it->second.directory.isEmpty())
         loadProcessMetrics(id);
-    mdmcSummaryDialog_->setRunning(id == currentTaskId_);
-    updateMdmcSummaryTable(it->second);
+    mcmdSummaryDialog_->setRunning(id == currentTaskId_);
+    updateMcmdSummaryTable(it->second);
 }
 
-void MainWindow::updateMdmcSummaryTable(const ProcessRecord& record)
+void MainWindow::updateMcmdSummaryTable(const ProcessRecord& record)
 {
     // The RUN block of the same window, repainted from the same record.
     // Driven from here rather than from pollLiveMetrics() so that every path
     // which refreshes one half refreshes the other.
-    updateMdmcRunSummary(record);
+    updateMcmdRunSummary(record);
 
-    if (!mdmcSummaryDialog_)
+    if (!mcmdSummaryDialog_)
         return; // the window has never been opened — nothing to paint into
-    QTableWidget* table = mdmcSummaryDialog_->moveBreakdownTable();
+    QTableWidget* table = mcmdSummaryDialog_->moveBreakdownTable();
 
     const auto lastValue = [&](const QString& key) -> std::optional<double> {
         const auto it = record.extraSeries.find(key);
@@ -10066,7 +10165,7 @@ void MainWindow::updateMdmcSummaryTable(const ProcessRecord& record)
     };
 
     // "acceptance_attempts" (the overall count) is present iff this record
-    // is a GO-MDMC run that has recorded at least one judged move — the
+    // is a GO/MCMD run that has recorded at least one judged move — the
     // signal that decides whether this table has anything to show at all.
     if (!lastValue(QStringLiteral("acceptance_attempts"))) {
         table->setRowCount(0);
@@ -10124,11 +10223,11 @@ void MainWindow::updateMdmcSummaryTable(const ProcessRecord& record)
     }
 }
 
-void MainWindow::updateMdmcRunSummary(const ProcessRecord& record)
+void MainWindow::updateMcmdRunSummary(const ProcessRecord& record)
 {
-    if (!mdmcSummaryDialog_)
+    if (!mcmdSummaryDialog_)
         return; // the window has never been opened — nothing to paint into
-    QTableWidget* table = mdmcSummaryDialog_->runSummaryTable();
+    QTableWidget* table = mcmdSummaryDialog_->runSummaryTable();
 
     const auto lastValue = [&](const char* key) -> std::optional<double> {
         const auto it = record.extraSeries.find(QLatin1String(key));
@@ -10137,13 +10236,13 @@ void MainWindow::updateMdmcRunSummary(const ProcessRecord& record)
         return it->second.back().second;
     };
 
-    // "mdmc_cycles_total" rides every GO-MDMC cycle sample and no other job
+    // "mcmd_cycles_total" rides every GO/MCMD cycle sample and no other job
     // type's metrics: its absence is what says this record has no run to
     // summarize. (The equivalent of the per-move-kind table's own
     // "acceptance_attempts" gate, but present from the FIRST completed cycle
     // rather than from the first judged move — a run whose opening cycles all
     // found no free site has cycles to report before it has attempts.)
-    const std::optional<double> total = lastValue("mdmc_cycles_total");
+    const std::optional<double> total = lastValue("mcmd_cycles_total");
     if (!total) {
         table->setRowCount(0);
         return;
@@ -10161,11 +10260,11 @@ void MainWindow::updateMdmcRunSummary(const ProcessRecord& record)
     const qlonglong cyclesTotal = count(total);
     // Clamped to the total: "cycles/total" may never read 101/100.
     const qlonglong cyclesDone =
-        std::min(count(lastValue("mdmc_cycles_done")), cyclesTotal);
-    const qlonglong mdSteps = count(lastValue("mdmc_md_steps_done"));
-    const qlonglong accepted = count(lastValue("mdmc_accepted"));
+        std::min(count(lastValue("mcmd_cycles_done")), cyclesTotal);
+    const qlonglong mdSteps = count(lastValue("mcmd_md_steps_done"));
+    const qlonglong accepted = count(lastValue("mcmd_accepted"));
 
-    // Accepted per cycle COMPLETED — the same ratio mdmc_summary.json reports
+    // Accepted per cycle COMPLETED — the same ratio mcmd_summary.json reports
     // at the end of the run (accepted / cycles), so the finished panel and
     // the finished file agree. Deliberately NOT "acceptance_cumulative",
     // which is per judged ATTEMPT and excludes cycles that found no site:
@@ -10206,7 +10305,7 @@ void MainWindow::updateMdmcRunSummary(const ProcessRecord& record)
          cyclesDone > 0 ? tr("%1%").arg(acceptancePercent, 0, 'f', 1)
                         : QStringLiteral("—")},
         {tr("Elapsed"),
-         formatElapsed(lastValue("mdmc_elapsed_s").value_or(0.0))},
+         formatElapsed(lastValue("mcmd_elapsed_s").value_or(0.0))},
     };
     table->setRowCount(static_cast<int>(rows.size()));
     for (int i = 0; i < static_cast<int>(rows.size()); ++i) {
@@ -10216,25 +10315,29 @@ void MainWindow::updateMdmcRunSummary(const ProcessRecord& record)
     }
 }
 
-void MainWindow::setUpGoMdmcLiveFiles(
+void MainWindow::setUpGoMcmdLiveFiles(
     const QString& jobDir, int processId,
-    const std::shared_ptr<core::Structure>& seed, bool castPerFrame)
+    const std::shared_ptr<core::Structure>& seed, bool castPerFrame,
+    const QString& taskLabel)
 {
     if (jobDir.isEmpty() || !seed || !tabBar_)
         return;
 
     // The two files S1/S3 make this module write, and the two tabs S4 asks
-    // for — which are, since the tab audit, every viewport tab a GO-MDMC run
-    // creates. gui/GoMdmcLiveTabs.hpp holds the list and the reasoning.
-    const std::vector<GoMdmcLiveView> followed = goMdmcLiveViews();
+    // for — which are, since the tab audit, every viewport tab a GO/MCMD run
+    // creates. gui/GoMcmdLiveTabs.hpp holds the list and the reasoning.
+    // Titled after the module that produced the run — GO/MCMD and GO/MC-Opt
+    // write the same file names into their own directories, and the tab is the
+    // one place a user can see which of the two they are watching.
+    const std::vector<GoMcmdLiveView> followed = goMcmdLiveViews(taskLabel);
 
     // addDocument() selects each tab as it creates it, which would move the
     // user off whatever they were looking at when the run started. Restored
     // below — the two new tabs are appended after every existing one, so no
     // index shifts under this.
     const int restore = tabBar_->currentIndex();
-    for (const GoMdmcLiveView& entry : followed) {
-        GoMdmcLiveFile follow;
+    for (const GoMcmdLiveView& entry : followed) {
+        GoMcmdLiveFile follow;
         follow.processId = processId;
         follow.path = jobDir + QLatin1Char('/') + entry.fileName;
         // The input geometry is shown while the first frame is written, but
@@ -10261,20 +10364,20 @@ void MainWindow::setUpGoMdmcLiveFiles(
         // on (D26) because the wizard was outside that batch's fence; with
         // the streamed tab gone that left the checkbox with nothing at all to
         // control. Default is on, and leaving it on is the right answer for
-        // an MDMC run — a Cast fixed at frame 0 goes stale the moment the
+        // an MCMD run — a Cast fixed at frame 0 goes stale the moment the
         // first move is accepted, which is the whole point of the module.
-        doc->mdmcCastPerFrame = castPerFrame;
+        doc->mcmdCastPerFrame = castPerFrame;
         follow.documentId = doc->id;
-        goMdmcLiveFiles_.push_back(follow);
+        goMcmdLiveFiles_.push_back(follow);
     }
     if (restore >= 0 && restore < tabBar_->count())
         tabBar_->setCurrentIndex(restore);
 
     // Polled on the metrics timer the run already runs — no second timer, and
     // no file watcher (there is none anywhere in src/). UniqueConnection so a
-    // later GO-MDMC run does not poll twice per tick.
+    // later GO/MCMD run does not poll twice per tick.
     connect(metricsTimer_, &QTimer::timeout, this,
-            &MainWindow::pollGoMdmcLiveFiles, Qt::UniqueConnection);
+            &MainWindow::pollGoMcmdLiveFiles, Qt::UniqueConnection);
     // One final read when THIS process finishes, so the frames written
     // between the last tick and the script's exit are not lost. Keyed by
     // process id rather than by "whatever just finished": startNextQueuedJob()
@@ -10288,14 +10391,14 @@ void MainWindow::setUpGoMdmcLiveFiles(
     *handle = connect(jobRunner_, &jobs::JobRunner::finished, this,
                       [this, handle, processId](int, bool) {
                           disconnect(*handle);
-                          finishGoMdmcLiveFiles(processId);
+                          finishGoMcmdLiveFiles(processId);
                       });
 }
 
-QStringList MainWindow::goMdmcLiveTabTitles(int processId) const
+QStringList MainWindow::goMcmdLiveTabTitles(int processId) const
 {
     QStringList titles;
-    for (const GoMdmcLiveFile& follow : goMdmcLiveFiles_) {
+    for (const GoMcmdLiveFile& follow : goMcmdLiveFiles_) {
         if (follow.processId != processId)
             continue;
         for (const auto& doc : documents_)
@@ -10305,9 +10408,9 @@ QStringList MainWindow::goMdmcLiveTabTitles(int processId) const
     return titles;
 }
 
-void MainWindow::pollGoMdmcLiveFiles()
+void MainWindow::pollGoMcmdLiveFiles()
 {
-    for (GoMdmcLiveFile& follow : goMdmcLiveFiles_) {
+    for (GoMcmdLiveFile& follow : goMcmdLiveFiles_) {
         Document* doc = nullptr;
         for (const auto& candidate : documents_)
             if (candidate && candidate->id == follow.documentId)
@@ -10352,14 +10455,14 @@ void MainWindow::pollGoMdmcLiveFiles()
     }
 }
 
-void MainWindow::finishGoMdmcLiveFiles(int processId)
+void MainWindow::finishGoMcmdLiveFiles(int processId)
 {
-    if (goMdmcLiveFiles_.empty())
+    if (goMcmdLiveFiles_.empty())
         return;
     // One last read before anything is torn down: the script appends its
     // final frames between the last timer tick and its own exit.
-    pollGoMdmcLiveFiles();
-    for (auto it = goMdmcLiveFiles_.begin(); it != goMdmcLiveFiles_.end();) {
+    pollGoMcmdLiveFiles();
+    for (auto it = goMcmdLiveFiles_.begin(); it != goMcmdLiveFiles_.end();) {
         if (it->processId != processId) {
             ++it;
             continue;
@@ -10381,7 +10484,7 @@ void MainWindow::finishGoMdmcLiveFiles(int processId)
                 syncViewsToCurrent(false);
             showFinalFrame(doc);
         }
-        it = goMdmcLiveFiles_.erase(it);
+        it = goMcmdLiveFiles_.erase(it);
     }
 }
 
@@ -10469,7 +10572,7 @@ QString MainWindow::stageJob(const QString& script, int procId)
 
     try {
         // Stage inputs: structure (extxyz round-trips everything) + script.
-        // A launcher that runs against a working copy (GO-MDMC) puts that
+        // A launcher that runs against a working copy (GO/MCMD) puts that
         // copy in stagedRunStructure_ and it wins here — the point being that
         // such a copy no longer has to be opened in a tab to be staged.
         // Consumed like every other staged member, so an unrelated later job
@@ -10644,10 +10747,10 @@ void MainWindow::runScript(const QString& script, const QString& pythonExe,
     job.kind = kind;
     job.requestedCores = context.cores;
     job.expectFrames = expectFrames;
-    // Consumed like stagedRunStructure_ above: a GO-MDMC run carries its own
+    // Consumed like stagedRunStructure_ above: a GO/MCMD run carries its own
     // setting, and the next job of any kind starts from the default again.
-    job.mdmcCastPerFrame = pendingMdmcCastPerFrame_;
-    pendingMdmcCastPerFrame_ = true;
+    job.mcmdCastPerFrame = pendingMcmdCastPerFrame_;
+    pendingMcmdCastPerFrame_ = true;
     // Snapshot the geometry the live tab would be seeded from. Deferring the
     // lookup to launch time would seed it from whatever tab happens to be
     // current then, which for a queued job is routinely a different structure
@@ -10696,20 +10799,20 @@ void MainWindow::launchJob(const QueuedJob& job)
     processPanel_->setTaskStatus(job.processId,
                                  ProcessManagerPanel::Status::Running);
 
-    // GO-MDMC is the one frame-producing run that gets NO stdout-streamed
-    // tab. It opens two file-followed tabs instead (setUpGoMdmcLiveFiles()
+    // GO/MCMD is the one frame-producing run that gets NO stdout-streamed
+    // tab. It opens two file-followed tabs instead (setUpGoMcmdLiveFiles()
     // below), and *All Structures* already carries every geometry the stdout
     // stream would have shown — with the per-atom functional-group columns
     // that wire format cannot express (DECISIONS.md D4). A third tab was
     // therefore a duplicate of one of the two, and it spent the opening of
     // every run showing the unrelaxed input geometry. job.liveSeed is still
     // captured above: the two tabs below seed from it.
-    const bool goMdmc = job.label == tr("GO-MDMC");
+    const bool goMcmd = isGoMonteCarloTask(job.label);
 
     // Live viewport streaming: MD/relaxation scripts emit CALANGO_FRAME
     // blocks — open the trajectory tab NOW and let frames pour in.
     liveDoc_ = nullptr;
-    if (job.expectFrames && job.liveSeed && !goMdmc) {
+    if (job.expectFrames && job.liveSeed && !goMcmd) {
         // The input geometry is shown while the first frame is computed,
         // but it is NOT seeded as trajectory frame 0: it carries no
         // evaluated forces or velocities, so scrubbing onto it blanked the
@@ -10721,17 +10824,17 @@ void MainWindow::launchJob(const QueuedJob& job)
         liveDoc_ = documents_[static_cast<std::size_t>(tab)].get();
         tabBar_->setCurrentIndex(tab);
     }
-    // GO-MDMC (S4): the run's TWO — and only two — live tabs, each following
+    // GO/MCMD (S4): the run's TWO — and only two — live tabs, each following
     // one of the run's two structure FILES as the script appends to it. Not
     // over the stdout frame
     // stream: that wire format cannot carry the per-atom group columns the
     // Cast colouring needs and cannot say which of the two files a frame
-    // belongs to (DECISIONS.md D4). Here rather than in openGoMdmc() so a run
+    // belongs to (DECISIONS.md D4). Here rather than in openGoMcmd() so a run
     // that had to queue behind another job gets them too — this is the point
     // at which its own directory is known.
-    if (goMdmc)
-        setUpGoMdmcLiveFiles(job.jobDir, job.processId, job.liveSeed,
-                             job.mdmcCastPerFrame);
+    if (goMcmd)
+        setUpGoMcmdLiveFiles(job.jobDir, job.processId, job.liveSeed,
+                             job.mcmdCastPerFrame, job.label);
 
     jobDock_->show();
     jobDock_->raise();
@@ -10846,13 +10949,13 @@ void MainWindow::appendStreamedFrame(
     doc.frames.push_back(frame);
     isDirty_ = true;
 
-    // GO-MDMC, with "Redefine Cast on every accepted move" checked: this
+    // GO/MCMD, with "Redefine Cast on every accepted move" checked: this
     // frame's own functional-group classification is
     // recorded as ITS Cast override before anything decides whether to
     // display it — a frame the user later scrubs back to (not just the tail
     // this run happens to be following right now) still needs its own
     // override waiting for it.
-    if (doc.mdmcCastPerFrame) {
+    if (doc.mcmdCastPerFrame) {
         setUpFunctionalGroupCastKey();
         redefineFunctionalGroupCastForFrame(
             &doc, static_cast<int>(doc.frames.size()) - 1);
@@ -10984,7 +11087,7 @@ void MainWindow::onJobFinished(int exitCode, bool crashed)
         const int finishedId = currentTaskId_;
         currentTaskId_ = -1;
 
-        // A GO-MDMC run that COMPLETED puts its counters in front of the
+        // A GO/MCMD run that COMPLETED puts its counters in front of the
         // user: the numbers are the result of the run in a way no other job
         // type's are, and hunting for them afterwards was the whole reason
         // they moved out of a Results tab.
@@ -10997,8 +11100,8 @@ void MainWindow::onJobFinished(int exitCode, bool crashed)
         if (!failed) {
             const auto record = processRecords_.find(finishedId);
             if (record != processRecords_.end()
-                && record->second.label == goMdmcTaskLabel())
-                showMdmcSummary(finishedId, record->second.label);
+                && isGoMonteCarloTask(record->second.label))
+                showMcmdSummary(finishedId, record->second.label);
         }
     }
 
@@ -11008,13 +11111,13 @@ void MainWindow::onJobFinished(int exitCode, bool crashed)
         const int index = indexOfDocument(liveDoc_);
         Document* streamed = liveDoc_;
         liveDoc_ = nullptr;
-        // GO-MDMC used to need an exception here — it streams its
+        // GO/MCMD used to need an exception here — it streams its
         // equilibrated structure before the first cycle, so a run that then
         // accepted nothing had exactly one real frame and that frame WAS its
         // result, which the "<= 1 frame, drop the tab" rule threw away. It no
-        // longer takes a streamed tab at all (gui/GoMdmcLiveTabs.hpp), and the
+        // longer takes a streamed tab at all (gui/GoMcmdLiveTabs.hpp), and the
         // equivalent rule for the two tabs it does take lives in
-        // finishGoMdmcLiveFiles(), which keeps them unconditionally.
+        // finishGoMcmdLiveFiles(), which keeps them unconditionally.
         if (index >= 0 && streamed->frames.size() > 1) {
             streamed->fileName.replace(tr(" (live)"), QString());
             tabBar_->setTabText(index, streamed->fileName);

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Edge-group moves on a nanoflake conserve the rim: run the GENERATED
-MDMC script for real on a coronene flake.
+MCMD script for real on a coronene flake.
 
 An edge carbon of a flake carries either a functional group (carbonyl,
 carboxyl) or a terminating hydrogen — never both, never neither. Before
-this test existed, GrapheneOxideMdmcScriptGenerator's edge move rebuilt
+this test existed, GrapheneOxideMcmdScriptGenerator's edge move rebuilt
 the group at its new host ON TOP of that host's hydrogen (an oxygen 0.14 Å
 from an H) and left the vacated carbon with a dangling bond: every edge
 move was a fused atom pair and a radical, whatever the energy said. The
@@ -21,9 +21,9 @@ Independently re-derived from raw geometry on EVERY accepted frame:
 
 Runs on plain ASE Lennard-Jones with the dynamics off (the antiposition
 dump: mdStepsPerCycle = 0, no equilibration), like
-graphene_oxide_mdmc_antiposition_test.py, and self-skips the same way.
+graphene_oxide_mcmd_antiposition_test.py, and self-skips the same way.
 
-Usage:  graphene_oxide_mdmc_flake_test.py <calango_script_test>
+Usage:  graphene_oxide_mcmd_flake_test.py <calango_script_test>
 """
 import json
 import os
@@ -191,12 +191,12 @@ def run_py(python, source, *args, timeout=300):
 
 def main():
     if len(sys.argv) < 2:
-        raise SystemExit("usage: graphene_oxide_mdmc_flake_test.py "
+        raise SystemExit("usage: graphene_oxide_mcmd_flake_test.py "
                          "<calango_script_test>")
     binary = sys.argv[1]
     python = find_ase_python()
     if python is None:
-        print("no interpreter with ase found - skipping the MDMC flake test")
+        print("no interpreter with ase found - skipping the MCMD flake test")
         return 0
     print(f"ase interpreter: {python}\n")
 
@@ -216,14 +216,14 @@ def main():
               f"({build.stdout.strip() if build.returncode == 0 else build.stderr.strip()[-300:]})")
         if build.returncode != 0:
             return 1
-        shutil.copy(scripts / "graphene_oxide_mdmc_antiposition.py",
+        shutil.copy(scripts / "graphene_oxide_mcmd_antiposition.py",
                     job / "run.py")
         done = subprocess.run([python, "run.py"], cwd=job,
                               capture_output=True, text=True, timeout=600)
         check(done.returncode == 0,
-              f"the MDMC run completed (exit {done.returncode})"
+              f"the MCMD run completed (exit {done.returncode})"
               + (f": {done.stderr.strip()[-300:]}" if done.returncode else ""))
-        summary_path = job / "mdmc_summary.json"
+        summary_path = job / "mcmd_summary.json"
         trajectory = job / "accepted_structures.extxyz"
         if done.returncode != 0 or not summary_path.is_file():
             return 1
@@ -260,7 +260,7 @@ def main():
                   f"(closest approach {closest:.2f} A) - no group was ever "
                   f"rebuilt on top of a hydrogen")
 
-    print("\n" + ("All GO-MDMC flake checks passed."
+    print("\n" + ("All GO/MCMD flake checks passed."
                   if failures == 0 else f"{failures} check(s) FAILED."))
     return 0 if failures == 0 else 1
 

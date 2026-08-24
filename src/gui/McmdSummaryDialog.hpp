@@ -8,7 +8,7 @@ class QTableWidget;
 
 namespace calango::gui {
 
-/// "MDMC Summary" — a GO-MDMC run's counters, in a window of their own.
+/// "MCMD Summary" — a GO/MCMD run's counters, in a window of their own.
 ///
 /// This used to be a tab in the Results dock, which is the wrong shape for it
 /// twice over: the dock is short (zone 10) and shared with the Log and the
@@ -37,11 +37,11 @@ namespace calango::gui {
 /// Every number shown is computed by MainWindow, which owns the process
 /// record; this class owns the presentation and the CSV export, and holds the
 /// two tables that the numbers are written into.
-class MdmcSummaryDialog : public QDialog {
+class McmdSummaryDialog : public QDialog {
     Q_OBJECT
 
 public:
-    explicit MdmcSummaryDialog(QWidget* parent = nullptr);
+    explicit McmdSummaryDialog(QWidget* parent = nullptr);
 
     /// Bind the window to a process: its id, the label its row carries, and
     /// whether that run is still going (which only changes the subtitle).
@@ -51,10 +51,10 @@ public:
 
     /// The five whole-run counters — cycles done/total, MD steps, accepted,
     /// acceptance %, elapsed. Two columns, written by
-    /// MainWindow::updateMdmcRunSummary().
+    /// MainWindow::updateMcmdRunSummary().
     QTableWidget* runSummaryTable() const { return runSummaryTable_; }
     /// Attempts / accepted / ratio per move kind, written by
-    /// MainWindow::updateMdmcSummaryTable().
+    /// MainWindow::updateMcmdSummaryTable().
     QTableWidget* moveBreakdownTable() const { return moveBreakdownTable_; }
 
 private Q_SLOTS:

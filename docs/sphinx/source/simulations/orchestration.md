@@ -23,14 +23,14 @@ dialog. Only the calculator engine is chosen when a node is created.
 **Simulation** — reads a structure, launches a job, and runs on task
 defaults if you never open its wizard: {guilabel}`Geometry Optimization`,
 {guilabel}`Single Point`, {guilabel}`Molecular Dynamics`,
-{guilabel}`Phonon`.
+{guilabel}`Phonon`, {guilabel}`GO/MCMD`, {guilabel}`GO/MC-Opt`.
 
 **Transform** — reads a structure and produces a structure, *on the canvas*
 rather than as a job: {guilabel}`Structure Container`,
 {guilabel}`Single-atom Container`, {guilabel}`Supercell Builder`,
-{guilabel}`Defect Generator`, {guilabel}`Random Noise Setup`. They have no
-calculator and no launch command, and they finish in microseconds. See
-{ref}`orchestration-transforms`.
+{guilabel}`Defect Generator`, {guilabel}`Random Noise Setup`,
+{guilabel}`Graphene Oxide Builder`. They have no calculator and no launch
+command, and they finish in microseconds. See {ref}`orchestration-transforms`.
 
 **Analysis** — reads one or more *completed runs* rather than a structure,
 so each needs that many parent nodes linked to it:
@@ -501,6 +501,48 @@ one upstream, every one of its structures gets the full noisy ensemble —
 against. Two multiplying nodes in the same pipeline (this one alongside a
 DefectGenerator or SQS Generator) still have to agree on their count, for
 the same reason any two of them do.
+
+### Graphene Oxide Builder
+
+A structure **source**, not a transform of something upstream: like a
+{guilabel}`Structure Container` it needs no incoming link, and anything that
+does arrive on one is ignored. Configured by the *same* wizard
+{menuselection}`Modules --> Graphene Oxide --> Graphene Oxide Builder…` opens —
+one definition of what a Build is, not a canvas-only copy of it — and the node
+stores that whole configuration, so re-opening it comes back to what you set.
+
+It runs in process (the builder is native C++), so it needs no calculator, no
+Python environment and no launch command, and it finishes instantly.
+
+The structure it emits carries the **Graphene Oxide Build contract** — the
+per-atom `edge`, `go_group`, `go_group_id` and `go_pair_id` fields described in
+{doc}`/builders/nanomaterials` — which is exactly what makes the two samplers
+below able to consume it directly.
+
+The node face names the substrate and the dose: *"4 x 4 sheet, basal O/C =
+0.25"*. Every field of the configuration, the random **seed** included, is
+saved into the `.calproj` and the workflow document, so a saved pipeline
+rebuilds the same structure rather than a new random one.
+
+### GO/MCMD and GO/MC-Opt
+
+Ordinary **Simulation** nodes: one structure in through the usual geometry
+hand-off, one job, results out. The obvious upstream is a
+{guilabel}`Graphene Oxide Builder` node, but any parent emitting a structure
+that carries the Build contract will do — including a
+{guilabel}`Structure Container` holding builds imported from disk, which is how
+a fan-out over several decorations is set up.
+
+Both are configured by the same wizards their menu entries open, seeded from
+the parent's structure when it has one. **A node can be configured before its
+parent has ever run**: the wizard simply has no build to summarize yet, and the
+substrate figures fill in when you re-open it after the parent produces one.
+
+The two differ only in how a proposed group move is relaxed before it is
+judged — a burst of dynamics, or a relaxation to a local minimum. They are
+separate nodes rather than one node with a mode so that a saved pipeline names
+which sampler produced its trajectory. See
+{doc}`/builders/nanomaterials` for which to reach for.
 
 ### TDB Generator (CALPHAD)
 

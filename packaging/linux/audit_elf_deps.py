@@ -253,7 +253,20 @@ def main(argv: list[str]) -> int:
                     resolved = None
                     if has_ldconfig:
                         resolved = resolve_via_ldconfig(soname)
-                    owner = dpkg_owner(resolved) if resolved else None
+                    # ldconfig hands back whatever path is in its cache,
+                    # which on Debian/Ubuntu is a symlink (often under /lib,
+                    # itself a symlink to /usr/lib) pointing at the real,
+                    # versioned file -- e.g. libQt6Core.so.6 -> .../
+                    # libQt6Core.so.6.4.2. dpkg's file database records the
+                    # real file, not the symlink, so `dpkg -S` on the
+                    # unresolved symlink path reports "no path found" even
+                    # for a library that is fully owned by an installed
+                    # package. Resolve it first so the lookup matches what
+                    # dpkg actually has on record.
+                    owner = None
+                    if resolved:
+                        real = str(Path(resolved).resolve())
+                        owner = dpkg_owner(real) or dpkg_owner(resolved)
                     if owner is None:
                         failures.append(
                             f"{rel}: NEEDED '{soname}' does not resolve to "

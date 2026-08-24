@@ -25,9 +25,10 @@
 #include "gui/FilmTimelineWidget.hpp"
 #include "gui/DatabaseImportDialog.hpp"
 #include "gui/GeometryConstraintsDialog.hpp"
-#include "gui/GoMdmcLiveTabs.hpp"
-#include "gui/GrapheneOxideMdmcWizard.hpp"
-#include "gui/MdmcSummaryDialog.hpp"
+#include "gui/GoMcmdLiveTabs.hpp"
+#include "gui/GrapheneOxideMcOptWizard.hpp"
+#include "gui/GrapheneOxideMcmdWizard.hpp"
+#include "gui/McmdSummaryDialog.hpp"
 #include "gui/WorkflowReportDialog.hpp"
 #include "gui/GrapheneOxideWizard.hpp"
 #include "gui/HubbardParametersDialog.hpp"
@@ -61,6 +62,7 @@
 #include "gui/RandomNoiseWizard.hpp"
 #include "gui/SimulationWizardBase.hpp"
 #include "gui/GeometryOptimizationWizard.hpp"
+#include "gui/PhononWizard.hpp"
 #include "gui/MolecularDynamicsWizard.hpp"
 #include "gui/ThermodynamicIntegrationWizard.hpp"
 #include "gui/ThermodynamicIntegrationResults.hpp"
@@ -103,6 +105,7 @@
 #include <QSettings>
 #include <QFile>
 #include <QLabel>
+#include <QLayout>
 #include <QComboBox>
 #include <QDockWidget>
 #include <QGroupBox>
@@ -162,10 +165,10 @@ void check(bool condition, const std::string& what)
     check(condition, what.c_str());
 }
 
-/// A synthetic "Graphene Oxide Build" for GrapheneOxideMdmcWizard::
+/// A synthetic "Graphene Oxide Build" for GrapheneOxideMcmdWizard::
 /// setInputBuild() — geometry is irrelevant here (every atom sits at the
 /// origin), only the persisted classification fields
-/// GrapheneOxideMdmcWizard reads matter: `basal` + `edge` carbon atoms (the
+/// GrapheneOxideMcmdWizard reads matter: `basal` + `edge` carbon atoms (the
 /// "edge" field), of which the first `min(groups, basal + edge)` carry a
 /// distinct "go_group_id" (so the wizard counts exactly `groups` functional
 /// groups), and — when `antiposition` — the first two of those share a
@@ -330,6 +333,50 @@ int main(int argc, char** argv)
         GrapheneOxideWizard wizard;
         check(true, "constructs without dereferencing a half-built widget");
 
+        // Stage 1 draws the substrate the current settings produce, from the
+        // builder's OWN pristine() — the same call the build makes, so the
+        // picture cannot disagree with the result.
+        {
+            QWidget* preview = wizard.findChild<QWidget*>(
+                QStringLiteral("grapheneOxidePreview"));
+            check(preview != nullptr, "stage 1 carries a substrate preview");
+            if (preview) {
+                wizard.show();
+                preview->resize(320, 220);
+                // It has to actually DRAW something. A preview that paints an
+                // empty white rectangle is worse than none: it looks like the
+                // settings produced nothing.
+                const auto inkPixels = [preview] {
+                    QImage image(preview->size(), QImage::Format_ARGB32);
+                    image.fill(Qt::white);
+                    preview->render(&image);
+                    int ink = 0;
+                    for (int y = 0; y < image.height(); ++y)
+                        for (int x = 0; x < image.width(); ++x)
+                            if (image.pixelColor(x, y) != QColor(Qt::white))
+                                ++ink;
+                    return ink;
+                };
+                const int drawn = inkPixels();
+                check(drawn > 500,
+                      std::string("which draws the lattice (")
+                          + std::to_string(drawn) + " non-white pixels)");
+
+                // And it FOLLOWS the settings rather than showing one fixed
+                // picture: a bigger supercell is a different substrate.
+                int before = drawn;
+                for (QSpinBox* spin : wizard.findChildren<QSpinBox*>()) {
+                    if (spin->maximum() == 40 && spin->value() < 8) {
+                        spin->setValue(spin->value() + 3);
+                        break;
+                    }
+                }
+                check(inkPixels() != before,
+                      "and redraws when the substrate settings change");
+
+            }
+        }
+
         // Stage 2 is driven entirely by ratio sliders, each paired with a spin
         // box that types the same number. The pair must AGREE — a slider that
         // cannot reach the value shown beside it is the bug this checks for,
@@ -395,7 +442,7 @@ int main(int argc, char** argv)
         // asked for. Every periodic build came back complaining that the edge
         // groups the user never requested could not be placed.
         using Group = calango::core::GrapheneOxideBuilder::Group;
-        // Base structure, functionalization, MDMC opt-in.
+        // Base structure, functionalization, MCMD opt-in.
         constexpr int kGrapheneOxideStages = 3;
         const auto buildWith = [](int baseIndex, double edgeOxidation = -1.0) {
             GrapheneOxideWizard wizard;
@@ -487,13 +534,13 @@ int main(int argc, char** argv)
         }
     }
 
-    std::printf("Graphene Oxide MDMC wizard:\n");
+    std::printf("Graphene Oxide MCMD wizard:\n");
     {
         // A SimulationWizardBase resolves its interpreter through
         // PythonEngine, which asserts rather than lazily constructing. Scoped
         // so the runtime is finalized before the app exits.
         calango::pybridge::PythonEngine python;
-        GrapheneOxideMdmcWizard wizard;
+        GrapheneOxideMcmdWizard wizard;
         check(true, "constructs");
         // setInputBuild runs BEFORE the pages it writes into may exist in a
         // future edit, and it is called by the host immediately after
@@ -508,7 +555,7 @@ int main(int argc, char** argv)
         (void)ensemble;
 
         // The defaults this page seeds must be the SAME defaults
-        // core::GrapheneOxideMdmcConfig carries — the two are written out
+        // core::GrapheneOxideMcmdConfig carries — the two are written out
         // separately (a setValue() here, an initializer there) and nothing
         // in the compiler makes them agree. Read from the generated script,
         // which is the only place both of them meet, and read BEFORE
@@ -547,7 +594,7 @@ int main(int argc, char** argv)
         // `exerciseControls()` toggles every checkbox exactly twice, so it
         // leaves each one as it found it — a default checked here is still
         // checked when the script is generated below.
-        const auto antipositionBox = [](const GrapheneOxideMdmcWizard& w) {
+        const auto antipositionBox = [](const GrapheneOxideMcmdWizard& w) {
             QCheckBox* found = nullptr;
             for (QCheckBox* box : w.findChildren<QCheckBox*>())
                 if (box->text().contains(QStringLiteral("antiposition"),
@@ -556,7 +603,7 @@ int main(int argc, char** argv)
             return found;
         };
 
-        GrapheneOxideMdmcWizard antiposWizard;
+        GrapheneOxideMcmdWizard antiposWizard;
         antiposWizard.setInputBuild(
             makeGoBuildStructure(10, 40, 0, /*antiposition=*/true));
         bool labelMentionsAntiposition = false;
@@ -581,7 +628,7 @@ int main(int argc, char** argv)
         // still reaches the script. That is safe because the emitted
         // pairing bootstrap recovers pairs from the GEOMETRY - it finds
         // none here and every hydroxyl stays an ordinary single.
-        GrapheneOxideMdmcWizard plainWizard;
+        GrapheneOxideMcmdWizard plainWizard;
         plainWizard.setInputBuild(
             makeGoBuildStructure(10, 40, 0, /*antiposition=*/false));
         QCheckBox* plainBox = antipositionBox(plainWizard);
@@ -592,7 +639,7 @@ int main(int argc, char** argv)
                   QStringLiteral("hydroxyl_antiposition = True")),
               "and that default reaches the script");
 
-        GrapheneOxideMdmcWizard offWizard;
+        GrapheneOxideMcmdWizard offWizard;
         offWizard.setInputBuild(
             makeGoBuildStructure(10, 40, 0, /*antiposition=*/false));
         QCheckBox* offBox = antipositionBox(offWizard);
@@ -618,7 +665,7 @@ int main(int argc, char** argv)
               "interval is the only knob");
     }
 
-    // GO-MDMC used to open FOUR viewport tabs per local run: the two live
+    // GO/MCMD used to open FOUR viewport tabs per local run: the two live
     // tabs it is supposed to, plus its working input copy (opened only so
     // stageJob() -- which stages whatever document is current -- would find
     // it) and the generic stdout-streamed trajectory tab every frame-
@@ -629,38 +676,275 @@ int main(int argc, char** argv)
     // MainWindow itself is not built into any test binary, so what is pinned
     // here is the CONTRACT the three tab-opening sites were rewritten
     // against -- the list of views a run creates, and the predicate that
-    // suppresses the streamed tab. gui/GoMdmcLiveTabs.hpp is deliberately the
+    // suppresses the streamed tab. gui/GoMcmdLiveTabs.hpp is deliberately the
     // only place either answer is written down, so a regression has to go
     // through this.
-    std::printf("GO-MDMC live viewport tabs:\n");
+    std::printf("GO/MC-Opt wizard:\n");
     {
-        const auto views = calango::gui::goMdmcLiveViews();
+        // The construction-order hazard here is specific and severe.
+        // SimulationWizardBase::buildUi() reads wizardTitle(),
+        // settingsHeader() and relaxationMode(), and a base-class constructor
+        // that called it would dispatch every one of them to the BASE
+        // override — GO/MC-Opt would come out titled GO/MCMD, with GO/MCMD's
+        // thermostat page, silently. GrapheneOxideMcmdWizard::DeferUi exists
+        // to stop that, and these checks are what prove it works.
+        calango::pybridge::PythonEngine python;
+        GrapheneOxideMcOptWizard wizard;
+        wizard.show();
+        check(true, "constructs");
+        check(wizard.windowTitle().contains(QStringLiteral("MC-Opt")),
+              "under its OWN title, not the base class's — the virtual "
+              "dispatch during buildUi() reaches this subclass");
+
+        // THE LAYOUT BUG, checked as the symptom rather than the mechanism.
+        //
+        // mdSteps_ was constructed with the sampling group box as its parent
+        // and added to the form only under GO/MCMD. A child widget no layout
+        // ever claims keeps its default geometry — position (0, 0) inside its
+        // parent — so under GO/MC-Opt an unwanted spin box sat in the corner
+        // of the group painting over the group's own title.
+        //
+        // "Is it in the layout" is the wrong question to ask: QLayout::indexOf
+        // does not recurse, and a widget legitimately placed in a NESTED
+        // layout (the three k-point spin boxes share one row) answers no. The
+        // question that is actually about the bug is where the widget ENDED
+        // UP: a group box lays its children out inside non-zero contents
+        // margins, so a laid-out child can never sit at exactly (0, 0), and
+        // one that does is one nothing positioned.
+        {
+            // Force a layout pass first. The wizard's stages live in a
+            // QStackedWidget, and a page that has never been shown has never
+            // been laid out — every child of it still reads (0, 0), which
+            // would make this check fire on all of them.
+            for (QWidget* child : wizard.findChildren<QWidget*>()) {
+                child->ensurePolished();
+                if (QLayout* childLayout = child->layout())
+                    childLayout->activate();
+            }
+
+            QStringList stranded;
+            for (const QGroupBox* box : wizard.findChildren<QGroupBox*>()) {
+                const QLayout* boxLayout = box->layout();
+                if (!boxLayout)
+                    continue;
+                // A layout that has not run leaves everything at the origin;
+                // there is nothing to learn from such a box, and treating it
+                // as evidence would flag the whole dialog.
+                if (box->width() <= 1 || box->height() <= 1)
+                    continue;
+                const QMargins margins = boxLayout->contentsMargins();
+                if (margins.left() <= 0 || margins.top() <= 0)
+                    continue; // no margin: (0, 0) is a legal laid-out spot
+                for (const QWidget* child : box->findChildren<QWidget*>(
+                         QString(), Qt::FindDirectChildrenOnly)) {
+                    if (!child->isHidden() && child->pos() == QPoint(0, 0))
+                        stranded << QStringLiteral("%1 in \"%2\"")
+                                        .arg(QString::fromLatin1(
+                                                 child->metaObject()
+                                                     ->className()),
+                                             box->title());
+                }
+            }
+            check(stranded.isEmpty(),
+                  stranded.isEmpty()
+                      ? std::string("every control in every group box was "
+                                    "positioned by a layout")
+                      : std::string("a control was left unpositioned, painting "
+                                    "over its group's title: ")
+                            + stranded.join(QStringLiteral(", ")).toStdString());
+        }
+
+        // The optimization controls are present...
+        const auto named = [&wizard](const char* name) {
+            return wizard.findChild<QWidget*>(QString::fromLatin1(name))
+                != nullptr;
+        };
+        for (const char* control :
+             {"mcOptOptimizerCombo", "mcOptFmaxSpin", "mcOptMaxStepsSpin",
+              "mcOptMaxStepSpin"}) {
+            check(named(control),
+                  std::string("the optimization group offers ") + control);
+        }
+
+        // The variable-cell group is the SHARED one Geometry Optimization
+        // uses, not a lone checkbox: the filter, the stress-mask preset and
+        // the six Voigt ticks all have to be here, or an MC-Opt run relaxed
+        // isotropically cannot be compared with the anisotropic relaxations
+        // next door.
+        check(named("mcOptCellBox"), "and a variable-cell group beside it");
+        {
+            const QGroupBox* cellBox =
+                wizard.findChild<QGroupBox*>(QStringLiteral("mcOptCellBox"));
+            check(cellBox && cellBox->findChildren<QCheckBox*>().size() >= 7,
+                  "carrying the relax-cell switch and the six Voigt "
+                  "component ticks");
+            check(cellBox && cellBox->findChildren<QComboBox*>().size() >= 2,
+                  "plus the cell-filter and stress-mask combos");
+        }
+
+        // ...and on a STAGE OF ITS OWN, which is what the four-stage flow
+        // means. GO/MCMD keeps three.
+        check(wizard.windowTitle().contains(QStringLiteral("MC-Opt")),
+              "the window is still GO/MC-Opt's");
+
+        // ...and the thermostat controls are NOT: a module that never
+        // integrates anything must not offer a timestep or an ensemble.
+        bool hasThermostatRow = false;
+        for (const QGroupBox* box : wizard.findChildren<QGroupBox*>()) {
+            if (box->title().contains(QStringLiteral("Molecular Dynamics")))
+                hasThermostatRow = true;
+        }
+        check(!hasThermostatRow,
+              "and no Molecular Dynamics group — there is no integrator here, "
+              "so a timestep, a friction and an ensemble would be controls "
+              "that change nothing");
+
+        // Every optimizer the enum has must be reachable, and each must carry
+        // its own enum value rather than its row number.
+        if (auto* combo = wizard.findChild<QComboBox*>(
+                QStringLiteral("mcOptOptimizerCombo"))) {
+            using calango::core::GoMcOptimizer;
+            for (const auto& [label, value] :
+                 {std::pair{"BFGS", GoMcOptimizer::Bfgs},
+                  std::pair{"LBFGS", GoMcOptimizer::Lbfgs},
+                  std::pair{"FIRE", GoMcOptimizer::Fire},
+                  std::pair{"MDMin", GoMcOptimizer::Mdmin}}) {
+                const int row = combo->findData(static_cast<int>(value));
+                check(row >= 0 && combo->itemText(row).contains(
+                                      QString::fromLatin1(label)),
+                      std::string("the ") + label
+                          + " optimizer is offered, carrying its own enum");
+            }
+            check(combo->currentData().toInt()
+                      == static_cast<int>(GoMcOptimizer::Bfgs),
+                  "with BFGS selected by default");
+        }
+
+        // And the settings reach the generated script. This is the assertion
+        // that would have caught a DeferUi regression even if the title had
+        // been right: relaxationMode() is what the generator branches on.
+        if (auto* fmax = wizard.findChild<QDoubleSpinBox*>(
+                QStringLiteral("mcOptFmaxSpin")))
+            fmax->setValue(0.017);
+        if (auto* steps = wizard.findChild<QSpinBox*>(
+                QStringLiteral("mcOptMaxStepsSpin")))
+            steps->setValue(77);
+        if (auto* combo = wizard.findChild<QComboBox*>(
+                QStringLiteral("mcOptOptimizerCombo")))
+            combo->setCurrentIndex(combo->findData(
+                static_cast<int>(calango::core::GoMcOptimizer::Fire)));
+        const QString script = wizard.script();
+        check(script.contains(QStringLiteral("relax_to_minimum = True")),
+              "the script is the optimization branch");
+        check(script.contains(QStringLiteral("optimizer_class = FIRE")),
+              "with the optimizer that was chosen");
+        check(script.contains(QStringLiteral("optimizer_fmax = 0.017")),
+              "the force criterion that was typed");
+        check(script.contains(QStringLiteral("optimizer_max_steps = 77")),
+              "and the step ceiling");
+        check(!script.contains(QStringLiteral("relax_to_minimum = False")),
+              "and nothing left over from the dynamics branch");
+
+        // The variable-cell settings reach the run too — all of them, not just
+        // the on/off. A module that collected a stress mask and generated a
+        // script ignoring it would be the same class of bug as the wizard that
+        // collected a Hubbard U for a script that never wrote it.
+        check(script.contains(QStringLiteral("relax_cell = False")),
+              "the cell is fixed by default");
+        for (const char* key : {"cell_hydrostatic", "cell_custom_mask",
+                                "cell_mask"}) {
+            check(script.contains(QString::fromLatin1(key)),
+                  std::string("the script carries ") + key);
+        }
+        if (auto* relax = wizard.findChild<QCheckBox*>(
+                QStringLiteral("relaxCellCheck"))) {
+            relax->setChecked(true);
+            check(wizard.script().contains(QStringLiteral("relax_cell = True")),
+                  "and ticking \"relax the unit cell\" reaches it");
+        }
+        check(script.contains(QStringLiteral("_CellFilter")),
+              "under the cell filter the shared control names — the same "
+              "import Geometry Optimization emits");
+
+        exerciseControls(&wizard);
+        check(true, "survives every control being toggled");
+    }
+
+    // Both graphene-oxide Monte Carlo modules answer the same questions the
+    // same way everywhere downstream: the live tabs, the Summary window, the
+    // streamed-tab exception. isGoMonteCarloTask() is that one question, and
+    // a third sibling must not need a fourth `||` in five files.
+    std::printf("GO Monte Carlo module family:\n");
+    {
+        check(calango::gui::isGoMonteCarloTask(
+                  calango::gui::goMcmdTaskLabel()),
+              "GO/MCMD is one of the family");
+        check(calango::gui::isGoMonteCarloTask(
+                  calango::gui::goMcOptTaskLabel()),
+              "and so is GO/MC-Opt");
+        check(calango::gui::goMcmdTaskLabel()
+                  != calango::gui::goMcOptTaskLabel(),
+              "under labels that are DISTINCT — the Processes row, the "
+              "Summary subtitle and the tab titles all have to tell them "
+              "apart");
+        check(!calango::gui::isGoMonteCarloTask(
+                  QStringLiteral("Molecular Dynamics")),
+              "and an ordinary MD run is not");
+        for (const QString& label : {calango::gui::goMcmdTaskLabel(),
+                                     calango::gui::goMcOptTaskLabel()}) {
+            const auto views = calango::gui::goMcmdLiveViews(label);
+            check(views.size() == 2,
+                  ("both open exactly two viewport tabs (" + label + ")")
+                      .toStdString());
+            if (views.size() == 2) {
+                // The FILES are shared — that is what lets every downstream
+                // analysis read either module — and the TITLES are not.
+                check(views[0].fileName
+                          == QStringLiteral("mcmd_all_structures.extxyz")
+                          && views[1].fileName
+                              == QStringLiteral("accepted_structures.extxyz"),
+                      ("following the same two files (" + label + ")")
+                          .toStdString());
+                check(views[0].title.startsWith(label)
+                          && views[1].title.startsWith(label),
+                      ("titled after the module that produced the run ("
+                       + label + ")").toStdString());
+            }
+            check(!calango::gui::opensStreamedTrajectoryTab(label),
+                  ("and neither takes a stdout-streamed tab (" + label + ")")
+                      .toStdString());
+        }
+    }
+
+    std::printf("GO/MCMD live viewport tabs:\n");
+    {
+        const auto views = calango::gui::goMcmdLiveViews();
         check(views.size() == 2,
-              "a GO-MDMC run creates exactly two viewport tabs (it was four)");
+              "a GO/MCMD run creates exactly two viewport tabs (it was four)");
         if (views.size() == 2) {
             check(views[0].fileName
-                      == QStringLiteral("mdmc_all_structures.extxyz"),
-                  "the first follows mdmc_all_structures.extxyz");
+                      == QStringLiteral("mcmd_all_structures.extxyz"),
+                  "the first follows mcmd_all_structures.extxyz");
             check(views[0].title
-                      == QStringLiteral("GO-MDMC / All Structures"),
-                  "titled \"GO-MDMC / All Structures\"");
+                      == QStringLiteral("GO/MCMD — All Structures"),
+                  "titled \"GO/MCMD — All Structures\"");
             check(views[1].fileName
                       == QStringLiteral("accepted_structures.extxyz"),
                   "the second follows accepted_structures.extxyz");
-            check(views[1].title == QStringLiteral("GO-MDMC / Accepted"),
-                  "titled \"GO-MDMC / Accepted\"");
+            check(views[1].title == QStringLiteral("GO/MCMD — Accepted"),
+                  "titled \"GO/MCMD — Accepted\"");
         }
         // Same file names the generated script writes. Read off the config
         // rather than retyped, so renaming one and not the other fails here.
-        calango::core::GrapheneOxideMdmcConfig mdmcConfig;
-        check(QString::fromStdString(mdmcConfig.trajectory)
+        calango::core::GrapheneOxideMcmdConfig mcmdConfig;
+        check(QString::fromStdString(mcmdConfig.trajectory)
                   == views[1].fileName,
               "and the accepted-tab file name IS the script's own "
               "config.trajectory, not a second copy of the literal");
 
         check(!calango::gui::opensStreamedTrajectoryTab(
-                  calango::gui::goMdmcTaskLabel()),
-              "GO-MDMC takes no stdout-streamed trajectory tab");
+                  calango::gui::goMcmdTaskLabel()),
+              "GO/MCMD takes no stdout-streamed trajectory tab");
         for (const char* other : {"Molecular Dynamics", "Geometry Optimization",
                                   "NEB", "Local calculation"}) {
             check(calango::gui::opensStreamedTrajectoryTab(
@@ -670,12 +954,12 @@ int main(int argc, char** argv)
         }
     }
 
-    std::printf("MDMC Summary dialog:\n");
+    std::printf("MCMD Summary dialog:\n");
     {
         // The counters moved out of the Results dock into a window of their
         // own, opened when a run finishes and by double-clicking its row in
         // the Processes panel.
-        calango::gui::MdmcSummaryDialog summary;
+        calango::gui::McmdSummaryDialog summary;
         check(summary.processId() == -1,
               "starts bound to no process");
         check(summary.runSummaryTable() != nullptr
@@ -692,7 +976,7 @@ int main(int argc, char** argv)
         // re-pointed at another process can never show a mix of the two.
         summary.moveBreakdownTable()->setRowCount(3);
         summary.runSummaryTable()->setRowCount(5);
-        summary.bindProcess(7, QStringLiteral("GO-MDMC"), true);
+        summary.bindProcess(7, QStringLiteral("GO/MCMD"), true);
         check(summary.processId() == 7, "binds to a process by id");
         check(summary.runSummaryTable()->rowCount() == 0
                   && summary.moveBreakdownTable()->rowCount() == 0,
@@ -4253,6 +4537,242 @@ int main(int argc, char** argv)
                       && preview->toPlainText().contains(
                           QStringLiteral("epsil = .true.")),
                   "with ph.x asked for the dielectric response");
+        }
+    }
+
+    // VASP DFT+U from a wizard that holds NO structure of its own.
+    //
+    // Single-Point (and both Convergence sweeps) return {} from
+    // calculatorElements() and are handed their chemistry by the host through
+    // setStructureElements(). populateVaspHubbardTable() read the override
+    // directly, and ran during construction — before the host could speak —
+    // so the species table had zero rows: ticking "DFT+U" gave a Type combo
+    // and NOWHERE AT ALL to enter U and J.
+    std::printf("VASP DFT+U species table (host-supplied elements):\n");
+    {
+        calango::pybridge::PythonEngine python;
+        SinglePointWizard wizard;
+        wizard.show();
+
+        auto* engine = wizard.findChild<QComboBox*>();
+        const int vasp = engine
+            ? engine->findData(static_cast<int>(calango::core::CalculatorKind::Vasp))
+            : -1;
+        check(vasp >= 0, "VASP is offered as an engine");
+        if (vasp >= 0)
+            engine->setCurrentIndex(vasp);
+
+        // The Hubbard table is the only 3-column one on this page:
+        // l / U / J, one row per species.
+        const auto hubbardTable = [&wizard]() -> QTableWidget* {
+            for (QTableWidget* table : wizard.findChildren<QTableWidget*>()) {
+                if (table->columnCount() == 3
+                    && table->horizontalHeaderItem(1)
+                    && table->horizontalHeaderItem(1)->text().contains(
+                        QStringLiteral("U")))
+                    return table;
+            }
+            return nullptr;
+        };
+        QTableWidget* table = hubbardTable();
+        check(table != nullptr, "the DFT+U species table exists");
+        if (table) {
+            check(table->rowCount() == 0,
+                  "and is empty before the host supplies the structure — "
+                  "there is nothing it could know yet");
+
+            wizard.setStructureElements({QStringLiteral("Ni"),
+                                         QStringLiteral("O")});
+            check(table->rowCount() == 2,
+                  "the host's elements reach it: one row per species (this "
+                  "used to stay at zero, and DFT+U was unusable)");
+            if (table->rowCount() == 2) {
+                check(table->verticalHeaderItem(0)
+                          && table->verticalHeaderItem(0)->text()
+                              == QStringLiteral("Ni"),
+                      "row 0 is Ni");
+                check(table->verticalHeaderItem(1)
+                          && table->verticalHeaderItem(1)->text()
+                              == QStringLiteral("O"),
+                      "row 1 is O");
+                for (int column = 0; column < 3; ++column) {
+                    check(table->cellWidget(0, column) != nullptr,
+                          std::string("row 0 carries an editor in column ")
+                              + std::to_string(column)
+                              + " (l / U / J)");
+                }
+            }
+
+            // Idempotent: the same list again must not throw away what the
+            // user typed. Driven through the real editors, not by poking the
+            // model.
+            if (auto* u = qobject_cast<QDoubleSpinBox*>(table->cellWidget(0, 1)))
+                u->setValue(6.5);
+            if (auto* j = qobject_cast<QDoubleSpinBox*>(table->cellWidget(0, 2)))
+                j->setValue(0.5);
+            wizard.setStructureElements({QStringLiteral("Ni"),
+                                         QStringLiteral("O")});
+            auto* uAfter = qobject_cast<QDoubleSpinBox*>(table->cellWidget(0, 1));
+            auto* jAfter = qobject_cast<QDoubleSpinBox*>(table->cellWidget(0, 2));
+            check(uAfter && std::fabs(uAfter->value() - 6.5) < 1e-9,
+                  "re-supplying the same elements keeps the U already typed");
+            check(jAfter && std::fabs(jAfter->value() - 0.5) < 1e-9,
+                  "and the J");
+
+            // A DIFFERENT structure does rebuild — the rows have to follow
+            // the chemistry, and a stale species list is worse than a reset.
+            wizard.setStructureElements({QStringLiteral("Fe")});
+            check(table->rowCount() == 1
+                      && table->verticalHeaderItem(0)
+                      && table->verticalHeaderItem(0)->text()
+                          == QStringLiteral("Fe"),
+                  "a different structure rebuilds the table for its species");
+        }
+
+        // And the values reach the generated INCAR. LDAUL/LDAUU/LDAUJ are
+        // per-species lists, so a table that reads its rows against the wrong
+        // element list would silently write a correction onto the wrong atom.
+        wizard.setStructureElements({QStringLiteral("Ni"), QStringLiteral("O")});
+        table = hubbardTable();
+        if (table && table->rowCount() == 2) {
+            for (QCheckBox* box : wizard.findChildren<QCheckBox*>()) {
+                if (box->text().contains(QStringLiteral("DFT+U")))
+                    box->setChecked(true);
+            }
+            if (auto* l = qobject_cast<QComboBox*>(table->cellWidget(0, 0)))
+                l->setCurrentIndex(l->findData(2)); // d shell
+            if (auto* u = qobject_cast<QDoubleSpinBox*>(table->cellWidget(0, 1)))
+                u->setValue(6.4);
+            if (auto* j = qobject_cast<QDoubleSpinBox*>(table->cellWidget(0, 2)))
+                j->setValue(0.9);
+            const QString script = wizard.script();
+            check(script.contains(QStringLiteral("ldau")),
+                  "the script asks VASP for a Hubbard correction");
+            check(script.contains(QStringLiteral("6.4")),
+                  "carrying the U that was typed for Ni");
+            check(script.contains(QStringLiteral("0.9")),
+                  "and its J");
+            check(script.contains(QStringLiteral("Ni")),
+                  "against the species it was entered for");
+        }
+    }
+
+    // VASP DFT+U has to be reachable from EVERY wizard that offers VASP, not
+    // just the one it was reported broken in. The species table is built once,
+    // during construction, from suggestionElements() — a wizard that holds a
+    // structure supplies its own chemistry through calculatorElements(), one
+    // that does not (Phonon) is handed it by the host through
+    // setStructureElements(). Both routes are checked here, on the four
+    // wizards a DFT+U run is actually launched from.
+    std::printf("VASP DFT+U across the simulation wizards:\n");
+    {
+        calango::pybridge::PythonEngine python;
+
+        // Ni-O: the textbook DFT+U case, and two species so a table that
+        // silently kept only one row would show up.
+        auto nio = std::make_shared<calango::core::Structure>();
+        calango::core::UnitCell cell;
+        cell.setVectors({calango::core::Vec3{4.17, 0.0, 0.0},
+                         calango::core::Vec3{0.0, 4.17, 0.0},
+                         calango::core::Vec3{0.0, 0.0, 4.17}});
+        nio->setCell(cell);
+        calango::core::Atom nickel;
+        nickel.atomicNumber = 28;
+        nickel.position = {0.0, 0.0, 0.0};
+        nio->addAtom(nickel);
+        calango::core::Atom oxygen;
+        oxygen.atomicNumber = 8;
+        oxygen.position = {2.085, 2.085, 2.085};
+        nio->addAtom(oxygen);
+
+        // The Hubbard table is the only 3-column one on the calculator page.
+        const auto hubbardTable = [](const QWidget* wizard) -> QTableWidget* {
+            for (QTableWidget* table :
+                 wizard->findChildren<QTableWidget*>()) {
+                if (table->columnCount() == 3
+                    && table->horizontalHeaderItem(1)
+                    && table->horizontalHeaderItem(1)->text().contains(
+                        QStringLiteral("U")))
+                    return table;
+            }
+            return nullptr;
+        };
+
+        // Drive one wizard end to end: select VASP, tick DFT+U, set a d-shell
+        // U and J on the transition metal, and read the generated script.
+        const auto exercise = [&](SimulationWizardBase& wizard,
+                                  const char* what, bool hostSupplied) {
+            wizard.show();
+            if (hostSupplied) {
+                wizard.setStructureElements({QStringLiteral("Ni"),
+                                             QStringLiteral("O")});
+            }
+            // selectCalculator(), not the first QComboBox on the page: which
+            // combo that is differs per wizard, and picking the wrong one
+            // reports a wizard as "not offering VASP" when it plainly does.
+            wizard.selectCalculator(calango::core::CalculatorKind::Vasp);
+            check(wizard.calculatorKind()
+                      == calango::core::CalculatorKind::Vasp,
+                  std::string(what) + ": VASP is offered and selectable");
+
+            QTableWidget* table = hubbardTable(&wizard);
+            check(table != nullptr,
+                  std::string(what) + ": the DFT+U species table exists");
+            if (!table)
+                return;
+            check(table->rowCount() == 2,
+                  std::string(what) + ": one row per species — Ni and O "
+                  "(zero rows is DFT+U with nowhere to type U and J)");
+            if (table->rowCount() != 2)
+                return;
+            check(table->verticalHeaderItem(0)
+                      && table->verticalHeaderItem(0)->text()
+                          == QStringLiteral("Ni")
+                      && table->verticalHeaderItem(1)
+                      && table->verticalHeaderItem(1)->text()
+                          == QStringLiteral("O"),
+                  std::string(what) + ": rows are labelled with the species");
+
+            for (QCheckBox* box : wizard.findChildren<QCheckBox*>()) {
+                if (box->text().contains(QStringLiteral("DFT+U")))
+                    box->setChecked(true);
+            }
+            if (auto* l = qobject_cast<QComboBox*>(table->cellWidget(0, 0)))
+                l->setCurrentIndex(l->findData(2)); // d shell
+            if (auto* u = qobject_cast<QDoubleSpinBox*>(table->cellWidget(0, 1)))
+                u->setValue(6.4);
+            if (auto* j = qobject_cast<QDoubleSpinBox*>(table->cellWidget(0, 2)))
+                j->setValue(0.9);
+
+            const QString script = wizard.script();
+            check(script.contains(QStringLiteral("ldau")),
+                  std::string(what) + ": the script asks VASP for a Hubbard "
+                  "correction");
+            check(script.contains(QStringLiteral("Ni"))
+                      && script.contains(QStringLiteral("6.4"))
+                      && script.contains(QStringLiteral("0.9")),
+                  std::string(what) + ": carrying Ni's U and J into the "
+                  "INCAR");
+        };
+
+        {
+            GeometryOptimizationWizard wizard(nio);
+            exercise(wizard, "Geometry Optimization", false);
+        }
+        {
+            ElectronicBandsWizard wizard(nio);
+            exercise(wizard, "Electronic Structure", false);
+        }
+        {
+            MolecularDynamicsWizard wizard(nio);
+            exercise(wizard, "Molecular Dynamics", false);
+        }
+        {
+            // Phonon holds a structure but does NOT override
+            // calculatorElements(), so its table is filled the host's way.
+            // This is the case the Single-Point bug was, one wizard over.
+            PhononWizard wizard(true, nio);
+            exercise(wizard, "Phonon", /*hostSupplied=*/true);
         }
     }
 

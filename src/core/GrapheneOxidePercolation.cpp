@@ -2,6 +2,7 @@
 
 #include "core/GrapheneOxideBuilder.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <functional>
 #include <map>
@@ -336,6 +337,150 @@ RingPercolationResult analyzeRingPercolation(const Structure& structure)
     }
 
     return result;
+}
+
+PiPercolationResult analyzePiPercolation(const Structure& structure)
+{
+    PiPercolationResult result;
+
+    const auto pbc = structure.cell().pbc();
+    result.periodicAxis = {pbc[0], pbc[1], pbc[2]};
+    result.atomDomain.assign(structure.size(), -1);
+    if (structure.empty())
+        return result;
+
+    // The SAME classification the ring analysis reads. Nothing here decides
+    // sp2 vs sp3 by a second method.
+    const std::vector<int> labels =
+        GrapheneOxideBuilder::functionalGroupLabels(structure);
+
+    // Sigma-neighbour count per atom, over EVERY element: a carbon's
+    // hybridization is set by how many things it is bonded to, and a
+    // terminating hydrogen counts exactly as much as a carbon does. Counted
+    // from the same detectBonds() pass buildCarbonAdjacency() uses, so the
+    // two can never disagree about what is bonded to what.
+    std::vector<int> sigmaNeighbors(structure.size(), 0);
+    for (const Bond& bond : structure.detectBonds()) {
+        ++sigmaNeighbors[static_cast<std::size_t>(bond.i)];
+        ++sigmaNeighbors[static_cast<std::size_t>(bond.j)];
+    }
+
+    int carbonCount = 0;
+    std::vector<bool> isPi(structure.size(), false);
+    for (std::size_t i = 0; i < structure.size(); ++i) {
+        if (structure.atoms()[i].atomicNumber != 6)
+            continue;
+        ++carbonCount;
+        // No oxygen group, and still three-coordinate: a p_z survives. The
+        // second half is what separates this from sp2CarbonFraction, which
+        // asks only about the oxygen — an unoxidized but FOUR-coordinate
+        // carbon (a CH2 in a hydrogenated defect) has no pi orbital and must
+        // not join the network.
+        if (labels[i] == -1 && sigmaNeighbors[i] <= 3) {
+            isPi[i] = true;
+            result.piCarbons.push_back(static_cast<int>(i));
+        }
+    }
+    result.piCarbonFraction = carbonCount > 0
+        ? static_cast<double>(result.piCarbons.size()) / carbonCount
+        : 0.0;
+    if (result.piCarbons.empty())
+        return result;
+
+    // The conjugation graph: a C-C bond between two pi carbons. No ring
+    // requirement — that is the whole difference from the ring analysis.
+    const CarbonAdjacency carbon = buildCarbonAdjacency(structure);
+    CarbonAdjacency conjugated(structure.size());
+    for (std::size_t a = 0; a < carbon.size(); ++a) {
+        if (!isPi[a])
+            continue;
+        for (const CarbonEdge& edge : carbon[a]) {
+            if (!isPi[static_cast<std::size_t>(edge.to)])
+                continue;
+            conjugated[a].push_back(edge);
+        }
+    }
+
+    // Connected components with a per-atom integer displacement relative to
+    // an arbitrary root — the same winding-number construction the ring
+    // analysis uses, on a different graph. An edge whose endpoints already
+    // carry inconsistent displacements closes a cycle that wraps the cell,
+    // and the axis it wraps along is one this network percolates.
+    std::vector<int> component(structure.size(), -1);
+    for (std::size_t start = 0; start < structure.size(); ++start) {
+        if (!isPi[start] || component[start] != -1)
+            continue;
+        const int domainIndex = static_cast<int>(result.domains.size());
+        result.domains.emplace_back();
+        std::map<int, LatticeShift> displacement;
+        displacement[static_cast<int>(start)] = LatticeShift{};
+        component[start] = domainIndex;
+        std::vector<int> queue{static_cast<int>(start)};
+        std::size_t head = 0;
+        while (head < queue.size()) {
+            const int current = queue[head++];
+            result.domains[static_cast<std::size_t>(domainIndex)].atoms
+                .push_back(current);
+            result.atomDomain[static_cast<std::size_t>(current)] = domainIndex;
+            for (const CarbonEdge& edge :
+                 conjugated[static_cast<std::size_t>(current)]) {
+                const LatticeShift wanted = displacement[current] + edge.shift;
+                const auto it = displacement.find(edge.to);
+                if (it == displacement.end()) {
+                    displacement[edge.to] = wanted;
+                    component[static_cast<std::size_t>(edge.to)] = domainIndex;
+                    queue.push_back(edge.to);
+                    continue;
+                }
+                const LatticeShift delta = wanted - it->second;
+                auto& percolates =
+                    result.domains[static_cast<std::size_t>(domainIndex)]
+                        .percolates;
+                if (delta.a != 0)
+                    percolates[0] = true;
+                if (delta.b != 0)
+                    percolates[1] = true;
+                if (delta.c != 0)
+                    percolates[2] = true;
+            }
+        }
+    }
+
+    for (std::size_t d = 0; d < result.domains.size(); ++d) {
+        PiDomain& domain = result.domains[d];
+        std::sort(domain.atoms.begin(), domain.atoms.end());
+        if (result.largestDomain == -1
+            || domain.atoms.size()
+                > result.domains[static_cast<std::size_t>(result.largestDomain)]
+                      .atoms.size())
+            result.largestDomain = static_cast<int>(d);
+        for (int axis = 0; axis < 3; ++axis) {
+            // A non-periodic axis can never percolate, whatever the winding
+            // count says: without periodicity there is no image to wind onto.
+            if (!result.periodicAxis[static_cast<std::size_t>(axis)])
+                domain.percolates[static_cast<std::size_t>(axis)] = false;
+            if (domain.percolates[static_cast<std::size_t>(axis)])
+                result.percolatesAxis[static_cast<std::size_t>(axis)] = true;
+        }
+    }
+    if (result.largestDomain >= 0) {
+        result.largestDomainFraction =
+            static_cast<double>(
+                result.domains[static_cast<std::size_t>(result.largestDomain)]
+                    .atoms.size())
+            / result.piCarbons.size();
+    }
+    return result;
+}
+
+std::vector<PiPercolationResult>
+analyzePiPercolationTrajectory(const std::vector<Structure>& frames)
+{
+    std::vector<PiPercolationResult> results;
+    results.reserve(frames.size());
+    for (const Structure& frame : frames)
+        results.push_back(analyzePiPercolation(frame));
+    return results;
 }
 
 std::vector<RingPercolationResult>

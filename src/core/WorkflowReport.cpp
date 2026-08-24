@@ -506,20 +506,20 @@ QList<ReportMetric> extractReportMetrics(const QString& directory,
     // Each of these is a file only one module writes, holding the number that
     // module exists to produce. Read by name rather than by task so a run
     // reached through some other route still reports it.
-    const QJsonObject mdmc =
-        readJsonObject(directory + QStringLiteral("/mdmc_summary.json"));
-    if (!mdmc.isEmpty()) {
-        metrics.append(number(QStringLiteral("mdmc_best_energy_ev"),
+    const QJsonObject mcmd =
+        readJsonObject(directory + QStringLiteral("/mcmd_summary.json"));
+    if (!mcmd.isEmpty()) {
+        metrics.append(number(QStringLiteral("mcmd_best_energy_ev"),
                               QObject::tr("Best energy"),
-                              mdmc.value(QStringLiteral("best_energy_eV")).toDouble(),
+                              mcmd.value(QStringLiteral("best_energy_eV")).toDouble(),
                               QStringLiteral("eV"), 6));
-        metrics.append(number(QStringLiteral("mdmc_energy_gain_ev"),
+        metrics.append(number(QStringLiteral("mcmd_energy_gain_ev"),
                               QObject::tr("Energy gain"),
-                              mdmc.value(QStringLiteral("energy_gain_eV")).toDouble(),
+                              mcmd.value(QStringLiteral("energy_gain_eV")).toDouble(),
                               QStringLiteral("eV"), 6));
-        metrics.append(number(QStringLiteral("mdmc_acceptance"),
+        metrics.append(number(QStringLiteral("mcmd_acceptance"),
                               QObject::tr("Acceptance"),
-                              mdmc.value(QStringLiteral("acceptance_ratio")).toDouble(),
+                              mcmd.value(QStringLiteral("acceptance_ratio")).toDouble(),
                               QString(), 3));
     }
 

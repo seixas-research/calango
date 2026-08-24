@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/GrapheneOxideBuilder.hpp"
 #include "core/Noise.hpp"
 #include "core/Structure.hpp"
 
@@ -291,6 +292,34 @@ struct AlloyComposition {
 /// It runs in process on core::SqsGenerator, like every other transform. A
 /// 20 000-step anneal on a hundred-site cell is a tenth of a second; spawning
 /// an interpreter for it would cost more than the work.
+/// A Graphene Oxide Builder node's configuration.
+///
+/// A thin wrapper around core::GrapheneOxideBuilder::Config rather than a
+/// reworded copy of it: the builder is the authority on what a Build is, and
+/// a second parameter set here would be a second thing to keep in step with
+/// it. What this adds is what a canvas node needs and a core config has no
+/// business carrying — a one-line description for the node face, a validity
+/// answer, and a JSON round trip for the saved document.
+///
+/// EVERY field of Config is round-tripped. A spec that persisted only the
+/// fields someone happened to think of would silently reset the rest on
+/// reload, which for a stochastic builder means a saved pipeline that no
+/// longer reproduces its own structures.
+struct GrapheneOxideBuildSpec {
+    core::GrapheneOxideBuilder::Config config;
+
+    /// A Build is always producible — every field has a usable default and
+    /// the builder clamps what it cannot honour — so this asks the one
+    /// question that can actually fail: a supercell (or flake) with no atoms
+    /// in it.
+    bool isValid() const;
+    /// "4 x 4 periodic sheet, 25 % basal O/C" — what the node face shows.
+    QString describe() const;
+
+    QJsonObject toJson() const;
+    static GrapheneOxideBuildSpec fromJson(const QJsonObject& object);
+};
+
 struct SqsGeneratorSpec {
     /// Supercell of the incoming structure the sublattice is taken from. The
     /// SQS is only as good as the cell is large — correlations it cannot fit

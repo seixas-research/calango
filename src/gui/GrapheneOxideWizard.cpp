@@ -1,5 +1,12 @@
 #include "gui/GrapheneOxideWizard.hpp"
 
+#include "gui/PlotPalette.hpp"
+
+#include <QPainter>
+#include <QPen>
+#include <QPolygonF>
+#include <array>
+
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
@@ -21,6 +28,146 @@
 
 namespace calango::gui {
 
+/// Stage 1's live drawing of the substrate the current settings produce.
+///
+/// Built from GrapheneOxideBuilder::pristine() — the SAME call the build
+/// itself makes for its substrate, so what is drawn is what will be produced,
+/// not a sketch that agrees with it by hand. That is what makes it worth
+/// having: a 4 x 4 rectangular supercell and a 4 x 4 primitive one are
+/// different sheets, an armchair flake of index 3 is a specific molecule, and
+/// none of that is obvious from three spin boxes.
+///
+/// Projected onto xy and drawn flat, because the substrate IS flat at this
+/// stage — the builder places everything on a planar sheet and the pucker
+/// only appears once something relaxes it. A 3D view would spend a GL context
+/// to show the same thing at an angle.
+///
+/// WHITE, like every other 2D figure in this application: it is a picture of a
+/// structure, and the rule that a figure ends up in a paper does not stop
+/// applying because this one happens to live in a wizard.
+class GrapheneOxidePreviewWidget : public QWidget {
+public:
+    explicit GrapheneOxidePreviewWidget(QWidget* parent = nullptr)
+        : QWidget(parent)
+    {
+        setMinimumHeight(190);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+        setToolTip(tr("The substrate these settings build, drawn from the "
+                      "builder's own output. Functional groups are placed in "
+                      "the next stage and are not shown here."));
+    }
+
+    /// `structure` is the substrate; `periodic` decides whether the cell
+    /// outline is drawn as a real periodic boundary or omitted (a flake sits
+    /// in a vacuum box, and drawing that box would suggest it means
+    /// something).
+    void setStructure(core::Structure structure, bool periodic)
+    {
+        structure_ = std::move(structure);
+        periodic_ = periodic;
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent*) override
+    {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        const QRectF canvas = rect().adjusted(1, 1, -1, -1);
+        painter.fillRect(rect(), PlotPalette::canvas);
+        painter.setPen(QPen(PlotPalette::spine, 1.0));
+        painter.drawRect(canvas);
+
+        if (structure_.empty()) {
+            painter.setPen(PlotPalette::text);
+            painter.drawText(canvas, Qt::AlignCenter,
+                             tr("No substrate to draw."));
+            return;
+        }
+
+        // Bounds over the atoms AND the cell corners: a periodic sheet's
+        // atoms stop one bond short of the cell edge, and fitting to the
+        // atoms alone would crop the outline that says where the boundary is.
+        const auto& atoms = structure_.atoms();
+        double minX = atoms.front().position.x;
+        double maxX = minX;
+        double minY = atoms.front().position.y;
+        double maxY = minY;
+        const auto grow = [&](double x, double y) {
+            minX = std::min(minX, x);
+            maxX = std::max(maxX, x);
+            minY = std::min(minY, y);
+            maxY = std::max(maxY, y);
+        };
+        for (const core::Atom& atom : atoms)
+            grow(atom.position.x, atom.position.y);
+        const std::array<core::Vec3, 3> cell = structure_.cell().vectors();
+        if (periodic_) {
+            for (const core::Vec3& corner :
+                 {core::Vec3{0, 0, 0}, cell[0], cell[1], cell[0] + cell[1]})
+                grow(corner.x, corner.y);
+        }
+
+        const double margin = 10.0;
+        const double spanX = std::max(maxX - minX, 1e-6);
+        const double spanY = std::max(maxY - minY, 1e-6);
+        const double scale =
+            std::min((canvas.width() - 2 * margin) / spanX,
+                     (canvas.height() - 2 * margin) / spanY);
+        const auto project = [&](const core::Vec3& p) {
+            return QPointF(
+                canvas.center().x() + (p.x - 0.5 * (minX + maxX)) * scale,
+                // y flipped: the structure's y is mathematical, the widget's
+                // is not.
+                canvas.center().y() - (p.y - 0.5 * (minY + maxY)) * scale);
+        };
+
+        if (periodic_) {
+            QPen boundary(PlotPalette::spine, 1.0, Qt::DashLine);
+            painter.setPen(boundary);
+            QPolygonF outline;
+            for (const core::Vec3& corner :
+                 {core::Vec3{0, 0, 0}, cell[0], cell[0] + cell[1], cell[1]})
+                outline << project(corner);
+            painter.drawPolygon(outline);
+        }
+
+        // Bonds from the structure's own perception, not a distance guess of
+        // this file's own — one bonding rule in the application.
+        //
+        // Periodic images are skipped rather than drawn wrapped: a bond that
+        // leaves the cell and re-enters on the far side is a line straight
+        // across the picture, which reads as a defect and is the opposite of
+        // informative. The dashed outline is what says the sheet continues.
+        QPen bondPen(PlotPalette::text, 1.2);
+        painter.setPen(bondPen);
+        for (const core::Bond& bond : structure_.detectBonds()) {
+            if (bond.imageOffset.dot(bond.imageOffset) > 1e-12)
+                continue;
+            painter.drawLine(
+                project(atoms[static_cast<std::size_t>(bond.i)].position),
+                project(atoms[static_cast<std::size_t>(bond.j)].position));
+        }
+
+        painter.setPen(Qt::NoPen);
+        for (const core::Atom& atom : atoms) {
+            // Hydrogens are the flake's edge termination and are drawn
+            // smaller and paler: they are real atoms of the structure, and
+            // they are not what anyone is looking at here.
+            const bool hydrogen = atom.atomicNumber == 1;
+            painter.setBrush(hydrogen ? PlotPalette::placeholder
+                                      : PlotPalette::text);
+            const double radius = hydrogen ? 1.6 : 2.6;
+            painter.drawEllipse(project(atom.position), radius, radius);
+        }
+    }
+
+private:
+    core::Structure structure_;
+    bool periodic_ = true;
+};
+
+
 namespace {
 
 using Builder = core::GrapheneOxideBuilder;
@@ -37,6 +184,14 @@ using Lattice = Builder::Lattice;
 /// oxide reaches ~0.5 at its most oxidized and 0.1–0.25 typically; letting the
 /// slider past 0.5 would be offering compositions no carbon framework supports.
 constexpr double kMaxOxygenToCarbon = 0.5;
+
+/// Above this many carbons the substrate preview stops drawing.
+///
+/// Not a performance cliff so much as a legibility one: past a couple of
+/// thousand atoms the dots merge into a grey rectangle that says nothing the
+/// summary line above it does not already say in words, and redrawing it on
+/// every keystroke would start to be noticeable for a picture nobody can read.
+constexpr int kPreviewAtomCeiling = 2400;
 
 /// Width of the caption column in stage 2.
 ///
@@ -238,6 +393,10 @@ GrapheneOxideWizard::GrapheneOxideWizard(QWidget* parent)
     baseSummary_->setWordWrap(true);
     baseSummary_->setTextFormat(Qt::RichText);
     stage1Layout->addWidget(baseSummary_);
+
+    preview_ = new GrapheneOxidePreviewWidget(stage1);
+    preview_->setObjectName(QStringLiteral("grapheneOxidePreview"));
+    stage1Layout->addWidget(preview_, 1);
 
     auto* stage1Note = new QLabel(
         tr("The sheet is built in the xy plane with 20 Å of vacuum along z; a "
@@ -475,6 +634,50 @@ void GrapheneOxideWizard::substrateCounts(int& total, int& basal,
     edge = 0; // a periodic sheet is edgeless by construction
 }
 
+void GrapheneOxideWizard::RatioControl::setValue(double value)
+{
+    if (box)
+        box->setValue(value);
+    if (slider)
+        slider->setValue(static_cast<int>(std::lround(value * kRatioScale)));
+}
+
+void GrapheneOxideWizard::setConfig(const Builder::Config& config)
+{
+    // findData(), not setCurrentIndex(): both combos carry their enum as item
+    // DATA precisely so nothing has to know their row order (the same rule the
+    // engine and optimizer combos elsewhere follow). A value the combo does
+    // not offer leaves the control alone rather than selecting row 0.
+    const auto selectData = [](QComboBox* combo, int value) {
+        if (!combo)
+            return;
+        const int row = combo->findData(value);
+        if (row >= 0)
+            combo->setCurrentIndex(row);
+    };
+    selectData(baseCombo_, static_cast<int>(config.base));
+    selectData(latticeCombo_, static_cast<int>(config.lattice));
+    selectData(generationCombo_, config.flakeIndex);
+    for (int axis = 0; axis < 2; ++axis)
+        if (supercellSpin_[axis])
+            supercellSpin_[axis]->setValue(config.supercell[axis]);
+    if (hydrogenCheck_)
+        hydrogenCheck_->setChecked(config.hydrogenTerminateEdges);
+
+    basalOxidation_.setValue(config.basalOxygenToCarbon);
+    basalHydrogen_.setValue(config.basalHydroxylShare);
+    edgeOxidation_.setValue(config.edgeOxidation);
+    edgeCarboxyl_.setValue(config.carboxylShare);
+
+    if (hydroxylAntipositionCheck_)
+        hydroxylAntipositionCheck_->setChecked(config.hydroxylAntiposition);
+    if (bothFacesCheck_)
+        bothFacesCheck_->setChecked(config.bothFaces);
+    if (seedSpin_)
+        seedSpin_->setValue(static_cast<int>(config.seed));
+    refreshSummary();
+}
+
 core::GrapheneOxideBuilder::Config GrapheneOxideWizard::config() const
 {
     Builder::Config config;
@@ -517,6 +720,28 @@ void GrapheneOxideWizard::refreshSummary()
         return;
 
     const bool flake = flakeSelected();
+
+    // The substrate, drawn from the builder's own pristine() — the same call
+    // the build makes, so the picture cannot disagree with the result.
+    //
+    // Cheap enough to redo on every keystroke at the sizes this dialog
+    // offers: a 4 x 4 rectangular supercell is 64 carbons and a flake of
+    // index 6 is 216, all of it native C++ with no Python anywhere near it.
+    // The ceiling exists for the top of the range — 40 x 40 primitive is
+    // 3200 atoms, where redrawing per keystroke would start to be felt and
+    // where individual atoms have stopped being distinguishable anyway.
+    if (preview_) {
+        const Builder::Config previewConfig = config();
+        const int carbons = flake
+            ? 6 * generationCombo_->currentData().toInt()
+                  * generationCombo_->currentData().toInt()
+            : (previewConfig.lattice == Lattice::Primitive ? 2 : 4)
+                  * supercellSpin_[0]->value() * supercellSpin_[1]->value();
+        if (carbons <= kPreviewAtomCeiling)
+            preview_->setStructure(Builder::pristine(previewConfig), !flake);
+        else
+            preview_->setStructure(core::Structure(), !flake);
+    }
 
     sheetBox_->setVisible(!flake);
     flakeBox_->setVisible(flake);

@@ -74,7 +74,7 @@ constexpr int kZ_O = 8;
 /// AND medium) opens the epoxide instead — a gentle force-based relaxation
 /// slides the oxygen onto one carbon, and a thermal burst does so faster.
 /// Which groups survive is therefore the dynamics' verdict, and
-/// GrapheneOxideMdmcScriptGenerator's initial equilibration relocates the
+/// GrapheneOxideMcmdScriptGenerator's initial equilibration relocates the
 /// ones that do not rather than refusing to start; its own proposal
 /// clearance (2.0 Å heavy–heavy) is wider than this one for that reason —
 /// it prices a burst, not a placement.
@@ -1039,7 +1039,7 @@ Structure GrapheneOxideBuilder::build(const Config& config, Report* report)
                     if (crossClash)
                         continue;
                     // One pair id, shared by both halves — the antiposition
-                    // registry ("go_pair_id") a downstream MDMC or analysis
+                    // registry ("go_pair_id") a downstream MCMD or analysis
                     // module reads to recover which two hydroxyls form a
                     // trans-diol.
                     const int pairId = nextPairId++;

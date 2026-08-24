@@ -1083,7 +1083,32 @@ void SimulationWizardBase::populateVaspHubbardTable()
 {
     if (!vaspHubbardTable_)
         return;
-    const QStringList elements = calculatorElements();
+    // suggestionElements(), NOT calculatorElements(): a wizard that does not
+    // hold a structure of its own (Single-Point, both Convergence sweeps)
+    // returns {} from the override and is handed its chemistry by the host
+    // through setStructureElements(). Reading the override directly gave
+    // those wizards a table with ZERO ROWS — the DFT+U checkbox and its Type
+    // combo were there, and there was no row anywhere to type U and J into,
+    // so VASP DFT+U was simply unreachable from Single-Point.
+    const QStringList elements = suggestionElements();
+
+    // Idempotent: a rebuild throws away every U and J the user has typed, and
+    // this is now called again when the host supplies the elements. Same list,
+    // same table, nothing touched.
+    QStringList current;
+    for (int row = 0; row < vaspHubbardTable_->rowCount(); ++row) {
+        const auto* header = vaspHubbardTable_->verticalHeaderItem(row);
+        current << (header ? header->text() : QString());
+    }
+    if (current == elements) {
+        vaspHubbardTable_->setEnabled(
+            vaspHubbardCheck_ && vaspHubbardCheck_->isChecked());
+        if (vaspHubbardTypeCombo_)
+            vaspHubbardTypeCombo_->setEnabled(
+                vaspHubbardCheck_ && vaspHubbardCheck_->isChecked());
+        return;
+    }
+
     vaspHubbardTable_->setRowCount(elements.size());
     for (int row = 0; row < elements.size(); ++row) {
         vaspHubbardTable_->setVerticalHeaderItem(
@@ -3032,6 +3057,13 @@ void SimulationWizardBase::setStructureElements(const QStringList& symbols)
 {
     structureElements_ = symbols;
     applySuggestedParameters();
+    // The VASP DFT+U species table is built during construction, which is
+    // BEFORE the host gets to call this — so a wizard that has no structure of
+    // its own had an empty table for the whole of its life. Rebuilt here, from
+    // the chemistry that has just arrived; populateVaspHubbardTable() is
+    // idempotent, so a wizard whose own calculatorElements() override already
+    // filled it is left exactly as it was.
+    populateVaspHubbardTable();
 }
 
 QStringList SimulationWizardBase::suggestionElements() const
@@ -3265,10 +3297,18 @@ core::CalculatorConfig SimulationWizardBase::baseCalculatorConfig() const
             // correction" entry (Task 2's own spec), which also means the
             // generator never needs its own species list to fill in the
             // ones this table left untouched.
-            const QStringList elements = calculatorElements();
-            for (int row = 0; row < vaspHubbardTable_->rowCount()
-                              && row < elements.size();
-                 ++row) {
+            //
+            // The species name comes from the ROW'S OWN vertical header rather
+            // than from a second call to the element list: the table is what
+            // the user actually filled in, and pairing its rows against a list
+            // fetched again here is how "the row exists but its element does
+            // not" happens. It also means one source of truth for which
+            // wizards have a species list at all —
+            // populateVaspHubbardTable().
+            for (int row = 0; row < vaspHubbardTable_->rowCount(); ++row) {
+                const auto* header = vaspHubbardTable_->verticalHeaderItem(row);
+                if (!header || header->text().isEmpty())
+                    continue;
                 auto* lCombo = qobject_cast<QComboBox*>(
                     vaspHubbardTable_->cellWidget(row, 0));
                 auto* uSpin = qobject_cast<QDoubleSpinBox*>(
@@ -3278,7 +3318,7 @@ core::CalculatorConfig SimulationWizardBase::baseCalculatorConfig() const
                 if (!lCombo || !uSpin || !jSpin)
                     continue;
                 core::VaspHubbardU entry;
-                entry.element = elements.at(row).toStdString();
+                entry.element = header->text().toStdString();
                 entry.l = lCombo->currentData().toInt();
                 entry.u = uSpin->value();
                 entry.j = jSpin->value();
@@ -3386,8 +3426,11 @@ void SimulationWizardBase::refreshRunCommand()
 
 void SimulationWizardBase::editHubbardParameters()
 {
+    // suggestionElements() for the same reason populateVaspHubbardTable() uses
+    // it: a wizard handed its chemistry by the host has nothing in its own
+    // override, and the element completer was silently empty there.
     HubbardParametersDialog dialog(hubbardEnabled_, hubbardParameters_,
-                                   calculatorElements(), this);
+                                   suggestionElements(), this);
     if (dialog.exec() != QDialog::Accepted)
         return;
     hubbardEnabled_ = dialog.isEnabled();

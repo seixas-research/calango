@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Hydroxyls antiposition survives MDMC: run the GENERATED script for real.
+"""Hydroxyls antiposition survives MCMD: run the GENERATED script for real.
 
-Before this test existed, GrapheneOxideMdmcScriptGenerator moved every
+Before this test existed, GrapheneOxideMcmdScriptGenerator moved every
 hydroxyl as an independent single carbon, even when the input structure was
 built with GrapheneOxideBuilder::Config::hydroxylAntiposition — a bonded,
 opposite-face PAIR of hydroxyls (a trans-diol). The first accepted move on
@@ -51,7 +51,7 @@ Self-skips (exit 0) when no interpreter has `ase` — set CALANGO_ASE_PYTHON
 to one, or the test looks through the Conda environments the same way the
 application does (see tests/xtb_integration_test.py, which this mirrors).
 
-Usage:  graphene_oxide_mdmc_antiposition_test.py <calango_script_test>
+Usage:  graphene_oxide_mcmd_antiposition_test.py <calango_script_test>
 """
 import json
 import os
@@ -118,7 +118,7 @@ def find_ase_python():
 # at bonded sites chosen far enough apart that none of their own hand-placed
 # atoms can clash with a neighbour's. Bond lengths (1.48 A C-O for both the
 # hydroxyl and the epoxide bridge's projected reach, 0.98 A O-H) match
-# GrapheneOxideMdmcScriptGenerator's own build_group() constants exactly, so
+# GrapheneOxideMcmdScriptGenerator's own build_group() constants exactly, so
 # the generated script's bond-perception (natural_cutoffs * 1.2) reads this
 # structure exactly the way it would read one the real C++ builder made.
 #
@@ -308,13 +308,13 @@ def verify(python, trajectory, fixture):
 def main():
     if len(sys.argv) < 2:
         raise SystemExit(
-            "usage: graphene_oxide_mdmc_antiposition_test.py "
+            "usage: graphene_oxide_mcmd_antiposition_test.py "
             "<calango_script_test>")
     binary = sys.argv[1]
 
     python = find_ase_python()
     if python is None:
-        print("no interpreter with ase found - skipping the MDMC "
+        print("no interpreter with ase found - skipping the MCMD "
               "antiposition test\n(set CALANGO_ASE_PYTHON, or install ase "
               "in a Conda environment this machine can find)")
         return 0
@@ -345,14 +345,14 @@ def main():
         job = tmp / "job_on"
         job.mkdir()
         shutil.copy(structure, job / "structure.extxyz")
-        done = run_script(python, scripts / "graphene_oxide_mdmc_antiposition.py",
+        done = run_script(python, scripts / "graphene_oxide_mcmd_antiposition.py",
                           job)
         check(done.returncode == 0,
-              f"the MDMC run completed (exit {done.returncode}): "
+              f"the MCMD run completed (exit {done.returncode}): "
               f"{done.stderr.strip()[-300:] if done.returncode else 'ok'}")
         check("CALANGO_DONE" in done.stdout, "and reported completion")
 
-        summary_path = job / "mdmc_summary.json"
+        summary_path = job / "mcmd_summary.json"
         trajectory_path = job / "accepted_structures.extxyz"
         if done.returncode == 0 and summary_path.is_file():
             summary = json.loads(summary_path.read_text())
@@ -391,11 +391,11 @@ def main():
         offJob = tmp / "job_off"
         offJob.mkdir()
         shutil.copy(structure, offJob / "structure.extxyz")
-        # graphene_oxide_mdmc_off.py is the antiposition dump's OFF twin —
+        # graphene_oxide_mcmd_off.py is the antiposition dump's OFF twin —
         # identical Lennard-Jones / no-MD-burst / cycle-budget settings,
         # differing only in hydroxyl_antiposition (see ScriptGenerationTest
         # .cpp's --dump block), so this is an apples-to-apples contrast.
-        offDone = run_script(python, scripts / "graphene_oxide_mdmc_off.py",
+        offDone = run_script(python, scripts / "graphene_oxide_mcmd_off.py",
                              offJob)
         check(offDone.returncode == 0,
               f"the OFF run completed (exit {offDone.returncode})")
@@ -410,7 +410,7 @@ def main():
                       "is not vacuous and OFF is genuinely the old, "
                       "unguarded behaviour")
 
-    print("\n" + ("All hydroxyl-antiposition MDMC checks passed."
+    print("\n" + ("All hydroxyl-antiposition MCMD checks passed."
                   if failures == 0 else f"{failures} check(s) FAILED."))
     return 0 if failures == 0 else 1
 

@@ -1085,15 +1085,15 @@ int main()
     }
 
     std::printf("Per-frame classification tracks a relocated group "
-                "(MDMC-style swap):\n");
+                "(MCMD-style swap):\n");
     {
         // Two structures from the SAME lattice and coverage, different
         // seeds, so each ends up with its epoxides on a DIFFERENT set of
         // carbon pairs — standing in for the "before" and "after" frame of
-        // an accepted MDMC move without hand-constructing or hand-editing
+        // an accepted MCMD move without hand-constructing or hand-editing
         // any geometry. functionalGroupLabels() is exactly what
         // MainWindow::redefineFunctionalGroupCastForFrame() (the per-frame
-        // Cast redefinition MDMC uses) calls on every streamed frame; this
+        // Cast redefinition MCMD uses) calls on every streamed frame; this
         // exercises that call directly, independent of the GUI it feeds.
         Config config;
         config.supercell[0] = config.supercell[1] = 6;
@@ -1106,7 +1106,7 @@ int main()
         const Structure after = Builder::build(config, &reportB);
 
         check(before.size() == after.size(),
-              "both frames keep the same atom count -- MDMC relocates "
+              "both frames keep the same atom count -- MCMD relocates "
               "groups, it never adds or removes atoms");
 
         const auto labelsBefore = Builder::functionalGroupLabels(before);
@@ -1367,7 +1367,7 @@ int main()
     // ===== The Graphene Oxide Build contract ===============================
     //
     // "go_group" / "go_group_id" / "go_pair_id": the persisted classification
-    // and antiposition registry every downstream GO module (GO-MDMC, GO
+    // and antiposition registry every downstream GO module (GO/MCMD, GO
     // Functional Group Analysis, GO Pair Correlation) reads. Checked against
     // functionalGroupLabels()/findFunctionalGroups() -- the SAME classifier,
     // re-derived from bonding -- so the persisted fields cannot silently
@@ -1632,7 +1632,7 @@ int main()
     }
     {
         // A plain structure with no oxygen chemistry at all -- e.g. bare
-        // graphene -- is squarely "not classified", the case GO-MDMC's
+        // graphene -- is squarely "not classified", the case GO/MCMD's
         // pre-flight check must catch and refuse rather than crash on.
         Config config;
         config.supercell[0] = config.supercell[1] = 4;
@@ -1641,14 +1641,14 @@ int main()
               "a bare, never-built substrate carries no classification");
     }
 
-    std::printf("Thermal bond tolerance for MDMC frames:\n");
+    std::printf("Thermal bond tolerance for MCMD frames:\n");
     {
-        // An MDMC frame is a thermal snapshot. Measured on a sheet under
+        // An MCMD frame is a thermal snapshot. Measured on a sheet under
         // MACE-MP-0, an intact epoxide C-O momentarily stretched past the
         // application-wide 1.15x covalent-radius cutoff read as a carbonyl
         // -- two of six epoxides on one 335 K frame -- and recoloured the
-        // per-frame Cast of a GO-MDMC run. The Cast therefore classifies
-        // MDMC frames at kThermalBondTolerance. This pins the two numbers
+        // per-frame Cast of a GO/MCMD run. The Cast therefore classifies
+        // MCMD frames at kThermalBondTolerance. This pins the two numbers
         // against a closed-form geometry: one C-O at 1.78 A (a thermal
         // instant), the other at its 1.44 A rest length.
         Config config;

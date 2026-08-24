@@ -318,7 +318,8 @@ public:
     /// accounting.
     ///
     /// The result carries four per-atom scalar fields — the "Graphene Oxide
-    /// Build" contract every downstream GO module (GO-MDMC, GO Functional
+    /// Build" contract every downstream GO module (GO/MCMD, GO/MC-Opt, GO
+    /// Functional
     /// Group Analysis, GO Pair Correlation) reads instead of re-deriving:
     ///
     ///  * "edge": 1 on every framework carbon classified as an edge carbon,
@@ -389,7 +390,8 @@ public:
     /// 300 K comes within 0.5 % of the 1.2x cutoff and crosses it at 400 K,
     /// and an intact epoxide C-O stretched past 1.15x at an instant read as
     /// "carbonyl" — two of six epoxides on one 335 K frame — which is what
-    /// recoloured the per-frame Cast of a GO-MDMC run. A bond that has really
+    /// recoloured the per-frame Cast of a GO/MCMD or GO/MC-Opt run. A bond
+    /// that has really
     /// gone is at 2 A or more within femtoseconds and clears either number.
     static constexpr double kColdBondTolerance = 1.15;
     static constexpr double kThermalBondTolerance = 1.3;

@@ -42,7 +42,8 @@ struct GrapheneOxidePairCorrelationResult {
     std::vector<std::string> speciesNames;
 };
 
-/// Compute the analysis for one structure (one frame of a GO-MDMC
+/// Compute the analysis for one structure (one frame of a GO/MCMD or
+/// GO/MC-Opt
 /// trajectory, or a single Graphene Oxide Build). `shellCutoffs` are RADIUS
 /// cutoffs in the exact sense WarrenCowleyOptions::shellCutoffs uses —
 /// honeycombShellCutoffs() below returns the honeycomb-appropriate defaults

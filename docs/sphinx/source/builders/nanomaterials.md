@@ -88,27 +88,54 @@ met by the nearest closed shell.
 
 ## Graphene oxide
 
-The graphene oxide functionality is a family of four modules, each doing one job and
+The graphene oxide functionality is a family of modules, each doing one job and
 consuming the last one's output rather than one combined flow:
 
 - **Graphene Oxide Builder** generates a Graphene Oxide Build.
-- **GO-MDMC** takes a Graphene Oxide Build in and produces a trajectory.
-- **GO Functional Group Analysis** and **GO Pair Correlation** each take either a
-  Graphene Oxide Build or a GO-MDMC trajectory — whichever is open — and are read-only:
-  neither one changes the structure it is given.
+- **GO/MCMD** and **GO/MC-Opt** each take a Graphene Oxide Build in and produce a
+  trajectory. They sample the same thing — *where* the groups sit, at fixed
+  composition — and differ in how a proposed move is relaxed before it is judged:
+  GO/MCMD runs a short burst of dynamics, GO/MC-Opt relaxes to a local minimum.
+- **GO Functional Group Analysis**, **GO Pair Correlation** and **Aromatic Percolation
+  Analysis** each take either a Graphene Oxide Build or a trajectory from either
+  sampler — whichever is open — and are read-only: none of them changes the structure
+  it is given.
 
-**Graphene Oxide Builder** generates a decorated structure. **GO-MDMC** anneals *where*
-an existing decoration's groups sit, at fixed composition — several independent runs
-(different temperature, seed, cycle count) from the *same* build, each producing its own
-trajectory without disturbing the build itself. **GO Functional Group Analysis** and
-**GO Pair Correlation** are read-only analyses of a build or a trajectory's classification
-and geometry; see their own sections below. All four are grouped under
-{menuselection}`Modules --> Graphene Oxide`.
+**Graphene Oxide Builder** generates a decorated structure. The two samplers anneal
+*where* an existing decoration's groups sit, at fixed composition — several independent
+runs (different temperature, seed, cycle count) from the *same* build, each producing its
+own trajectory without disturbing the build itself. The analyses are read-only views of a
+build or a trajectory's classification and geometry; see their own sections below.
+Everything is grouped under {menuselection}`Modules --> Graphene Oxide`.
+
+### Which sampler
+
+| | **GO/MCMD** | **GO/MC-Opt** |
+|---|---|---|
+| Relaxation per move | short thermostatted MD burst | local geometry optimization to a force criterion |
+| What the walk samples | the thermal ensemble at *T* | the landscape of local **minima** |
+| Role of the temperature | the dynamics *and* the acceptance test | the acceptance test only |
+| Cost per cycle | fixed — `md_steps` force evaluations | variable, bounded by the step ceiling |
+| Answers | "what does this sheet do at *T*?" | "which arrangement is lowest in energy?" |
+
+The distinction is not cosmetic, and it has a measured consequence. A relocated group is
+rebuilt from its recipe, so it arrives carrying **placement strain**; a burst too short to
+drain it hands the Metropolis test a trial energy biased uphill by an amount that says
+nothing about whether the new site is better. On one 200-cycle, 5-MD-step run the median
+trial ΔE was **+3.9 eV = 150 kT** — `exp(-ΔE/kT) ≈ 10⁻⁶⁶` — and the run accepted three
+moves, none of them after cycle 32. Relaxing *both* states to a minimum removes that term
+by construction: on the same structure, GO/MC-Opt gave a median trial ΔE of **+0.16 eV
+(6 kT)** and accepted a third of its moves.
+
+So: reach for GO/MC-Opt when the question is which decoration is best, and for GO/MCMD
+when the question is about finite-temperature behaviour. If a GO/MCMD run reports a large
+median `trial_delta`, that is the module telling you the burst is too short — lengthen it
+or switch samplers; it says so in its own run log.
 
 One classification implementation serves every module:
 `core::GrapheneOxideBuilder::findFunctionalGroups()` /
 `functionalGroupLabels()`, the same bonding-based classifier the builder itself uses to
-decide where a group may go. GO-MDMC, the analysis modules, and the viewport's
+decide where a group may go. Both samplers, the analysis modules, and the viewport's
 functional-group Cast all read the *same* answer — nothing re-derives its own notion of
 "which carbon is which".
 
@@ -142,7 +169,7 @@ counts as a group" never has two definitions.
 functionalized carbon substrate — an infinite periodic sheet or a finite flake — in a
 two-stage wizard. It runs natively in C++, and it is generation only: nothing here
 launches a calculation. The refinement that used to be an optional third stage of this
-dialog is now the separate GO-MDMC module below.
+dialog is now the separate GO/MCMD module below.
 
 Graphene oxide has no single structure — it is a non-stoichiometric, disordered
 material, and the accepted picture (Lerf–Klinowski) is a basal plane carrying epoxides
@@ -193,6 +220,25 @@ regions: a basal interior and a hydrogen-terminated rim.
 
 A flake is **not periodic**. It is fitted with a box carrying 10 Å of vacuum on every
 side, because plane-wave codes demand a cell; what it must not have is a neighbour.
+
+#### The substrate preview
+
+Stage 1 draws the substrate the current settings produce, live, underneath the
+summary line. It comes from `GrapheneOxideBuilder::pristine()` — the *same*
+call the build itself makes — so the picture cannot disagree with the result;
+it is not a sketch that has to be kept in step by hand.
+
+- A **periodic sheet** is drawn with its cell as a dashed outline. Bonds that
+  cross the boundary are not drawn wrapped: a line straight across the picture
+  reads as a defect, and the outline is what says the sheet continues.
+- A **nanoflake** is drawn without a box — it sits in a vacuum cell, and
+  drawing that would suggest it means something — with its edge hydrogens as
+  smaller, paler dots.
+
+It is the substrate only: functional groups are placed in stage 2 and are not
+shown here. Above roughly 2400 carbons the drawing is dropped, because past
+that the dots merge into a grey rectangle that says nothing the summary line
+does not already say in words.
 
 ### Basal carbons and edge carbons
 
@@ -349,18 +395,18 @@ edge oxidation has its own density and carboxyl:carbonyl controls. The seed repr
 the exact decoration.
 ```
 
-## GO-MDMC — hybrid MD/MC refinement
+## GO/MCMD — hybrid MD/MC refinement
 
 Stage 2 above places groups at random, subject to the chemical constraints listed there;
-it says nothing about whether that particular *arrangement* is favorable. **GO-MDMC**
-({menuselection}`Modules --> Graphene Oxide --> GO-MDMC…`) is **MDMC** ("Molecular
+it says nothing about whether that particular *arrangement* is favorable. **GO/MCMD**
+({menuselection}`Modules --> Graphene Oxide --> GO/MCMD…`) is **MCMD** ("Molecular
 Dynamics / Monte Carlo"), a hybrid annealing loop that relocates functional groups —
 never adds, removes, or changes which kinds are present — to sample lower-energy
 arrangements.
 
 ### Selecting an input build
 
-GO-MDMC takes a Graphene Oxide Build as **input**, not a structure it produces itself.
+GO/MCMD takes a Graphene Oxide Build as **input**, not a structure it produces itself.
 Opening it shows every open document whose structure satisfies
 `GrapheneOxideBuilder::hasClassification()` — falling back to `classifyFromBonding()`
 for a build made before this module existed, or for graphene oxide imported from
@@ -375,7 +421,7 @@ job in the application uses), so the source build is never read from again once 
 starts, let alone written to. This is what makes several independent runs from the same
 build safe: pick the same build again with a different temperature, seed or cycle count,
 and each run gets its own copy and its own trajectory. Whether feeding a build to
-GO-MDMC through the Orchestration node canvas — several runs fanned out from one source
+GO/MCMD through the Orchestration node canvas — several runs fanned out from one source
 node — is worth wiring as a first-class node pair is tracked in `FUTURE.md` rather than
 half-built here; the underlying fan-out/copy-based-staging pattern the canvas already
 uses for every other node would support it directly.
@@ -408,7 +454,7 @@ The chemistry is checked every 10 steps. A group that still opens is
 **relocated** to a freshly drawn free site of its own kind — the sampler's
 own move, inventory preserved — and the dynamics resumes from the last intact
 state; each relocation is reported in the log and counted in
-`mdmc_summary.json` (`equilibration_relocations`). The run refuses only when
+`mcmd_summary.json` (`equilibration_relocations`). The run refuses only when
 relocating stops helping (a temperature that breaks the chemistry at any
 site) or when the carbon framework itself comes apart. Zero steps skips the
 stage and starts the walk from the as-built geometry's own energy.
@@ -483,7 +529,7 @@ temperature.
 :class: note
 
 {guilabel}`Redefine Cast on every accepted move` recolours each frame from
-its own bonding. An MDMC frame is a thermal snapshot, and the application's
+its own bonding. An MCMD frame is a thermal snapshot, and the application's
 cold 1.15 × bond tolerance reads a hot, intact bond as broken — on one 335 K
 frame two of six epoxides showed as carbonyls. Those frames are therefore
 classified at the same 1.3 × tolerance the run judges its own chemistry by
@@ -494,7 +540,7 @@ builder keep the cold default for built or relaxed geometries.
 If the input build carries antiposition pairs (its `go_pair_id` field, read
 straight off the build rather than re-typed as a checkbox here), each
 bonded, opposite-face hydroxyl pair is one of these "groups" in its own
-right: MDMC recovers every such pair from the input's own geometry once, at
+right: MCMD recovers every such pair from the input's own geometry once, at
 the start, and from then on moves, checks and reports it as a single
 compound unit — drawing a new *bonded pair* of free carbons (the same pool
 an epoxide draws from) and rebuilding both −OH groups with a fresh,
@@ -503,7 +549,7 @@ halves of a pair onto unrelated carbons; a hydroxyl with no eligible partner
 (possible when a requested count was odd) moves on its own, exactly as it
 would with an unpaired build.
 
-MDMC is where a **calculator** is chosen, and `SimulationWizardBase`'s
+MCMD is where a **calculator** is chosen, and `SimulationWizardBase`'s
 engine picker, environment resolution and script review are reused rather
 than duplicated. Settings include the annealing temperature, the number of
 MC cycles, the MD burst length between moves, the equilibration stage above,
@@ -517,11 +563,11 @@ The cost estimate on the page counts the equilibration steps too.
 Starting a run opens exactly **two** viewport tabs, each following one of the two
 structure files the script appends to as it goes:
 
-{guilabel}`GO-MDMC / All Structures`
+{guilabel}`GO/MCMD — All Structures`
 : every geometry the walk visits — the equilibrated starting point, each MD burst,
   and each trial configuration, accepted or rejected — in the order they happened.
 
-{guilabel}`GO-MDMC / Accepted`
+{guilabel}`GO/MCMD — Accepted`
 : the accepted configurations alone, each carrying its acceptance ordinal. This is
   the ensemble; the tab is kept even when a run accepts nothing, because "nothing was
   accepted" is a result and not a missing one.
@@ -545,7 +591,7 @@ energy against cycle exactly like any other monitored job, on the same polling c
 (`metrics.json`, written by `_calango_metric()`) — reopening the panel reconnects to a
 run already under way the same way it does for any other job type.
 
-One more tab is GO-MDMC specific:
+One more tab is GO/MCMD specific:
 
 {guilabel}`Acceptance` plots the **windowed** (last 50 judged moves) Metropolis
 acceptance rate, broken out **by move type** — each functional-group swap kind, plus
@@ -555,10 +601,10 @@ near 0% means that move is never finding room, which a single overall acceptance
 hides. Only kinds actually attempted get a line, so a build with no carboxyls does not
 clutter the legend with a permanent flat zero.
 
-(go-mdmc-summary)=
+(go-mcmd-summary)=
 
 The run's **counters** live in a window of their own rather than in a Results tab.
-{guilabel}`MDMC Summary` shows the five whole-run quantities — cycles done out of
+{guilabel}`MCMD Summary` shows the five whole-run quantities — cycles done out of
 total, MD steps, accepted count, acceptance percentage and elapsed time — above the
 same acceptance analysis as a table instead of a trend: one row per move kind (again,
 only kinds attempted), each showing attempts, accepted count and the **cumulative**
@@ -571,7 +617,7 @@ It opens two ways:
 * **automatically when a run finishes**, and only when it finishes *successfully* — a
   failed or aborted run is already reported by the Processes panel (a red row whose
   tooltip carries the reason) and its counters stopped meaning anything when it died;
-* **on double-clicking the GO-MDMC row in the Processes panel**, during the run or long
+* **on double-clicking the GO/MCMD row in the Processes panel**, during the run or long
   afterwards. During a run the numbers update underneath the open window; for a finished
   one they are read back from that run's `proc_<id>/metrics.json`. (Double-clicking any
   other kind of process still loads that run's result, which is what double-click has
@@ -588,7 +634,7 @@ way every other export button does.
 #### Cast follows the chemistry, frame by frame
 
 **Redefine Cast on every accepted move** (Output page, on by default)
-closes a gap a fixed, frame-0 Cast would otherwise leave open: since MDMC's
+closes a gap a fixed, frame-0 Cast would otherwise leave open: since MCMD's
 whole point is relocating groups, a Cast computed once at the start goes
 stale the moment the first move is accepted — the carbon that WAS
 "epoxide" may now be bare, and a bare carbon elsewhere may have just become
@@ -612,22 +658,128 @@ computed from whichever frame happened to be current when it was last set.
 
 The functional-group Cast above answers "where is the oxygen?" — the
 question one step further on is whether the *unoxidized* carbon still forms
-an unbroken conducting sheet. {doc}`Analysis --> Benzene-Ring / sp2
-Percolation Analysis… </analysis/percolation>` answers exactly that: it
+an unbroken conducting sheet. {doc}`Aromatic Percolation Analysis…
+</analysis/percolation>` answers exactly that: it
 finds every six-membered ring, classifies each intact/disrupted from this
 same `functionalGroupLabels()` call, and reports whether the intact rings
-still percolate the periodic cell. Run against a whole MDMC trajectory, its
+still percolate the periodic cell. Run against a whole GO/MCMD or GO/MC-Opt
+trajectory, its
 intact-ring-fraction and largest-domain plots are the structural side of the
 oxidation-vs-conductivity trade-off the run traces out.
+
+## GO/MC-Opt — Monte Carlo with geometry optimization
+
+{menuselection}`Modules --> Graphene Oxide --> GO/MC-Opt…` runs the same Monte Carlo
+walk over a Graphene Oxide Build's decoration as GO/MCMD — the same eligibility rules,
+the same move set (epoxide and antiposition-pair moves included), the same clearance
+filter, the same topology check, the same reversion, the same two live viewport tabs and
+the same Summary window. **Everything above about GO/MCMD applies here**, except the one
+thing this module exists to change: what happens between proposing a move and judging it.
+
+Instead of a thermostatted burst, each proposal is **relaxed to a local minimum**.
+
+### Settings — a four-stage wizard
+
+The relaxation gets a **stage of its own**, between the calculator and the Monte
+Carlo settings, because it is a different decision from the sampling: the MC
+settings say *what is proposed and how often*, these say *how a proposal is
+relaxed before it is judged*.
+
+1. {guilabel}`Calculator & Convergence Settings` — the engine, as everywhere.
+2. {guilabel}`Geometry Optimization` — the optimizer and the variable cell.
+3. {guilabel}`MC-Opt Settings` — the {guilabel}`Monte Carlo Sampling` and
+   {guilabel}`Output` groups, which are GO/MCMD's, unchanged.
+4. {guilabel}`Review & Run`.
+
+GO/MCMD keeps its three stages — it has no second settings stage at all.
+
+#### Stage 2 — the optimizer
+
+| Control | What it does |
+|---|---|
+| {guilabel}`Optimizer` | `BFGS` (default, quasi-Newton), `LBFGS` (limited memory — the better bet on a large cell), `FIRE` (no Hessian, the tolerant one when a freshly placed group starts far from its minimum), `MDMin` (cheapest step, most of them needed) |
+| {guilabel}`Force criterion` | Convergence threshold, default **0.05 eV/Å** — the value every other relaxation in Calango uses, and the one a reader expects quoted beside a relaxed energy |
+| {guilabel}`Max steps per cycle` | Ceiling on the optimizer steps one cycle may spend, default 200. A **cap, not a target** |
+| {guilabel}`Max displacement` | Largest distance one step may move an atom (ase's `maxstep`), default 0.2 Å. Not used by MDMin |
+
+#### Stage 2 — the variable cell
+
+The {guilabel}`Variable Cell` group is **the same one Geometry Optimization
+offers**, not a simplified version of it — the identical shared control, so the
+two modules cannot drift apart on what "relax the cell" means:
+
+| Control | What it does |
+|---|---|
+| {guilabel}`Relax the unit cell (variable-cell)` | Off by default. Everything below is disabled until it is on |
+| {guilabel}`Cell filter` | `FrechetCellFilter` (recommended, well-behaved) or the classic `UnitCellFilter` |
+| {guilabel}`Stress mask` | Anisotropic (full stress), Hydrostatic (isotropic strain only), 2D *xy*, or Custom |
+| {guilabel}`Voigt components` | Under {guilabel}`Custom`, the six ticks [xx, yy, zz, yz, xz, xy]; otherwise a read-out of what the preset chose |
+
+Why the full set matters: an MC-Opt run whose cell was relaxed
+**isotropically** produces energies that cannot be lined up against an
+**anisotropic** relaxation of the same material. A module offering only an
+on/off switch would quietly be producing a different quantity from the one next
+door.
+
+**A non-periodic axis is always pinned**, whatever the mask says. The mask is
+combined with the cell's own periodicity rather than replacing it, so a custom
+mask can only ever pin *more* than that, never release an axis that does not
+exist — a sheet's vacuum axis has no cell degree of freedom, and letting one
+move is how a slab collapses onto its own image.
+
+There is no timestep, no friction, no ensemble and no thermostat: nothing here integrates
+anything. The equilibration stage becomes a relaxation of the as-built structure, for the
+same reason it exists in GO/MCMD — the builder places every group analytically on a flat
+sheet, so the input carries tens of eV of strain — and because a walk over minima has to
+*start* from one.
+
+### The step ceiling, and what it means when it is hit
+
+A cycle that reaches {guilabel}`Max steps per cycle` without converging is **still
+judged**. Dropping the hardest proposals — the crowded sites, which are the interesting
+ones — would bias the acceptance statistics without saying so. Instead the count is
+reported: `unconverged_cycles` in `mcmd_summary.json`, and a run-end warning when it
+exceeds a fifth of the cycles. Those trial energies are not minima, so they were compared
+against ones that are; if the number is large, raise the ceiling before trusting the
+acceptance ratio.
+
+### Cost
+
+An optimization is an unbounded number of force evaluations where a burst is a fixed
+handful, so a cycle costs more and its cost varies. The wizard quotes the **ceiling**
+(cycles × max steps) and says so; the run reports `relaxation_steps_total`, which is what
+it actually cost — typically a small fraction of the bound once the first few cycles have
+relaxed the sheet.
+
+### What it is not
+
+The walk is over **local minima**, not over a canonical ensemble. The temperature is the
+Metropolis parameter and nothing else: no velocities are ever drawn, so nothing here
+samples thermal motion, and a property that depends on it (a vibrational average, a
+diffusion coefficient) is not what this module produces. For that, use GO/MCMD.
+
+### Output
+
+Byte-for-byte the same layout as GO/MCMD — `mcmd_all_structures.extxyz`,
+`accepted_structures.extxyz`, `mcmd_optimized.extxyz`, `mcmd_summary.json` — so every
+downstream analysis reads either module without knowing which produced the run. The
+summary names which one did: `relaxation` is `"optimization"` or
+`"molecular_dynamics"`, and the optimizer settings travel beside it.
+
+The frame record follows the same invariant, stated the only way it can be for a stage
+whose length is not known in advance: **one frame per optimizer step**, the initial
+relaxation included, with the last frame of each cycle carrying that cycle's verdict.
+`all_structures_frames` and `all_structures_frames_expected` in the summary are equal by
+construction, and a reader can check the file against them.
 
 ## GO Functional Group Analysis — census and geometry
 
 {menuselection}`Modules --> Graphene Oxide --> GO Functional Group Analysis…`
-is a read-only analysis of a Graphene Oxide Build or a GO-MDMC trajectory:
+is a read-only analysis of a Graphene Oxide Build or a GO/MCMD / GO/MC-Opt
+trajectory:
 which groups are present and how much they distort the sheet around them.
 Current structure, or every frame of a loaded trajectory — the same scope
-radios {doc}`Analysis --> Benzene-Ring / sp2 Percolation Analysis…
-</analysis/percolation>` uses.
+radios {doc}`Aromatic Percolation Analysis… </analysis/percolation>` uses.
 
 Classification is, once again, `core::GrapheneOxideBuilder::
 findFunctionalGroups()` — the one implementation every GO module in this
@@ -658,14 +810,14 @@ on it, resolved by environment:
   **skipped**, by name, rather than silently missing from this distribution.
 
 For a trajectory, each distribution also gets an evolution plot: the MEAN of
-that environment's samples plotted against frame, so an MDMC run's effect on
+that environment's samples plotted against frame, so an MCMD run's effect on
 the local geometry (not just which groups are present) is visible over the
 course of the annealing. A frame with zero samples of an environment is a
 gap in that line, never a plotted zero.
 
 **Highlight** recolors the current structure by the chosen group kind (or
 "Pristine framework", or "All group kinds" — the same fixed key
-{ref}`per-frame-cast` uses for GO-MDMC) via the Cast machinery, always the
+{ref}`per-frame-cast` uses for GO/MCMD) via the Cast machinery, always the
 current structure even when the scope above is the whole trajectory — the
 same convention RingPercolationDialog's own "Apply Coloring" follows.
 Results table, distributions and evolution plots all export: **Export
@@ -733,7 +885,7 @@ uncertainty a single structure's finite neighbor count carries, shown
 alongside the number rather than left implicit.
 
 For a trajectory, the **evolution** plot tracks one chosen $\alpha_{ij}$ at
-shell 1 against frame — the scientific question an MDMC run's Monte Carlo
+shell 1 against frame — the scientific question an MCMD run's Monte Carlo
 sampling actually answers: is it driving the decoration toward ordering or
 toward clustering? The statistics line above the plot reports the
 trajectory-averaged value with an autocorrelation-corrected standard error

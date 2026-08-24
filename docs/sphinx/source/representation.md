@@ -54,7 +54,7 @@ whole session — "Epoxide is amber" does not change frame to frame. What
 *can* vary per frame is **which cast each atom belongs to**: a trajectory
 may carry, per frame, its own override of the usual atom-to-cast assignment.
 
-This is what the GO-MDMC workflow uses (see
+This is what the GO/MCMD and GO/MC-Opt workflows use (see
 {doc}`/builders/nanomaterials`): a functional group relocating from one
 carbon to another over the course of the run means the *set of atoms* that
 counts as "epoxide-carbon" changes every accepted move, even though the
@@ -67,7 +67,7 @@ assignment — an existing project, or a trajectory nothing ever gave a
 per-frame override, behaves exactly as before: one assignment, unchanged as
 you step through frames. There is no separate UI for authoring a per-frame
 override by hand today; it is written by whatever produced the trajectory
-(currently, MDMC's own cast-redefinition step) and saved with the project
+(currently, MCMD's own cast-redefinition step) and saved with the project
 alongside the global cast.
 
 ### Representation modes

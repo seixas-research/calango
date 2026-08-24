@@ -346,7 +346,7 @@ int main()
     {
         // Two frames from the SAME lattice/coverage, different seeds -- each
         // ends up with its groups on a different set of carbons, standing in
-        // for consecutive MDMC trajectory frames without hand-editing any
+        // for consecutive MCMD trajectory frames without hand-editing any
         // geometry (same technique tests/GrapheneOxideTest.cpp's own
         // "per-frame classification tracks a relocated group" block uses).
         Config config;

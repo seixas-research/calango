@@ -23,7 +23,7 @@ namespace {
 /// The matplotlib "tab10" family, same convention MetricPlotWidget's four
 /// tabs already draw with (PlotPalette::series/seriesAlt are its first two
 /// entries) — a Calango figure and a matplotlib one from the same exported
-/// data read as the same plot. Six is enough for GO-MDMC's "overall" series
+/// data read as the same plot. Six is enough for GO/MCMD's "overall" series
 /// plus its five move kinds; a widget asked to draw a seventh simply repeats
 /// from the top rather than failing.
 const std::vector<QColor>& tab10()

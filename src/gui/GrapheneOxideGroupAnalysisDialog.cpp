@@ -103,7 +103,7 @@ GrapheneOxideGroupAnalysisDialog::GrapheneOxideGroupAnalysisDialog(
     scopeTrajectoryRadio_->setToolTip(
         tr("Runs the census and every geometric distribution on each frame — "
            "the evolution plots below (mean bond length / angle vs. frame) "
-           "are what show whether an MDMC run is annealing the decoration "
+           "are what show whether an MCMD run is annealing the decoration "
            "toward or away from a particular arrangement."));
     scopeLayout->addWidget(scopeCurrentRadio_);
     scopeLayout->addWidget(scopeTrajectoryRadio_);

@@ -22,8 +22,11 @@ void CellRelaxationControls::build(QWidget* parent, QFormLayout* form,
     form_ = form;
     onChanged_ = std::move(onChanged);
 
+    // Named so a test (and the Orchestration canvas's own node inspection)
+    // can reach the switch without matching a translated label.
     relaxCellCheck_ =
         new QCheckBox(tr("Relax the unit cell (variable-cell)"), parent);
+    relaxCellCheck_->setObjectName(QStringLiteral("relaxCellCheck"));
     relaxCellCheck_->setToolTip(
         tr("Also optimize the lattice via an ASE cell filter."));
     form->addRow(relaxCellCheck_);

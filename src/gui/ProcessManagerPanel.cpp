@@ -218,7 +218,7 @@ ProcessManagerPanel::ProcessManagerPanel(QWidget* parent)
     updateAbortButton();
     // Double-click reports the activation and lets the controller decide.
     // It used to emit loadResultRequested() itself, which is still what
-    // MainWindow does for every row but a GO-MDMC one — that one now opens
+    // MainWindow does for every row but a GO/MCMD one — that one now opens
     // the run's Summary window instead, live or finished. A row with no
     // directory (a remote submission before it has staged) is still inert.
     connect(tree_, &QTreeWidget::itemDoubleClicked, this,

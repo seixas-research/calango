@@ -791,25 +791,8 @@ void emitVasp(std::ostringstream& out, const CalculatorConfig& c)
     // 0.0, 'J': 0.0} (no correction) — every entry is still written
     // explicitly below, one per species, so the generated script is
     // self-documenting about what every element in the cell is getting.
-    if (c.vaspUseHubbardU && !c.vaspHubbardU.empty()) {
-        out << "    ldau=True,\n"
-            << "    ldautype="
-            << (c.vaspHubbardType == VaspHubbardType::Liechtenstein ? 1 : 2)
-            << ",\n"
-               // 1: the on-site occupancy matrix is written to OUTCAR —
-               // the minimum needed to sanity-check a DFT+U run actually
-               // converged to the intended occupation, at no extra
-               // computational cost (VASP wiki, LDAUPRINT).
-               "    ldauprint=1,\n"
-               "    ldau_luj={\n";
-        for (const VaspHubbardU& hubbard : c.vaspHubbardU) {
-            if (hubbard.element.empty())
-                continue;
-            out << "        \"" << hubbard.element << "\": {'L': " << hubbard.l
-                << ", 'U': " << hubbard.u << ", 'J': " << hubbard.j << "},\n";
-        }
-        out << "    },\n";
-    }
+    out << AseScriptGenerator::vaspHubbardKeywords(c, "    ",
+                                                   /*withLmaxmix=*/false);
 
     // Ionic steps are emitted ONLY when VASP is the one taking them. Writing
     // IBRION/NSW while an ASE optimizer is also running would make every ASE
@@ -2870,6 +2853,60 @@ std::string AseScriptGenerator::gpawWaveFunctionHelperScript()
         "        return None if _ae is None else _ae.data\n"
         "    return calc.get_pseudo_wave_function(band=band, kpt=kpt, spin=spin,\n"
         "                                         periodic=True)\n";
+}
+
+std::string AseScriptGenerator::vaspHubbardKeywords(const CalculatorConfig& c,
+                                                   const std::string& indent,
+                                                   bool withLmaxmix)
+{
+    // DFT+U. ldau_luj is keyed by ELEMENT SYMBOL, not position: ASE's own
+    // create_input.py (set_ldau()) builds the positional LDAUL/LDAUU/LDAUJ
+    // arrays from it against the SAME per-species ordering it uses to write
+    // POSCAR itself, so this can never disagree with the actual species
+    // order — see core::VaspHubbardU's own doc comment for why that hand-off,
+    // not a C++/Python-string-built positional array, is the point. A species
+    // this dict does not mention gets ASE's own default,
+    // {'L': -1, 'U': 0.0, 'J': 0.0} (no correction) — every entry is still
+    // written explicitly, one per species, so the generated script is
+    // self-documenting about what every element in the cell is getting.
+    //
+    // SHARED, and it has to be. This used to be inlined in emitVasp(), which
+    // meant every generator building its OWN Vasp() call instead of going
+    // through emitVasp() silently dropped the correction. Electronic
+    // Structure does exactly that, so a band run on NiO with a U set came out
+    // as plain PBE: the wizard collected the U, the config carried it, and
+    // the script never mentioned it. One emitter, called from everywhere a
+    // Vasp() is constructed.
+    //
+    // `withLmaxmix` is false for emitVasp(), which writes its own lmaxmix line
+    // just above the call, and true for a caller that writes no VASP tags of
+    // its own — LMAXMIX travels WITH the correction there, because a DFT+U run
+    // that mixes only up to l = 2 converges to the wrong occupation matrix and
+    // looks converged doing it.
+    if (!c.vaspUseHubbardU || c.vaspHubbardU.empty())
+        return {};
+    std::ostringstream out;
+    out << indent << "ldau=True,\n"
+        << indent << "ldautype="
+        << (c.vaspHubbardType == VaspHubbardType::Liechtenstein ? 1 : 2)
+        << ",\n"
+        // 1: the on-site occupancy matrix is written to OUTCAR — the minimum
+        // needed to sanity-check a DFT+U run actually converged to the
+        // intended occupation, at no extra computational cost (VASP wiki,
+        // LDAUPRINT).
+        << indent << "ldauprint=1,\n";
+    if (withLmaxmix && c.vaspLmaxmix > 0)
+        out << indent << "lmaxmix=" << c.vaspLmaxmix << ",\n";
+    out << indent << "ldau_luj={\n";
+    for (const VaspHubbardU& hubbard : c.vaspHubbardU) {
+        if (hubbard.element.empty())
+            continue;
+        out << indent << "    \"" << hubbard.element
+            << "\": {'L': " << hubbard.l << ", 'U': " << hubbard.u
+            << ", 'J': " << hubbard.j << "},\n";
+    }
+    out << indent << "},\n";
+    return out.str();
 }
 
 std::string AseScriptGenerator::vaspPrecString(VaspPrecision prec)

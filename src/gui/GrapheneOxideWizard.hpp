@@ -19,14 +19,17 @@ class QStackedWidget;
 
 namespace calango::gui {
 
+/// Stage 1's substrate preview. Defined in GrapheneOxideWizard.cpp.
+class GrapheneOxidePreviewWidget;
+
 /// Modules → Graphene Oxide → "Graphene Oxide Builder…": a two-stage builder
 /// for a functionalized graphene substrate. GENERATION ONLY — the module that
-/// used to also offer an MDMC refinement on a third stage no longer does; that
-/// refinement is now its own module, "GO-MDMC" (GrapheneOxideMdmcWizard),
+/// used to also offer an MCMD refinement on a third stage no longer does; that
+/// refinement is now its own module, "GO/MCMD" (GrapheneOxideMcmdWizard),
 /// which takes this dialog's output as input rather than being chained from
-/// it. Several independent MDMC runs from one build (different temperatures,
+/// it. Several independent MCMD runs from one build (different temperatures,
 /// seeds, step counts) is the whole reason for the split — see
-/// GrapheneOxideMdmcWizard's own doc comment.
+/// GrapheneOxideMcmdWizard's own doc comment.
 ///
 ///   Stage 1 — Base Structure: an infinite periodic sheet, or a finite
 ///     nanoflake C(6m²)H(6m) of index m — the difference that decides whether
@@ -54,7 +57,8 @@ namespace calango::gui {
 /// The result is a "Graphene Oxide Build": the structure PLUS the persisted
 /// per-atom classification core::GrapheneOxideBuilder::build() writes onto it
 /// ("go_group" / "go_group_id" / "go_pair_id", alongside the existing "edge"
-/// field) — the contract every downstream GO module (GO-MDMC, GO Functional
+/// field) — the contract every downstream GO module (GO/MCMD, GO/MC-Opt,
+/// GO Functional
 /// Group Analysis, GO Pair Correlation) reads instead of re-deriving its own
 /// notion of "which carbon is which". Nothing in this dialog has to do
 /// anything extra to produce that contract; core::GrapheneOxideBuilder::build()
@@ -77,10 +81,24 @@ public:
     /// widgets refreshSummary() has been reading throughout.
     core::GrapheneOxideBuilder::Config config() const;
 
+    /// Seed every control from `config` — the inverse of config().
+    ///
+    /// Exists for the Orchestration canvas, where a Graphene Oxide Builder
+    /// node stores its configuration and re-opens this wizard to edit it. A
+    /// wizard that always opened on its defaults would silently discard the
+    /// node's settings the moment anyone looked at them.
+    ///
+    /// Only the fields config() WRITES are read back. The rest of
+    /// Builder::Config is not reachable from this dialog at all (it offers one
+    /// dosing mode), so restoring them here would claim an edit the user
+    /// cannot make; the canvas node keeps the whole Config and hands back what
+    /// this returns, so nothing is lost either way.
+    void setConfig(const core::GrapheneOxideBuilder::Config& config);
+
 public:
     /// Whether the structure just built has hydroxyls placed as bonded,
     /// opposite-face pairs (the "Hydroxyls antiposition" option) — read by
-    /// the host so the follow-on MDMC wizard can move each pair as one
+    /// the host so the follow-on MCMD wizard can move each pair as one
     /// compound unit instead of two independently sited hydroxyls. Valid
     /// after exec() returns Accepted, same as result()/report().
     bool hydroxylAntiposition() const;
@@ -119,6 +137,10 @@ private:
     QComboBox* generationCombo_ = nullptr;
     QCheckBox* hydrogenCheck_ = nullptr;
     QLabel* baseSummary_ = nullptr;
+    /// Stage 1's live drawing of the substrate the current settings produce.
+    /// Defined in the .cpp — it is a paintEvent and nothing else, so it needs
+    /// no moc and no header of its own.
+    GrapheneOxidePreviewWidget* preview_ = nullptr;
 
     /// One ratio: a slider to sweep it, a spin box to type it exactly, and a
     /// read-out that says what the number MEANS.
@@ -138,6 +160,9 @@ private:
         /// The physical value. Reads the SLIDER, which is the single source of
         /// truth; the box is kept equal to it.
         double value() const;
+        /// Drive both halves to `value`. The slider is written last so its
+        /// own signal is the one that lands, keeping it the source of truth.
+        void setValue(double value);
     };
 
     /// Slider units per 1.0 of ratio. Fixed for every control so one

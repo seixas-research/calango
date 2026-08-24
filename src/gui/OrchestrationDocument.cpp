@@ -180,6 +180,14 @@ QJsonObject OrchestrationDocument::build(const OrchestrationWindow& window,
             entry.insert(QStringLiteral("supercell"),
                          node->supercell().toJson());
             break;
+        case OrchestrationTask::GrapheneOxideBuild:
+            // Additive, like the TDB key below: an older reader ignores it and
+            // gets a node that builds with the builder's own defaults, which
+            // is a different Build rather than a broken document — so kSchema
+            // does not move for this either.
+            entry.insert(QStringLiteral("graphene_oxide_build"),
+                         node->grapheneOxideBuild().toJson());
+            break;
         case OrchestrationTask::RandomNoiseSetup:
             entry.insert(QStringLiteral("random_noise"),
                          node->randomNoise().toJson());
@@ -402,6 +410,13 @@ bool OrchestrationDocument::load(OrchestrationWindow& window,
             window.setNodeSupercell(
                 node, SupercellSpec::fromJson(
                           entry.value(QStringLiteral("supercell")).toObject()));
+            break;
+        case OrchestrationTask::GrapheneOxideBuild:
+            window.setNodeGrapheneOxideBuild(
+                node,
+                GrapheneOxideBuildSpec::fromJson(
+                    entry.value(QStringLiteral("graphene_oxide_build"))
+                        .toObject()));
             break;
         case OrchestrationTask::RandomNoiseSetup:
             window.setNodeRandomNoise(

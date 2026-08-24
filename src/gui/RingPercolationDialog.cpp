@@ -45,7 +45,7 @@ RingPercolationDialog::RingPercolationDialog(
     , frames_(std::move(frames))
     , viewport_(viewport)
 {
-    setWindowTitle(tr("Benzene-Ring / sp2 Percolation Analysis"));
+    setWindowTitle(tr("Aromatic Percolation Analysis"));
     resize(720, 640);
 
     auto* layout = new QVBoxLayout(this);
@@ -63,7 +63,7 @@ RingPercolationDialog::RingPercolationDialog(
         tr("Runs the same analysis on each frame — the intact-ring fraction "
            "and largest-domain-span plots below are what connect the "
            "oxidation dose to the loss of a percolating sp2 pathway across "
-           "an MDMC trajectory."));
+           "a GO/MCMD or GO/MC-Opt trajectory."));
     scopeLayout->addWidget(scopeCurrentRadio_);
     scopeLayout->addWidget(scopeTrajectoryRadio_);
     layout->addWidget(scopeGroup);

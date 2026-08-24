@@ -19,7 +19,8 @@ namespace calango::gui {
 class LinePlotWidget;
 
 /// Modules -> Graphene Oxide -> "GO Pair Correlation…": Warren-Cowley
-/// short-range-order analysis of a Graphene Oxide Build's (or GO-MDMC
+/// short-range-order analysis of a Graphene Oxide Build's (or a GO/MCMD /
+/// GO/MC-Opt
 /// trajectory's) functional-group DECORATION — core::
 /// analyzeGrapheneOxidePairCorrelation() run per frame, reusing core::
 /// computeWarrenCowley() (the alloy SRO module) entirely unchanged.

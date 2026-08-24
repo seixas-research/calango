@@ -51,7 +51,7 @@ GrapheneOxideGroupAnalysis analyzeGrapheneOxideGroups(const Structure& structure
     };
 
     // --- Bonding, and which carbons are the honeycomb framework -----------
-    // The same test the MDMC script and the builder's own edge/basal split
+    // The same test the MCMD script and the builder's own edge/basal split
     // both rest on: a carbon with two or more carbon neighbours is part of
     // the sheet; anything else (a carboxyl's own added carbon, chiefly) is
     // not, whatever chemistry it is part of.
@@ -101,7 +101,8 @@ GrapheneOxideGroupAnalysis analyzeGrapheneOxideGroups(const Structure& structure
 
     // --- Above/below plane, basal groups only ------------------------------
     // The sheet is assumed planar in xy (z out-of-plane) -- true of every
-    // structure this application's builder or GO-MDMC produces; see this
+    // structure this application's builder or either Monte Carlo module
+    // produces; see this
     // struct's own doc comment.
     for (const GroupCluster& cluster : clusters) {
         if (cluster.kind != Group::Epoxide && cluster.kind != Group::Hydroxyl)

@@ -472,13 +472,21 @@ private:
     QWidget* buildVaspGroup(QWidget* parent);
     /// Show the ionic-relaxation row only for the tasks that have ionic steps.
     void updateVaspRows();
-    /// (Re)build vaspHubbardTable_'s rows from calculatorElements() — one
+    /// (Re)build vaspHubbardTable_'s rows from suggestionElements() — one
     /// FIXED row per structure species (see the table's own doc comment for
     /// why rows are never user-add/removable here, unlike GPAW's dialog).
-    /// Called once, from buildVaspGroup() itself; calculatorElements() is
-    /// stable for the wizard's whole lifetime (the structure a wizard opens
-    /// on is fixed at construction), so there is no later trigger that
-    /// would need to call this again.
+    ///
+    /// Called from buildVaspGroup() AND from setStructureElements(), and it
+    /// reads suggestionElements() rather than calculatorElements(), because
+    /// the two together are what a wizard with no structure of its own needs:
+    /// its override returns {}, the host supplies the chemistry after
+    /// construction, and reading only the override built a table with zero
+    /// rows — VASP DFT+U with nowhere to enter U and J at all, which is
+    /// exactly what Single-Point shipped with.
+    ///
+    /// IDEMPOTENT, and it has to be: a rebuild discards every U and J typed
+    /// so far. Same element list as the rows already carry -> returns having
+    /// touched nothing but the enabled state.
     void populateVaspHubbardTable();
     /// Raise LMAXMIX to 4 (any enabled row's l == 2) or 6 (l == 3), the
     /// LARGER if both are present — the VASP wiki's own DFT+U guidance —

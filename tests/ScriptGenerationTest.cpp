@@ -12,7 +12,7 @@
 // against a real ASE install (see the accompanying check in the repo docs).
 
 #include "core/AseScriptGenerator.hpp"
-#include "core/GrapheneOxideMdmcScriptGenerator.hpp"
+#include "core/GrapheneOxideMcmdScriptGenerator.hpp"
 #include "core/BornChargesScriptGenerator.hpp"
 #include "core/PiezoelectricScriptGenerator.hpp"
 #include "core/ElasticScriptGenerator.hpp"
@@ -169,24 +169,24 @@ int main(int argc, char** argv)
         CalculatorConfig mace = maceConfig();
         mace.macePrecision = MacePrecision::Float32;
         mace.maceDevice = "mps";
-        // Graphene oxide MDMC: the longest generated script in the project
+        // Graphene oxide MCMD: the longest generated script in the project
         // and the one with the most Python of its own, so the lint matters
         // most here. Emitted for both ensembles - the NPT branch adds an
         // import and a different integrator, so one dump would leave half of
         // it unchecked.
         {
-            GrapheneOxideMdmcConfig mdmc;
-            mdmc.calculator.calculator = CalculatorKind::Mace;
-            dumpText("graphene_oxide_mdmc_nvt.py",
-                 GrapheneOxideMdmcScriptGenerator::generate(mdmc));
-            mdmc.constantPressure = true;
-            mdmc.pressureGpa = 0.1;
-            dumpText("graphene_oxide_mdmc_npt.py",
-                 GrapheneOxideMdmcScriptGenerator::generate(mdmc));
+            GrapheneOxideMcmdConfig mcmd;
+            mcmd.calculator.calculator = CalculatorKind::Mace;
+            dumpText("graphene_oxide_mcmd_nvt.py",
+                 GrapheneOxideMcmdScriptGenerator::generate(mcmd));
+            mcmd.constantPressure = true;
+            mcmd.pressureGpa = 0.1;
+            dumpText("graphene_oxide_mcmd_npt.py",
+                 GrapheneOxideMcmdScriptGenerator::generate(mcmd));
         }
 
         // Hydroxyl antiposition, on a plain Lennard-Jones calculator: ships
-        // with ASE itself, so graphene_oxide_mdmc_antiposition_test.py can
+        // with ASE itself, so graphene_oxide_mcmd_antiposition_test.py can
         // RUN this one for real (no MACE/GPAW/xTB needed) and check, on
         // every frame of an actual trajectory, that no antiposition pair
         // was ever split. mdStepsPerCycle=0 turns off the MD burst entirely
@@ -199,10 +199,10 @@ int main(int argc, char** argv)
         //
         // Its OFF twin is identical in every other setting, so the two
         // differ ONLY in hydroxyl_antiposition — the one variable
-        // graphene_oxide_mdmc_antiposition_test.py's ON/OFF contrast run
+        // graphene_oxide_mcmd_antiposition_test.py's ON/OFF contrast run
         // needs isolated.
         {
-            GrapheneOxideMdmcConfig antipos;
+            GrapheneOxideMcmdConfig antipos;
             antipos.calculator.calculator = CalculatorKind::LennardJones;
             antipos.hydroxylAntiposition = true;
             antipos.mdStepsPerCycle = 0;
@@ -214,21 +214,21 @@ int main(int argc, char** argv)
             antipos.cycles = 300;
             antipos.snapshotInterval = 1;
             antipos.viewportEveryCycles = 0;
-            dumpText("graphene_oxide_mdmc_antiposition.py",
-                 GrapheneOxideMdmcScriptGenerator::generate(antipos));
+            dumpText("graphene_oxide_mcmd_antiposition.py",
+                 GrapheneOxideMcmdScriptGenerator::generate(antipos));
             antipos.hydroxylAntiposition = false;
-            dumpText("graphene_oxide_mdmc_off.py",
-                 GrapheneOxideMdmcScriptGenerator::generate(antipos));
+            dumpText("graphene_oxide_mcmd_off.py",
+                 GrapheneOxideMcmdScriptGenerator::generate(antipos));
         }
 
-        // The protocol on a REAL potential: graphene_oxide_mdmc_mace_test.py
+        // The protocol on a REAL potential: graphene_oxide_mcmd_mace_test.py
         // runs this one under MACE-MP-0 small (self-skipping without it),
         // with the dynamics ON — equilibration, per-cycle bursts, NPT with
         // the in-plane-only barostat — against a sheet carrying the planted
         // epoxide/hydroxyl clash that killed the first real run. Short
         // (150 + 12 × 50 steps) because every step is a MACE evaluation.
         {
-            GrapheneOxideMdmcConfig real;
+            GrapheneOxideMcmdConfig real;
             real.calculator.calculator = CalculatorKind::Mace;
             real.calculator.maceSize = "small";
             real.calculator.maceDevice = "cpu";
@@ -274,8 +274,27 @@ int main(int argc, char** argv)
             real.pressureGpa = 0.0;
             real.seed = 7;
             real.viewportEveryCycles = 0;
-            dumpText("graphene_oxide_mdmc_mace.py",
-                 GrapheneOxideMdmcScriptGenerator::generate(real));
+            dumpText("graphene_oxide_mcmd_mace.py",
+                 GrapheneOxideMcmdScriptGenerator::generate(real));
+
+            // GO/MC-Opt: the same run, relaxed to minima instead. Dumped from
+            // the SAME config with one field changed, so the two scripts are
+            // comparable and the external py_compile pass covers both
+            // branches of every `if relax_to_minimum` in the generator.
+            GrapheneOxideMcmdConfig opt = real;
+            opt.relaxation = GoMcRelaxation::Optimization;
+            opt.optimizer = GoMcOptimizer::Bfgs;
+            opt.fmax = 0.05;
+            opt.optimizerMaxSteps = 60;
+            dumpText("graphene_oxide_mc_opt.py",
+                 GrapheneOxideMcmdScriptGenerator::generate(opt));
+
+            GrapheneOxideMcmdConfig optFire = real;
+            optFire.relaxation = GoMcRelaxation::Optimization;
+            optFire.optimizer = GoMcOptimizer::Fire;
+            optFire.relaxCell = true;
+            dumpText("graphene_oxide_mc_opt_fire.py",
+                 GrapheneOxideMcmdScriptGenerator::generate(optFire));
         }
 
         // 2D Bands, one dump per engine — the whole point of Task 3's
@@ -7007,16 +7026,16 @@ int main(int argc, char** argv)
                       "crystal");
     }
 
-    std::printf("Graphene Oxide MDMC — equilibration, clearance, reversion:\n");
+    std::printf("Graphene Oxide MCMD — equilibration, clearance, reversion:\n");
     {
         // The protocol that made a real MACE-MP run die before its first
         // cycle (tens of eV of as-built strain released in one 20-step
         // burst) and the bookkeeping that quietly corrupted the one that
         // survived (a barostat-scaled cell never reverted). Every item here
         // is a separate defect; each is pinned by the text that fixes it.
-        GrapheneOxideMdmcConfig cfg;
+        GrapheneOxideMcmdConfig cfg;
         cfg.calculator = maceConfig();
-        const std::string script = GrapheneOxideMdmcScriptGenerator::generate(cfg);
+        const std::string script = GrapheneOxideMcmdScriptGenerator::generate(cfg);
         checkContains(script, "equilibration_steps = 10",
                       "an initial equilibration stage exists, 10 steps by "
                       "default");
@@ -7136,25 +7155,25 @@ int main(int argc, char** argv)
                   && equilibrateAt < loopAt,
               "the equilibration runs before the first cycle");
 
-        GrapheneOxideMdmcConfig none = cfg;
+        GrapheneOxideMcmdConfig none = cfg;
         none.equilibrationSteps = 0;
-        checkContains(GrapheneOxideMdmcScriptGenerator::generate(none),
+        checkContains(GrapheneOxideMcmdScriptGenerator::generate(none),
                       "equilibration_steps = 0",
                       "and zero skips the stage (what the Lennard-Jones "
                       "harness tests run with)");
     }
 
-    std::printf("Graphene Oxide MDMC — the live run counters:\n");
+    std::printf("Graphene Oxide MCMD — the live run counters:\n");
     {
-        // The counters the Results panel's "MDMC Summary" shows. The whole
+        // The counters the Results panel's "MCMD Summary" shows. The whole
         // requirement is that a DISPLAYED number equals what a reader of the
         // two structure files would count for themselves, and that none of
         // them is ever negative — so what is pinned here is (a) where they
         // are counted, (b) that they are counts and not indices, and (c) that
         // every per-cycle metric carries them.
-        GrapheneOxideMdmcConfig cfg;
+        GrapheneOxideMcmdConfig cfg;
         cfg.calculator = maceConfig();
-        const std::string script = GrapheneOxideMdmcScriptGenerator::generate(cfg);
+        const std::string script = GrapheneOxideMcmdScriptGenerator::generate(cfg);
 
         checkContains(script, "import time\n",
                       "elapsed time needs a clock");
@@ -7175,8 +7194,11 @@ int main(int argc, char** argv)
         // files.
         checkContains(script,
                       "frames_written = {\"equilibration\": 0, \"md\": 0, "
-                      "\"mc_trial\": 0, \"accepted\": 0}",
-                      "the per-kind frame counters exist, all starting at 0");
+                      "\"mc_trial\": 0, \"accepted\": 0,\n"
+                      "                  \"failed\": 0}",
+                      "the per-kind frame counters exist, all starting at 0 — "
+                      "\"failed\" among them, for the cycle whose energy "
+                      "evaluation threw and which still owes one frame");
         checkContains(script,
                       "    write(path, frames, format=\"extxyz\", append=True)\n",
                       "append_frames still writes through ase");
@@ -7184,7 +7206,8 @@ int main(int argc, char** argv)
             const auto writeAt =
                 script.find("    write(path, frames, format=\"extxyz\", "
                             "append=True)");
-            const auto countAt = script.find("        frames_written[key] += 1");
+            const auto countAt = script.find(
+                "        frames_written[key] = frames_written.get(key, 0) + 1");
             check(writeAt != std::string::npos && countAt != std::string::npos
                       && writeAt < countAt,
                   "and the counters are incremented AFTER the write, not "
@@ -7199,28 +7222,147 @@ int main(int argc, char** argv)
 
         checkContains(script, "def _run_fields(cycle):",
                       "the run counters travel as one kwargs block");
-        checkContains(script, "        \"mdmc_cycles_done\": cycle + 1,",
+        checkContains(script, "        \"mcmd_cycles_done\": cycle + 1,",
                       "cycles done is a COUNT of completed cycles — cycle + 1 "
                       "off the 0-based loop index, so it reads 1 after the "
                       "first cycle and never -1 before it");
-        checkNotContains(script, "\"mdmc_cycles_done\": cycle,",
+        checkNotContains(script, "\"mcmd_cycles_done\": cycle,",
                          "not the raw index, which would report 0 completed "
                          "cycles after the first one finished");
-        checkContains(script, "        \"mdmc_cycles_total\": mc_cycles,",
+        checkContains(script, "        \"mcmd_cycles_total\": mc_cycles,",
                       "against the total, so \"done / total\" cannot exceed 1");
+        // steps_run, NOT frames_written["md"]: run_md() holds its burst's LAST
+        // frame back for record_burst_final(), so a 5-step burst leaves four
+        // "md" frames and one final one. "MD steps done" is a count of work
+        // and has to stay one — reading it off the md frames would report 4
+        // steps per cycle for a 5-step burst.
         checkContains(script,
-                      "        \"mdmc_md_steps_done\": frames_written[\"md\"],",
-                      "MD steps done is read off the frames on disk, not "
-                      "off cycle x md_steps");
+                      "        \"mcmd_md_steps_done\": steps_run[\"md\"],",
+                      "MD steps done is a count of integrator steps taken, "
+                      "which is no longer the same as the md frames on disk");
+        checkContains(script, "        steps_run[\"md\"] += 1\n",
+                      "counted in run_md, one per completed step");
+        checkNotContains(script,
+                         "\"mcmd_md_steps_done\": frames_written[\"md\"]",
+                         "and never off the frame count, which now undercounts "
+                         "by one per cycle");
+        // THE RECORD IS EXACTLY AS LONG AS THE RUN. run_md() used to write a
+        // frame after every burst step INCLUDING the last, and the cycle then
+        // wrote that same configuration again under phase="mc_trial" — a
+        // 10-equilibration / 200-cycle / 5-step run held 1113 frames instead
+        // of 1010, every extra one a coordinate-for-coordinate copy of the
+        // frame before it. The burst's last frame is now held back and written
+        // once, by record_burst_final(), carrying the verdict.
+        // GO/MC-Opt's initial relaxation REPAIRS what it breaks, rather than
+        // aborting the run. It shipped without this on a wrong assumption —
+        // "an optimizer walks downhill, so it does not tear groups off the way
+        // a thermal shock does". Measured on a real 119-atom build under
+        // MatterSim, two strained epoxides opened during the initial
+        // relaxation (C–O 1.44 -> 2.36 A, the surviving C–O tightening to
+        // 1.42 A and the freed carbon returning to sp2 at 1.39 A), and the
+        // whole run exited 1 on a perfectly ordinary build.
+        {
+            const auto optDump = GrapheneOxideMcmdScriptGenerator::generate(
+                [] {
+                    GrapheneOxideMcmdConfig config;
+                    config.relaxation = GoMcRelaxation::Optimization;
+                    return config;
+                }());
+            checkContains(optDump, "    if relax_to_minimum:\n"
+                                   "        max_relocations = max(20, 3 * len(groups))",
+                          "the optimization equilibration has a relocation "
+                          "budget, like the MD one");
+            checkContains(optDump,
+                          "                status, new_hosts = relocate(index)",
+                          "and relocates a group that came apart instead of "
+                          "aborting the run");
+            checkContains(optDump,
+                          "came \"\n                    f\"apart during the "
+                          "relaxation - relocated to {new_hosts}",
+                          "saying so, in the relaxation's own words rather "
+                          "than the dynamics'");
+            // Every round's last frame is written where it happens, or the
+            // record ends up one frame short per round and the invariant the
+            // summary states stops holding.
+            checkContains(optDump,
+                          "            append_frames(all_structures_path, "
+                          "[frame_snapshot(\n"
+                          "                system, phase=\"equilibration\", "
+                          "mc_cycle=0,\n"
+                          "                md_step_in_cycle=total_steps + "
+                          "max(0, taken - 1),",
+                          "with each round's final frame written as it "
+                          "happens, so one frame per optimizer step still "
+                          "holds across a multi-round equilibration");
+            checkNotContains(optDump,
+                             "The temperature or the step count is too high "
+                             "for this structure - nothing sampled from here "
+                             "would be graphene\n"
+                             "                   oxide.\")\n"
+                             "    raise SystemExit(1)\n\nif relax_to_minimum",
+                             "and no temperature advice on a path that has no "
+                             "temperature");
+        }
+
         checkContains(script,
-                      "        \"mdmc_equilibration_steps_done\": "
+                      "        if step + 1 >= steps:\n"
+                      "            break",
+                      "run_md holds the burst's LAST frame back");
+        checkContains(script, "def record_burst_final(system, cycle, phase, "
+                              "accepted, total_energy,",
+                      "and one helper writes it, exactly once per cycle");
+        checkContains(script,
+                      "    \"all_structures_frames_expected\":\n"
+                      "        (steps_run[\"relax\"] if relax_to_minimum "
+                      "else TOTAL_EVALUATIONS),",
+                      "the summary states the length the run implies — "
+                      "TOTAL_EVALUATIONS for a fixed-length burst, and the "
+                      "optimizer steps actually taken for a relaxation, whose "
+                      "length is not known before it is paid for");
+        // Summed over the dict, not over a hand-written list of phases: the
+        // "relax" phase was added with GO/MC-Opt and was missing from such a
+        // list, which reported 55 frames for a file holding 438.
+        checkContains(script,
+                      "    \"all_structures_frames\": "
+                      "sum(frames_written[key] for key in frames_written\n"
+                      "                                 if key != "
+                      "\"accepted\"),",
+                      "and counts every phase there is, rather than the ones "
+                      "that existed when the line was written");
+        {
+            // Every branch of the cycle loop must write that one frame, or a
+            // cycle that took an unusual exit leaves a hole. Five exits:
+            // the calculator threw, the chemistry broke, no move was
+            // generated, Metropolis accepted, Metropolis refused.
+            std::size_t at = 0;
+            int calls = 0;
+            while ((at = script.find("record_burst_final(atoms, cycle,", at))
+                   != std::string::npos) {
+                ++calls;
+                at += 1;
+            }
+            check(calls == 5,
+                  "record_burst_final is called on every one of the five exits "
+                  "of the cycle loop — the calculator threw, the chemistry "
+                  "broke, no move was generated, Metropolis accepted, "
+                  "Metropolis refused (got "
+                      + std::to_string(calls) + ")");
+        }
+        checkNotContains(script,
+                         "record_structure(all_structures_path, atoms, "
+                         "phase=\"mc_trial\"",
+                         "and nothing writes a separate mc_trial frame beside "
+                         "the burst's last one any more");
+
+        checkContains(script,
+                      "        \"mcmd_equilibration_steps_done\": "
                       "frames_written[\"equilibration\"],",
                       "as are the retained equilibration steps");
         checkContains(script,
-                      "        \"mdmc_accepted\": frames_written[\"accepted\"],",
+                      "        \"mcmd_accepted\": frames_written[\"accepted\"],",
                       "and the accepted count is the number of frames in "
                       "accepted_structures.extxyz");
-        checkContains(script, "        \"mdmc_elapsed_s\": _elapsed_seconds(),",
+        checkContains(script, "        \"mcmd_elapsed_s\": _elapsed_seconds(),",
                       "with the run's elapsed time alongside them");
 
         // Every branch of the MC loop reports. A branch that emitted a metric
@@ -7244,22 +7386,22 @@ int main(int argc, char** argv)
               "and every one of them carries the run counters");
     }
 
-    std::printf("Graphene Oxide MDMC — hydroxyl antiposition:\n");
+    std::printf("Graphene Oxide MCMD — hydroxyl antiposition:\n");
     {
         // ON is the default now: the setting became a real, checked-by-
-        // default control on the wizard's MDMC page, and the struct default
+        // default control on the wizard's MCMD page, and the struct default
         // was flipped to match it. Turning it OFF must still reproduce
         // exactly what this script generated before the antiposition move
         // existed.
-        GrapheneOxideMdmcConfig defaulted;
+        GrapheneOxideMcmdConfig defaulted;
         defaulted.calculator = maceConfig();
-        checkContains(GrapheneOxideMdmcScriptGenerator::generate(defaulted),
+        checkContains(GrapheneOxideMcmdScriptGenerator::generate(defaulted),
                       "hydroxyl_antiposition = True",
                       "on by default");
 
-        GrapheneOxideMdmcConfig off = defaulted;
+        GrapheneOxideMcmdConfig off = defaulted;
         off.hydroxylAntiposition = false;
-        const std::string offScript = GrapheneOxideMdmcScriptGenerator::generate(off);
+        const std::string offScript = GrapheneOxideMcmdScriptGenerator::generate(off);
         checkContains(offScript, "hydroxyl_antiposition = False",
                       "and turning it off reaches the script");
         checkContains(offScript, "if hydroxyl_antiposition:",
@@ -7268,9 +7410,9 @@ int main(int argc, char** argv)
                       "and the ordinary single-hydroxyl collection is "
                       "unconditional, exactly as before this option existed");
 
-        GrapheneOxideMdmcConfig on = off;
+        GrapheneOxideMcmdConfig on = off;
         on.hydroxylAntiposition = true;
-        const std::string script = GrapheneOxideMdmcScriptGenerator::generate(on);
+        const std::string script = GrapheneOxideMcmdScriptGenerator::generate(on);
         checkContains(script, "hydroxyl_antiposition = True",
                       "the flag reaches the script");
 

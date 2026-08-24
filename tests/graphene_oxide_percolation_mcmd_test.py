@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Ring/percolation analysis against a REAL MDMC trajectory, end to end.
+"""Ring/percolation analysis against a REAL MCMD trajectory, end to end.
 
 tests/GrapheneOxidePercolationTest.cpp validates the ring-finding and
 percolation ALGORITHM against closed forms (Euler's formula on a torus, the
 nanoflake ring-count formula, a hand-edited one-direction stripe) — none of
 it against a trajectory an actual simulation produced. This test closes that
-gap the way graphene_oxide_mdmc_antiposition_test.py closes the analogous
-one for hydroxyl antiposition: run the GENERATED MDMC script for real (plain
+gap the way graphene_oxide_mcmd_antiposition_test.py closes the analogous
+one for hydroxyl antiposition: run the GENERATED MCMD script for real (plain
 Lennard-Jones, no MACE/GPAW/xTB needed — ships with ASE itself), then feed
 the resulting trajectory to the native calango-ring-percolation-analyze CLI
 (core::analyzeRingPercolationTrajectory(), the same function the Analysis
@@ -14,7 +14,7 @@ dialog's trajectory scope calls) and check two CLOSED-FORM invariants that
 hold regardless of which specific moves the sampler happened to accept:
 
   * **ring count is exactly N/2 on every frame** (Euler's formula on a
-    torus, N = 200 framework carbons here) — MDMC relocates existing
+    torus, N = 200 framework carbons here) — MCMD relocates existing
     functional groups, it never adds or removes a carbon or a C-C bond, so
     the carbon lattice's own topology cannot change frame to frame even as
     which rings are "intact" does.
@@ -30,7 +30,7 @@ Self-skips (exit 0) when no interpreter has `ase` — set CALANGO_ASE_PYTHON,
 or the test looks through the Conda environments the same way the
 application does.
 
-Usage:  graphene_oxide_percolation_mdmc_test.py <calango_script_test> \\
+Usage:  graphene_oxide_percolation_mcmd_test.py <calango_script_test> \\
             <calango-ring-percolation-analyze>
 """
 import json
@@ -93,7 +93,7 @@ def find_ase_python():
 
 
 # Builds a 10x10 periodic graphene supercell (200 framework carbons, same
-# size graphene_oxide_mdmc_antiposition_test.py uses) and hand-places
+# size graphene_oxide_mcmd_antiposition_test.py uses) and hand-places
 # N_EPOXIDES bridging oxygens at well-separated bonds — same geometric
 # convention (1.44 A projected C-O reach) as that fixture, minus the
 # antiposition-pair bookkeeping this test has no use for.
@@ -160,7 +160,7 @@ def run_script(python, script, job):
 def main():
     if len(sys.argv) < 3:
         raise SystemExit(
-            "usage: graphene_oxide_percolation_mdmc_test.py "
+            "usage: graphene_oxide_percolation_mcmd_test.py "
             "<calango_script_test> <calango-ring-percolation-analyze>")
     scriptTestBinary = sys.argv[1]
     analyzeBinary = sys.argv[2]
@@ -168,7 +168,7 @@ def main():
     python = find_ase_python()
     if python is None:
         print("no interpreter with ase found - skipping the ring/percolation "
-              "MDMC trajectory test\n(set CALANGO_ASE_PYTHON, or install ase "
+              "MCMD trajectory test\n(set CALANGO_ASE_PYTHON, or install ase "
               "in a Conda environment this machine can find)")
         return 0
     print(f"ase interpreter: {python}\n")
@@ -194,18 +194,18 @@ def main():
         expected_rings = int(build.stdout.split("CARBONS=")[1].split()[0]) // 2
         expected_sp2_fraction = (200 - 2 * N_EPOXIDES) / 200
 
-        print("Running the generated MDMC script (plain Lennard-Jones, "
+        print("Running the generated MCMD script (plain Lennard-Jones, "
               "no MD burst) for real:")
         job = tmp / "job"
         job.mkdir()
         shutil.copy(structure, job / "structure.extxyz")
-        done = run_script(python, scripts / "graphene_oxide_mdmc_off.py", job)
+        done = run_script(python, scripts / "graphene_oxide_mcmd_off.py", job)
         check(done.returncode == 0,
-              f"the MDMC run completed (exit {done.returncode}): "
+              f"the MCMD run completed (exit {done.returncode}): "
               f"{done.stderr.strip()[-300:] if done.returncode else 'ok'}")
         check("CALANGO_DONE" in done.stdout, "and reported completion")
 
-        summary_path = job / "mdmc_summary.json"
+        summary_path = job / "mcmd_summary.json"
         trajectory_path = job / "accepted_structures.extxyz"
         if done.returncode == 0 and summary_path.is_file():
             summary = json.loads(summary_path.read_text())
@@ -235,7 +235,7 @@ def main():
 
         check(all(f["rings"] == expected_rings for f in frames),
               f"ring count is exactly N/2 = {expected_rings} on EVERY frame "
-              f"(Euler's formula on a torus) — MDMC relocates functional "
+              f"(Euler's formula on a torus) — MCMD relocates functional "
               f"groups, it never touches the carbon lattice itself "
               f"({sorted(set(f['rings'] for f in frames))} count(s) seen)")
         check(all(abs(f["sp2_fraction"] - expected_sp2_fraction) < 1e-9
@@ -261,7 +261,7 @@ def main():
         print(f"  info {percolating_frames}/{len(frames)} frames percolate "
               f"at least one axis")
 
-    print(failures == 0 and "\nAll ring-percolation MDMC checks passed."
+    print(failures == 0 and "\nAll ring-percolation MCMD checks passed."
           or f"\n{failures} check(s) FAILED.")
     return 0 if failures == 0 else 1
 

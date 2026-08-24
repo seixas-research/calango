@@ -1,5 +1,8 @@
 #include "gui/OrchestrationWindow.hpp"
 
+#include "core/GrapheneOxideBuilder.hpp"
+#include "gui/GrapheneOxideWizard.hpp"
+
 #include "core/AseScriptGenerator.hpp"
 #include "core/PhononScriptGenerator.hpp"
 #include "core/Structure.hpp"
@@ -323,6 +326,16 @@ QString orchestrationTaskSlug(OrchestrationTask task)
         return QStringLiteral("dump_densities");
     case OrchestrationTask::SqsGenerator:
         return QStringLiteral("sqs_generator");
+    case OrchestrationTask::GrapheneOxideBuild:
+        return QStringLiteral("graphene_oxide_build");
+    // "mcmd", not "mdmc". The module was renamed before these nodes existed,
+    // so no saved document has ever carried the old spelling — and from here
+    // on this key is frozen whatever the display name does, exactly like
+    // "dump" survived Dump becoming "Dump Trajectory".
+    case OrchestrationTask::GrapheneOxideMcmd:
+        return QStringLiteral("graphene_oxide_mcmd");
+    case OrchestrationTask::GrapheneOxideMcOpt:
+        return QStringLiteral("graphene_oxide_mc_opt");
     case OrchestrationTask::ClusterExpansionFit:
         return QStringLiteral("cluster_expansion_fit");
     case OrchestrationTask::CvmEntropy:
@@ -391,6 +404,12 @@ OrchestrationFamily orchestrationTaskFamily(OrchestrationTask task)
     case OrchestrationTask::Dump:
     case OrchestrationTask::DumpDensities:
     case OrchestrationTask::SqsGenerator:
+    // A structure SOURCE that runs in process: the builder is native C++, so
+    // there is no interpreter, no calculator and no launch command — which is
+    // what this family actually decides. It takes no input for the same
+    // reason Container does not: it generates its sheet from its own
+    // configuration rather than transforming one that arrives.
+    case OrchestrationTask::GrapheneOxideBuild:
     case OrchestrationTask::ClusterExpansionFit:
     case OrchestrationTask::CvmEntropy:
     // Both run in process against data a parent already produced, so they
@@ -465,6 +484,12 @@ QString orchestrationTaskDisplayName(OrchestrationTask task)
         return QObject::tr("Dump Charge Densities");
     case OrchestrationTask::SqsGenerator:
         return QObject::tr("SQS Generator");
+    case OrchestrationTask::GrapheneOxideBuild:
+        return QObject::tr("Graphene Oxide Builder");
+    case OrchestrationTask::GrapheneOxideMcmd:
+        return QObject::tr("GO/MCMD");
+    case OrchestrationTask::GrapheneOxideMcOpt:
+        return QObject::tr("GO/MC-Opt");
     case OrchestrationTask::ClusterExpansionFit:
         return QObject::tr("Cluster Expansion (ECI Fitter)");
     case OrchestrationTask::CvmEntropy:
@@ -519,6 +544,9 @@ QString orchestrationTaskShortName(OrchestrationTask task)
     case OrchestrationTask::Dump:                 return QObject::tr("Dump");
     case OrchestrationTask::DumpDensities:        return QObject::tr("Densities");
     case OrchestrationTask::SqsGenerator:         return QObject::tr("SQS");
+    case OrchestrationTask::GrapheneOxideBuild:   return QObject::tr("GO Build");
+    case OrchestrationTask::GrapheneOxideMcmd:    return QObject::tr("GO/MCMD");
+    case OrchestrationTask::GrapheneOxideMcOpt:   return QObject::tr("MC-Opt");
     case OrchestrationTask::ClusterExpansionFit:  return QObject::tr("ECI fit");
     case OrchestrationTask::CvmEntropy:           return QObject::tr("CVM");
     case OrchestrationTask::KkrCpa:               return QObject::tr("CPA");
@@ -558,6 +586,12 @@ QList<OrchestrationTask> orchestrationTasks()
             // the wizard's own Stage 1 structure list), so there is no
             // natural "usual upstream node" to place it beside either.
             OrchestrationTask::Dsim,
+            // The two graphene-oxide samplers, in the order a pipeline uses
+            // them and directly after one another: they answer the same
+            // question under different relaxation, and a user choosing one
+            // should see the other in the same glance.
+            OrchestrationTask::GrapheneOxideMcmd,
+            OrchestrationTask::GrapheneOxideMcOpt,
             // Transform. The alloy chain is listed in pipeline order — SQS,
             // then the two nodes that consume what the simulations made of it
             // — because the Add Process list is where a user discovers that
@@ -573,6 +607,11 @@ QList<OrchestrationTask> orchestrationTasks()
             OrchestrationTask::DefectGenerator,
             OrchestrationTask::RandomNoiseSetup,
             OrchestrationTask::SqsGenerator,
+            // The source the two samplers above consume. Listed among the
+            // transforms because that is its family, and beside the alloy
+            // chain rather than inside it: like Container it produces
+            // structures from its own configuration and needs no parent.
+            OrchestrationTask::GrapheneOxideBuild,
             OrchestrationTask::TdbGenerator,
             OrchestrationTask::ClusterExpansionFit,
             OrchestrationTask::CvmEntropy,
@@ -689,6 +728,14 @@ QList<OrchestrationInputSlot> orchestrationInputSlots(OrchestrationTask task)
     case OrchestrationTask::SinglePoint:
     case OrchestrationTask::MolecularDynamics:
     case OrchestrationTask::Phonon:
+    // Both graphene-oxide samplers take their Build through the ordinary
+    // one-parent GEOMETRY hand-off, not through a staged result slot: what
+    // they consume is a structure, and the classification they need travels
+    // on it as the per-atom fields the Build contract defines.
+    case OrchestrationTask::GrapheneOxideMcmd:
+    case OrchestrationTask::GrapheneOxideMcOpt:
+    // The builder consumes nothing at all — it is a source.
+    case OrchestrationTask::GrapheneOxideBuild:
     // Thermodynamic integration reads a STRUCTURE like the simulations above
     // it — the reference system is built from that structure's own positions
     // and masses, not from an upstream run — so it stages nothing.
@@ -937,6 +984,13 @@ void OrchestrationNodeItem::setBatchItems(const QList<BatchItem>& items)
     update();
 }
 
+void OrchestrationNodeItem::setGrapheneOxideBuild(
+    const GrapheneOxideBuildSpec& spec)
+{
+    grapheneOxideBuild_ = spec;
+    update();
+}
+
 void OrchestrationNodeItem::setSupercell(const SupercellSpec& spec)
 {
     supercell_ = spec;
@@ -1042,6 +1096,11 @@ QString OrchestrationNodeItem::configurationProblem() const
         if (!supercell_.isValid())
             return QObject::tr("%1 has an invalid repetition (%2).")
                 .arg(title_, supercell_.describe());
+        return QString();
+    case OrchestrationTask::GrapheneOxideBuild:
+        if (!grapheneOxideBuild_.isValid())
+            return QObject::tr("%1 would build an empty cell (%2).")
+                .arg(title_, grapheneOxideBuild_.describe());
         return QString();
     case OrchestrationTask::TdbGenerator:
         if (!tdb_.isValid())
@@ -1309,6 +1368,10 @@ void OrchestrationNodeItem::paint(QPainter* painter,
         }
         break;
     }
+    case OrchestrationTask::GrapheneOxideBuild:
+        primary = grapheneOxideBuild_.describe();
+        secondary = QObject::tr("in process, no calculator");
+        break;
     case OrchestrationTask::Supercell:
         primary = QObject::tr("Repeat: %1").arg(supercell_.describe());
         secondary = supercell_.isIdentity()
@@ -4217,6 +4280,15 @@ OrchestrationWindow::readStructuresFromFile(const QString& path, QString* error)
     return items;
 }
 
+void OrchestrationWindow::setNodeGrapheneOxideBuild(OrchestrationNodeItem* node,
+                                           const GrapheneOxideBuildSpec& spec)
+{
+    if (!node)
+        return;
+    node->setGrapheneOxideBuild(spec);
+    invalidateFrom(node);
+}
+
 void OrchestrationWindow::setNodeSupercell(OrchestrationNodeItem* node,
                                            const SupercellSpec& spec)
 {
@@ -4446,6 +4518,19 @@ void OrchestrationWindow::openNodeWizard(OrchestrationNodeItem* node)
             SupercellSpec spec = node->supercell();
             if (editSupercell(this, &spec))
                 setNodeSupercell(node, spec);
+            break;
+        }
+        case OrchestrationTask::GrapheneOxideBuild: {
+            // The SAME wizard the menu entry opens, seeded with the node's
+            // stored configuration — not a second, canvas-only editor. What
+            // the wizard decides a Build is stays decided in one place.
+            GrapheneOxideWizard wizard(this);
+            wizard.setConfig(node->grapheneOxideBuild().config);
+            if (wizard.exec() == QDialog::Accepted) {
+                GrapheneOxideBuildSpec spec;
+                spec.config = wizard.config();
+                setNodeGrapheneOxideBuild(node, spec);
+            }
             break;
         }
         case OrchestrationTask::RandomNoiseSetup: {
@@ -5290,6 +5375,9 @@ OrchestrationWindow::beginProvenance(OrchestrationNodeItem* node,
     }
     case OrchestrationTask::Supercell:
         record.parameters = node->supercell().describe();
+        break;
+    case OrchestrationTask::GrapheneOxideBuild:
+        record.parameters = node->grapheneOxideBuild().describe();
         break;
     case OrchestrationTask::DefectGenerator:
         record.parameters = node->defectSpec().describe();
@@ -6501,6 +6589,24 @@ bool OrchestrationWindow::runTransform(OrchestrationNodeItem* node,
         case OrchestrationTask::Supercell:
             result = applySupercell(incoming, node->supercell(), &problem);
             break;
+        case OrchestrationTask::GrapheneOxideBuild: {
+            // A SOURCE: `incoming` is ignored entirely. The builder generates
+            // its own sheet or flake from the node's configuration, exactly as
+            // the menu entry does — GrapheneOxideBuilder::build() is the one
+            // implementation, and the Build contract's per-atom fields travel
+            // out on the structure it returns, which is what makes the two
+            // samplers downstream able to read it.
+            core::Structure built = core::GrapheneOxideBuilder::build(
+                node->grapheneOxideBuild().config);
+            if (built.empty()) {
+                problem = QObject::tr(
+                    "The Graphene Oxide Builder produced no atoms for %1.")
+                              .arg(node->grapheneOxideBuild().describe());
+            } else {
+                result = std::move(built);
+            }
+            break;
+        }
         case OrchestrationTask::SqsGenerator: {
             SqsGeneratorOutput sqs;
             if (runSqsGeneration(incoming, node->sqsGenerator(),

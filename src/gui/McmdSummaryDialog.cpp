@@ -1,4 +1,4 @@
-#include "gui/MdmcSummaryDialog.hpp"
+#include "gui/McmdSummaryDialog.hpp"
 
 #include <QDialogButtonBox>
 #include <QFile>
@@ -14,10 +14,10 @@
 
 namespace calango::gui {
 
-MdmcSummaryDialog::MdmcSummaryDialog(QWidget* parent)
+McmdSummaryDialog::McmdSummaryDialog(QWidget* parent)
     : QDialog(parent)
 {
-    setWindowTitle(tr("MDMC Summary"));
+    setWindowTitle(tr("MCMD Summary"));
     // Modeless: the whole point is to keep the counters beside the viewport
     // while the run moves. Not WA_DeleteOnClose — MainWindow keeps the one
     // instance and re-shows it, so closing the window does not throw away
@@ -63,7 +63,7 @@ MdmcSummaryDialog::MdmcSummaryDialog(QWidget* parent)
     auto* exportButton =
         buttons->addButton(tr("Export CSV…"), QDialogButtonBox::ActionRole);
     connect(exportButton, &QPushButton::clicked, this,
-            &MdmcSummaryDialog::exportCsv);
+            &McmdSummaryDialog::exportCsv);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::close);
     layout->addWidget(buttons);
 
@@ -71,7 +71,7 @@ MdmcSummaryDialog::MdmcSummaryDialog(QWidget* parent)
     refreshSubtitle();
 }
 
-void MdmcSummaryDialog::bindProcess(int id, const QString& label, bool running)
+void McmdSummaryDialog::bindProcess(int id, const QString& label, bool running)
 {
     processId_ = id;
     processLabel_ = label;
@@ -85,7 +85,7 @@ void MdmcSummaryDialog::bindProcess(int id, const QString& label, bool running)
     refreshSubtitle();
 }
 
-void MdmcSummaryDialog::setRunning(bool running)
+void McmdSummaryDialog::setRunning(bool running)
 {
     if (running_ == running)
         return;
@@ -93,16 +93,16 @@ void MdmcSummaryDialog::setRunning(bool running)
     refreshSubtitle();
 }
 
-void MdmcSummaryDialog::refreshSubtitle()
+void McmdSummaryDialog::refreshSubtitle()
 {
     if (!subtitle_)
         return;
     if (processId_ < 0) {
-        subtitle_->setText(tr("No MDMC run selected."));
+        subtitle_->setText(tr("No MCMD run selected."));
         return;
     }
     const QString name =
-        processLabel_.isEmpty() ? tr("GO-MDMC") : processLabel_;
+        processLabel_.isEmpty() ? tr("GO/MCMD") : processLabel_;
     subtitle_->setText(running_
                            ? tr("Process #%1 — %2 · running, updating live")
                                  .arg(processId_)
@@ -112,16 +112,16 @@ void MdmcSummaryDialog::refreshSubtitle()
                                  .arg(name));
 }
 
-void MdmcSummaryDialog::exportCsv()
+void McmdSummaryDialog::exportCsv()
 {
     const QString path = QFileDialog::getSaveFileName(
-        this, tr("Export MDMC Summary"), QStringLiteral("mdmc_summary.csv"),
+        this, tr("Export MCMD Summary"), QStringLiteral("mcmd_summary.csv"),
         tr("CSV (*.csv)"));
     if (path.isEmpty())
         return;
     QFile file(path);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QMessageBox::critical(this, tr("Export MDMC Summary"),
+        QMessageBox::critical(this, tr("Export MCMD Summary"),
                               tr("Could not write %1").arg(path));
         return;
     }

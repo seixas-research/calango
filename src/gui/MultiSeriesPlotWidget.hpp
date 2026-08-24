@@ -14,7 +14,7 @@ namespace calango::gui {
 ///
 /// MetricPlotWidget is deliberately ONE series per instance (Energy,
 /// Temperature, Max Force, Pressure each get their own tab), and that shape
-/// does not fit "acceptance rate, broken out by move type": GO-MDMC's
+/// does not fit "acceptance rate, broken out by move type": GO/MCMD's
 /// per-move-class Metropolis acceptance is 1-6 series that only mean
 /// anything shown together, on the same step axis, so the reader can compare
 /// how fast one move kind's acceptance drifts against another's. This is a
@@ -22,7 +22,7 @@ namespace calango::gui {
 /// that widget's four existing, already-tested single-series tabs are
 /// untouched.
 ///
-/// A series absent from a given step's sample (GO-MDMC omits a move kind's
+/// A series absent from a given step's sample (GO/MCMD omits a move kind's
 /// rate entirely for any cycle before that kind was ever attempted — see
 /// `_calango_metric`'s "None fields are skipped" convention) simply has no
 /// point there; series are NOT required to share the same set of steps.

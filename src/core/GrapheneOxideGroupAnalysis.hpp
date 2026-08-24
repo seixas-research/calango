@@ -12,10 +12,11 @@ namespace calango::core {
 /// One functional-group census + geometric-distortion snapshot of a single
 /// Graphene Oxide Build or trajectory frame — the GO Functional Group
 /// Analysis module's core computation, run once per structure (a single
-/// build, or once per frame of a GO-MDMC trajectory).
+/// build, or once per frame of a GO/MCMD or GO/MC-Opt trajectory).
 ///
 /// Classification always comes fresh from core::GrapheneOxideBuilder::
-/// findFunctionalGroups() — the SAME classifier the builder, GO-MDMC and the
+/// findFunctionalGroups() — the SAME classifier the builder, both Monte
+/// Carlo modules (GO/MCMD, GO/MC-Opt) and the
 /// viewport's functional-group Cast already use — never from a persisted
 /// "go_group" field, even when one is present: the geometric distributions
 /// below (bond lengths, angles) have to be measured from THIS frame's actual
@@ -36,7 +37,8 @@ struct GrapheneOxideGroupAnalysis {
     /// Basal groups only (epoxide, hydroxyl): how many of their oxygens sit
     /// above vs. below the sheet — the sheet is assumed to lie in the xy
     /// plane, z the out-of-plane axis, which is true of every structure this
-    /// application's Graphene Oxide Builder or GO-MDMC produces (neither
+    /// application's Graphene Oxide Builder, GO/MCMD or GO/MC-Opt produces
+    /// (neither
     /// ever rotates or translates the sheet as a whole). Edge groups (which
     /// lie IN the plane) are not counted here at all.
     int abovePlane = 0;

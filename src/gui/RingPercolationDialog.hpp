@@ -18,7 +18,7 @@ namespace calango::gui {
 class LinePlotWidget;
 class ViewportWidget;
 
-/// Analysis -> "Benzene-Ring / sp2 Percolation Analysis": classifies every
+/// Modules -> Graphene Oxide -> "Aromatic Percolation Analysis": classifies every
 /// six-membered carbon ring intact/disrupted from GrapheneOxideBuilder's own
 /// functional-group labelling (core::GrapheneOxidePercolation — no second
 /// chemistry method), groups intact rings into connected sp2 domains, and

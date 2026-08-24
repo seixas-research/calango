@@ -74,6 +74,145 @@ SupercellSpec SupercellSpec::diagonal(int na, int nb, int nc)
     return spec;
 }
 
+// ---------------------------------------------------------------------------
+// GrapheneOxideBuildSpec
+// ---------------------------------------------------------------------------
+
+bool GrapheneOxideBuildSpec::isValid() const
+{
+    using Base = core::GrapheneOxideBuilder::Base;
+    if (config.base == Base::Nanoflake)
+        return config.flakeIndex >= 1;
+    return config.supercell[0] >= 1 && config.supercell[1] >= 1;
+}
+
+QString GrapheneOxideBuildSpec::describe() const
+{
+    using Base = core::GrapheneOxideBuilder::Base;
+    using Dosing = core::GrapheneOxideBuilder::Dosing;
+    const QString substrate = config.base == Base::Nanoflake
+        ? QObject::tr("flake m=%1").arg(config.flakeIndex)
+        : QObject::tr("%1 x %2 sheet")
+              .arg(config.supercell[0])
+              .arg(config.supercell[1]);
+    // The dose, named the way the wizard names it: the three dosing modes
+    // are three different questions, and quoting a coverage for a run that
+    // was dosed by C/O ratio would be quoting a number nobody set.
+    QString dose;
+    switch (config.dosing) {
+    case Dosing::ExplicitCoverage: {
+        double total = 0.0;
+        for (std::size_t g = 0; g < core::GrapheneOxideBuilder::kGroupCount; ++g)
+            total += config.coverage[g];
+        dose = QObject::tr("%1 % coverage").arg(total * 100.0, 0, 'f', 1);
+        break;
+    }
+    case Dosing::TargetRatio:
+        dose = QObject::tr("C/O = %1").arg(config.targetCarbonToOxygen, 0, 'f', 1);
+        break;
+    case Dosing::DecoupledRegions:
+        dose = QObject::tr("basal O/C = %1")
+                   .arg(config.basalOxygenToCarbon, 0, 'f', 2);
+        break;
+    }
+    return QObject::tr("%1, %2").arg(substrate, dose);
+}
+
+QJsonObject GrapheneOxideBuildSpec::toJson() const
+{
+    // Every field, by name. See the struct's own doc comment for why a
+    // partial round trip is worse than none for a stochastic builder.
+    QJsonObject object;
+    object[QStringLiteral("base")] = static_cast<int>(config.base);
+    object[QStringLiteral("lattice")] = static_cast<int>(config.lattice);
+    object[QStringLiteral("supercell_a")] = config.supercell[0];
+    object[QStringLiteral("supercell_b")] = config.supercell[1];
+    object[QStringLiteral("flake_index")] = config.flakeIndex;
+    object[QStringLiteral("hydrogen_terminate_edges")] =
+        config.hydrogenTerminateEdges;
+    object[QStringLiteral("dosing")] = static_cast<int>(config.dosing);
+    QJsonArray coverage;
+    QJsonArray weight;
+    for (std::size_t g = 0; g < core::GrapheneOxideBuilder::kGroupCount; ++g) {
+        coverage.append(config.coverage[g]);
+        weight.append(config.weight[g]);
+    }
+    object[QStringLiteral("coverage")] = coverage;
+    object[QStringLiteral("weight")] = weight;
+    object[QStringLiteral("target_c_to_o")] = config.targetCarbonToOxygen;
+    object[QStringLiteral("basal_oxygen_share")] = config.basalOxygenShare;
+    object[QStringLiteral("basal_o_to_c")] = config.basalOxygenToCarbon;
+    object[QStringLiteral("edge_oxidation")] = config.edgeOxidation;
+    object[QStringLiteral("carboxyl_share")] = config.carboxylShare;
+    object[QStringLiteral("basal_hydroxyl_share")] = config.basalHydroxylShare;
+    object[QStringLiteral("seed")] = static_cast<double>(config.seed);
+    object[QStringLiteral("both_faces")] = config.bothFaces;
+    object[QStringLiteral("hydroxyl_antiposition")] = config.hydroxylAntiposition;
+    return object;
+}
+
+GrapheneOxideBuildSpec
+GrapheneOxideBuildSpec::fromJson(const QJsonObject& object)
+{
+    using Base = core::GrapheneOxideBuilder::Base;
+    using Lattice = core::GrapheneOxideBuilder::Lattice;
+    using Dosing = core::GrapheneOxideBuilder::Dosing;
+    GrapheneOxideBuildSpec spec;
+    // Every read falls back to the struct's OWN default rather than to a
+    // literal: a document written by an older version simply keeps whatever
+    // the builder considers sensible for a field it never stored.
+    const auto readInt = [&object](const char* key, int fallback) {
+        const auto value = object.value(QLatin1String(key));
+        return value.isDouble() ? value.toInt() : fallback;
+    };
+    const auto readDouble = [&object](const char* key, double fallback) {
+        const auto value = object.value(QLatin1String(key));
+        return value.isDouble() ? value.toDouble() : fallback;
+    };
+    const auto readBool = [&object](const char* key, bool fallback) {
+        const auto value = object.value(QLatin1String(key));
+        return value.isBool() ? value.toBool() : fallback;
+    };
+    spec.config.base = static_cast<Base>(
+        readInt("base", static_cast<int>(spec.config.base)));
+    spec.config.lattice = static_cast<Lattice>(
+        readInt("lattice", static_cast<int>(spec.config.lattice)));
+    spec.config.supercell[0] = readInt("supercell_a", spec.config.supercell[0]);
+    spec.config.supercell[1] = readInt("supercell_b", spec.config.supercell[1]);
+    spec.config.flakeIndex = readInt("flake_index", spec.config.flakeIndex);
+    spec.config.hydrogenTerminateEdges =
+        readBool("hydrogen_terminate_edges", spec.config.hydrogenTerminateEdges);
+    spec.config.dosing = static_cast<Dosing>(
+        readInt("dosing", static_cast<int>(spec.config.dosing)));
+    const QJsonArray coverage = object.value(QStringLiteral("coverage")).toArray();
+    const QJsonArray weight = object.value(QStringLiteral("weight")).toArray();
+    for (std::size_t g = 0; g < core::GrapheneOxideBuilder::kGroupCount; ++g) {
+        const int index = static_cast<int>(g);
+        if (index < coverage.size())
+            spec.config.coverage[g] = coverage.at(index).toDouble();
+        if (index < weight.size())
+            spec.config.weight[g] = weight.at(index).toDouble();
+    }
+    spec.config.targetCarbonToOxygen =
+        readDouble("target_c_to_o", spec.config.targetCarbonToOxygen);
+    spec.config.basalOxygenShare =
+        readDouble("basal_oxygen_share", spec.config.basalOxygenShare);
+    spec.config.basalOxygenToCarbon =
+        readDouble("basal_o_to_c", spec.config.basalOxygenToCarbon);
+    spec.config.edgeOxidation =
+        readDouble("edge_oxidation", spec.config.edgeOxidation);
+    spec.config.carboxylShare =
+        readDouble("carboxyl_share", spec.config.carboxylShare);
+    spec.config.basalHydroxylShare =
+        readDouble("basal_hydroxyl_share", spec.config.basalHydroxylShare);
+    spec.config.seed = static_cast<std::uint32_t>(
+        readDouble("seed", static_cast<double>(spec.config.seed)));
+    spec.config.bothFaces = readBool("both_faces", spec.config.bothFaces);
+    spec.config.hydroxylAntiposition =
+        readBool("hydroxyl_antiposition", spec.config.hydroxylAntiposition);
+    return spec;
+}
+
 QString SupercellSpec::describe() const
 {
     if (isDiagonal())

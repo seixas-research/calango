@@ -1,4 +1,4 @@
-#include "gui/GrapheneOxideMdmcWizard.hpp"
+#include "gui/GrapheneOxideMcmdWizard.hpp"
 
 #include "core/Structure.hpp"
 
@@ -17,18 +17,24 @@
 
 namespace calango::gui {
 
-GrapheneOxideMdmcWizard::GrapheneOxideMdmcWizard(QWidget* parent)
+GrapheneOxideMcmdWizard::GrapheneOxideMcmdWizard(QWidget* parent)
     : SimulationWizardBase(parent)
 {
     buildUi();
 }
 
-QString GrapheneOxideMdmcWizard::wizardTitle() const
+GrapheneOxideMcmdWizard::GrapheneOxideMcmdWizard(DeferUi, QWidget* parent)
+    : SimulationWizardBase(parent)
 {
-    return tr("GO-MDMC — Hybrid MD / Monte Carlo Optimization");
+    // Deliberately empty: the subclass calls buildUi(). See DeferUi.
 }
 
-void GrapheneOxideMdmcWizard::setInputBuild(const core::Structure& structure)
+QString GrapheneOxideMcmdWizard::wizardTitle() const
+{
+    return tr("GO/MCMD — Hybrid MD / Monte Carlo Optimization");
+}
+
+void GrapheneOxideMcmdWizard::setInputBuild(const core::Structure& structure)
 {
     // Every quantity below is read straight off the persisted classification
     // ("edge" / "go_group_id" / "go_pair_id") rather than passed in by a
@@ -94,7 +100,7 @@ void GrapheneOxideMdmcWizard::setInputBuild(const core::Structure& structure)
         // Nothing to move. Said here rather than discovered by the script at
         // run time, after the queue and the engine startup.
         substrateLabel_->setText(
-            tr("<b>This structure carries no functional groups.</b> MDMC "
+            tr("<b>This structure carries no functional groups.</b> MCMD "
                "rearranges an existing decoration; it does not create one."));
         substrateLabel_->setToolTip(
             tr("Go back and raise the oxidation level."));
@@ -127,7 +133,144 @@ void GrapheneOxideMdmcWizard::setInputBuild(const core::Structure& structure)
     refreshCost();
 }
 
-QWidget* GrapheneOxideMdmcWizard::buildSettingsPage()
+QString GrapheneOxideMcmdWizard::secondSettingsHeader() const
+{
+    // Empty under GO/MCMD: the base drops a second stage whose header is
+    // empty, so that module's three-stage flow is untouched.
+    return relaxationMode() == core::GoMcRelaxation::Optimization
+        ? tr("Geometry Optimization")
+        : QString();
+}
+
+QWidget* GrapheneOxideMcmdWizard::buildSecondSettingsPage()
+{
+    // The relaxation, on a STAGE OF ITS OWN.
+    //
+    // It shares the page with nothing because it is a different decision from
+    // the Monte Carlo above it: the MC settings say what is proposed and how
+    // often, these say how a proposal is relaxed before it is judged. Crowded
+    // onto one page they read as one long form; separated, each page is one
+    // question. GO/MCMD has no second stage at all — secondSettingsHeader()
+    // is empty there — so its flow is unchanged.
+    auto* page = new QWidget(this);
+    auto* layout = new QVBoxLayout(page);
+
+    auto* optBox = new QGroupBox(tr("Geometry Optimization"), page);
+    auto* optForm = new QFormLayout(optBox);
+
+    optimizer_ = new QComboBox(optBox);
+    optimizer_->setObjectName(QStringLiteral("mcOptOptimizerCombo"));
+    // itemData is the enum, not the row: the menu is ordered for the user
+    // (default first) and must not have to mirror the enum's order.
+    optimizer_->addItem(tr("BFGS — quasi-Newton (default)"),
+                        static_cast<int>(core::GoMcOptimizer::Bfgs));
+    optimizer_->addItem(tr("LBFGS — limited memory"),
+                        static_cast<int>(core::GoMcOptimizer::Lbfgs));
+    optimizer_->addItem(tr("FIRE — no Hessian, tolerant of bad starts"),
+                        static_cast<int>(core::GoMcOptimizer::Fire));
+    optimizer_->addItem(tr("MDMin — cheapest step, slowest convergence"),
+                        static_cast<int>(core::GoMcOptimizer::Mdmin));
+    optimizer_->setToolTip(
+        tr("The local optimizer run after every proposed move.\n\n"
+           "BFGS is the default and the right first choice. LBFGS stores "
+           "less of the Hessian and is the better bet on a large cell. "
+           "FIRE keeps no Hessian at all, which makes it the tolerant "
+           "one when a freshly placed group starts far from its minimum. "
+           "MDMin is the cheapest per step and needs the most of them."));
+    optForm->addRow(tr("Optimizer:"), optimizer_);
+
+    fmax_ = new QDoubleSpinBox(optBox);
+    fmax_->setObjectName(QStringLiteral("mcOptFmaxSpin"));
+    fmax_->setRange(0.001, 5.0);
+    fmax_->setDecimals(3);
+    fmax_->setSingleStep(0.01);
+    fmax_->setValue(0.05);
+    fmax_->setSuffix(tr(" eV/Å"));
+    fmax_->setToolTip(
+        tr("Force convergence criterion: the relaxation stops when no "
+           "atom carries a residual force above this.\n\n"
+           "0.05 eV/Å is the value every other relaxation in Calango "
+           "defaults to, and the one a reader expects quoted beside a "
+           "relaxed energy. Loosening it makes each cycle cheaper and "
+           "the energies less comparable — the Metropolis test is only "
+           "comparing minima to the extent that both sides ARE minima."));
+    optForm->addRow(tr("Force criterion:"), fmax_);
+
+    optimizerMaxSteps_ = new QSpinBox(optBox);
+    optimizerMaxSteps_->setObjectName(QStringLiteral("mcOptMaxStepsSpin"));
+    optimizerMaxSteps_->setRange(1, 20000);
+    optimizerMaxSteps_->setValue(200);
+    optimizerMaxSteps_->setToolTip(
+        tr("Ceiling on the optimizer steps ONE cycle may spend. A cap, "
+           "not a target: convergence to the force criterion is what "
+           "ends a relaxation.\n\n"
+           "It exists so a single hopeless proposal cannot consume the "
+           "whole run. A cycle that hits it is still judged — dropping "
+           "the hardest proposals would quietly bias the acceptance "
+           "statistics — and the count of such cycles is reported in the "
+           "summary, because their energies are not minima."));
+    optForm->addRow(tr("Max steps per cycle:"), optimizerMaxSteps_);
+
+    optimizerMaxStep_ = new QDoubleSpinBox(optBox);
+    optimizerMaxStep_->setObjectName(QStringLiteral("mcOptMaxStepSpin"));
+    optimizerMaxStep_->setRange(0.01, 2.0);
+    optimizerMaxStep_->setDecimals(2);
+    optimizerMaxStep_->setSingleStep(0.05);
+    optimizerMaxStep_->setValue(0.2);
+    optimizerMaxStep_->setSuffix(tr(" Å"));
+    optimizerMaxStep_->setToolTip(
+        tr("Largest distance one optimizer step may move an atom (ase's "
+           "own `maxstep`). Raising it gets a badly strained start moving "
+           "faster and risks stepping over the minimum. Not used by "
+           "MDMin, which has no such parameter."));
+    optForm->addRow(tr("Max displacement:"), optimizerMaxStep_);
+
+    // -- Variable cell -------------------------------------------------
+    //
+    // The SHARED controls Geometry Optimization uses, not a one-checkbox
+    // version of them: "relax the cell" is four interacting decisions (the
+    // filter, the stress mask, the six Voigt components under a custom mask),
+    // and an MC-Opt run relaxed isotropically produces energies that cannot be
+    // lined up against an anisotropic relaxation of the same material. A
+    // module that offered only an on/off switch would be quietly producing a
+    // different quantity from the one next door.
+    //
+    // In their own group box rather than appended to the optimizer form: they
+    // qualify the relaxation as a whole, and the six Voigt ticks are a row of
+    // their own that reads badly wedged under "Max displacement".
+    layout->addWidget(optBox);
+
+    auto* cellBox = new QGroupBox(tr("Variable Cell"), page);
+    cellBox->setObjectName(QStringLiteral("mcOptCellBox"));
+    auto* cellForm = new QFormLayout(cellBox);
+    cellControls_.build(cellBox, cellForm, [this] {
+        refreshCost();
+        refreshPreview();
+    });
+    layout->addWidget(cellBox);
+
+    // refreshPreview() as well as refreshCost(), the way the shared VASP
+    // group already wires its own controls: the review page is
+    // regenerated on arrival anyway, but a preview that goes stale the
+    // moment you change a setting and silently corrects itself on
+    // navigation is a worse thing to hand someone than one that tracks.
+    for (auto* box : {fmax_, optimizerMaxStep_})
+        connect(box, &QDoubleSpinBox::valueChanged, this, [this] {
+            refreshCost();
+            refreshPreview();
+        });
+    connect(optimizerMaxSteps_, &QSpinBox::valueChanged, this, [this] {
+        refreshCost();
+        refreshPreview();
+    });
+    connect(optimizer_, &QComboBox::currentIndexChanged, this,
+            [this] { refreshPreview(); });
+
+    layout->addStretch(1);
+    return page;
+}
+
+QWidget* GrapheneOxideMcmdWizard::buildSettingsPage()
 {
     auto* page = new QWidget;
     auto* layout = new QVBoxLayout(page);
@@ -167,26 +310,36 @@ QWidget* GrapheneOxideMdmcWizard::buildSettingsPage()
            "before the arrangement has forgotten where it started."));
     samplingForm->addRow(tr("MC cycles:"), cycles_);
 
-    mdSteps_ = new QSpinBox(samplingBox);
-    mdSteps_->setRange(0, 10000);
-    mdSteps_->setValue(5);
-    mdSteps_->setToolTip(
-        tr("Molecular-dynamics steps run after each move, before the energy is "
-           "judged.\n\n"
-           "The burst is the only relaxation in the run. Many cheap cycles "
-           "with a short burst each is the protocol's own regime. A longer "
-           "burst judges a move more fairly — measured under MACE-MP-0 at 300 K with "
-           "a 0.5 fs step, the leftover placement strain is within the "
-           "thermal noise by 80–120 steps and the burst carries the sheet's "
-           "own relaxation by 200. The per-cycle ΔE is recorded as "
-           "trial_delta in metrics.json; if it sits eV above zero cycle "
-           "after cycle, lengthen the burst.\n\n"
-           "The run costs cycles × steps energy evaluations. This is NOT "
-           "what brings the as-built structure to temperature — that is the "
-           "separate equilibration stage below, run once.\n\n"
-           "Zero evaluates the energy without any dynamics — the cheapest, "
-           "crudest setting."));
-    samplingForm->addRow(tr("MD steps per cycle:"), mdSteps_);
+    // BUILT ONLY WHERE IT IS SHOWN. This used to be constructed
+    // unconditionally with samplingBox as its parent and added to the form
+    // only under GO/MCMD — and a child widget that is never laid out keeps its
+    // default (0, 0) geometry inside its parent, so under GO/MC-Opt the spin
+    // box sat in the corner of the group box painting over its own title. A
+    // hidden-but-created control would fix the symptom; not creating one the
+    // module has no use for is the actual answer, and collectConfig() already
+    // guards every read of it.
+    if (relaxationMode() == core::GoMcRelaxation::MolecularDynamics) {
+        mdSteps_ = new QSpinBox(samplingBox);
+        mdSteps_->setRange(0, 10000);
+        mdSteps_->setValue(5);
+        mdSteps_->setToolTip(
+            tr("Molecular-dynamics steps run after each move, before the energy is "
+               "judged.\n\n"
+               "The burst is the only relaxation in the run. Many cheap cycles "
+               "with a short burst each is the protocol's own regime. A longer "
+               "burst judges a move more fairly — measured under MACE-MP-0 at 300 K with "
+               "a 0.5 fs step, the leftover placement strain is within the "
+               "thermal noise by 80–120 steps and the burst carries the sheet's "
+               "own relaxation by 200. The per-cycle ΔE is recorded as "
+               "trial_delta in metrics.json; if it sits eV above zero cycle "
+               "after cycle, lengthen the burst.\n\n"
+               "The run costs cycles × steps energy evaluations. This is NOT "
+               "what brings the as-built structure to temperature — that is the "
+               "separate equilibration stage below, run once.\n\n"
+               "Zero evaluates the energy without any dynamics — the cheapest, "
+               "crudest setting."));
+        samplingForm->addRow(tr("MD steps per cycle:"), mdSteps_);
+    }
 
     hydroxylAntipositionBox_ = new QCheckBox(
         tr("Hydroxyls antiposition — move each pair as one unit"),
@@ -218,7 +371,20 @@ QWidget* GrapheneOxideMdmcWizard::buildSettingsPage()
     samplingForm->addRow(tr("Seed:"), seed_);
     layout->addWidget(samplingBox);
 
-    // -- Dynamics ----------------------------------------------------------
+    // -- Relaxation --------------------------------------------------------
+    //
+    // The whole difference between the two modules this wizard serves. GO/MCMD
+    // gets the ensemble/timestep/friction/equilibration block below; GO/MC-Opt
+    // gets none of it — it never runs an integrator, so a timestep, a friction
+    // and an ensemble would be controls that change nothing — and its
+    // optimizer settings live on a stage of their own
+    // (buildSecondSettingsPage()).
+    //
+    // An early return rather than wrapping two hundred lines in an if: the
+    // shared tail is finishSettingsPage(), and both exits go through it.
+    if (relaxationMode() == core::GoMcRelaxation::Optimization)
+        return finishSettingsPage(page, layout);
+
     auto* dynamicsBox = new QGroupBox(tr("Molecular Dynamics"), page);
     auto* dynamicsForm = new QFormLayout(dynamicsBox);
 
@@ -310,6 +476,16 @@ QWidget* GrapheneOxideMdmcWizard::buildSettingsPage()
     dynamicsForm->addRow(tr("Equilibration friction:"), equilibrationFriction_);
     layout->addWidget(dynamicsBox);
 
+    return finishSettingsPage(page, layout);
+}
+
+QWidget* GrapheneOxideMcmdWizard::finishSettingsPage(QWidget* page,
+                                                    QVBoxLayout* layout)
+{
+    // The half of the page both modules share: the Output group, the cost
+    // read-out, and the signal wiring. Extracted so the optimization branch
+    // above can skip straight to it after building its own relaxation group,
+    // rather than duplicating twenty controls that are identical in both.
     // -- Output ------------------------------------------------------------
     auto* outputBox = new QGroupBox(tr("Output"), page);
     auto* outputForm = new QFormLayout(outputBox);
@@ -361,7 +537,7 @@ QWidget* GrapheneOxideMdmcWizard::buildSettingsPage()
            "as \"epoxide-carbon\" the moment it does.\n\n"
            "On by default: a Cast fixed at frame 0, the way every other "
            "trajectory in Calango behaves, goes stale the moment the first "
-           "move is accepted, since MDMC's whole point is relocating groups. "
+           "move is accepted, since MCMD's whole point is relocating groups. "
            "Turn this off only to compare against that flat behaviour."));
     outputForm->addRow(castPerFrame_);
     layout->addWidget(outputBox);
@@ -372,36 +548,77 @@ QWidget* GrapheneOxideMdmcWizard::buildSettingsPage()
     layout->addWidget(costLabel_);
     layout->addStretch(1);
 
+    // Guarded one at a time: the optimization branch never builds the
+    // thermostat controls, so half of these are null there. connect() on a
+    // null sender is a Qt warning and a silently dead signal, which is
+    // exactly the class of thing this file's own construction-order test
+    // exists to catch.
     connect(cycles_, &QSpinBox::valueChanged, this,
-            &GrapheneOxideMdmcWizard::refreshCost);
-    connect(mdSteps_, &QSpinBox::valueChanged, this,
-            &GrapheneOxideMdmcWizard::refreshCost);
-    connect(ensemble_, &QComboBox::currentIndexChanged, this,
-            &GrapheneOxideMdmcWizard::refreshCost);
+            &GrapheneOxideMcmdWizard::refreshCost);
+    if (mdSteps_)
+        connect(mdSteps_, &QSpinBox::valueChanged, this,
+                &GrapheneOxideMcmdWizard::refreshCost);
+    if (ensemble_)
+        connect(ensemble_, &QComboBox::currentIndexChanged, this,
+                &GrapheneOxideMcmdWizard::refreshCost);
     for (QDoubleSpinBox* spin :
          {temperature_, timestep_, friction_, pressure_, equilibrationFriction_})
-        connect(spin, &QDoubleSpinBox::valueChanged, this,
-                &GrapheneOxideMdmcWizard::refreshCost);
-    connect(equilibrationSteps_, &QSpinBox::valueChanged, this,
-            &GrapheneOxideMdmcWizard::refreshCost);
+        if (spin)
+            connect(spin, &QDoubleSpinBox::valueChanged, this,
+                    &GrapheneOxideMcmdWizard::refreshCost);
+    if (equilibrationSteps_)
+        connect(equilibrationSteps_, &QSpinBox::valueChanged, this,
+                &GrapheneOxideMcmdWizard::refreshCost);
     connect(seed_, &QSpinBox::valueChanged, this,
-            &GrapheneOxideMdmcWizard::refreshCost);
+            &GrapheneOxideMcmdWizard::refreshCost);
     connect(snapshotInterval_, &QSpinBox::valueChanged, this,
-            &GrapheneOxideMdmcWizard::refreshCost);
+            &GrapheneOxideMcmdWizard::refreshCost);
     connect(viewportEvery_, &QSpinBox::valueChanged, this,
-            &GrapheneOxideMdmcWizard::refreshCost);
+            &GrapheneOxideMcmdWizard::refreshCost);
     connect(bothFaces_, &QCheckBox::toggled, this,
-            &GrapheneOxideMdmcWizard::refreshCost);
+            &GrapheneOxideMcmdWizard::refreshCost);
     connect(hydroxylAntipositionBox_, &QCheckBox::toggled, this,
-            &GrapheneOxideMdmcWizard::refreshCost);
+            &GrapheneOxideMcmdWizard::refreshCost);
 
     refreshCost();
     return page;
 }
 
-void GrapheneOxideMdmcWizard::refreshCost()
+
+void GrapheneOxideMcmdWizard::refreshCost()
 {
-    if (!costLabel_ || !cycles_ || !mdSteps_)
+    if (!costLabel_ || !cycles_)
+        return;
+
+    // GO/MC-Opt cannot quote the run's cost the way GO/MCMD can: a relaxation
+    // runs until it converges, so the only honest statement is the CEILING
+    // and the fact that a typical cycle is well under it. Quoting
+    // cycles x max_steps as "the cost" would overstate it by a factor of
+    // several; quoting nothing would hide that this module is the expensive
+    // one. So: the bound, named as a bound.
+    if (relaxationMode() == core::GoMcRelaxation::Optimization) {
+        if (!optimizerMaxSteps_ || !fmax_)
+            return;
+        const long long ceiling = static_cast<long long>(cycles_->value())
+            * optimizerMaxSteps_->value();
+        costLabel_->setText(
+            tr("<b>Cost:</b> at most %L1 force evaluations — %2 cycles × the "
+               "%3-step ceiling. A converged relaxation usually takes a small "
+               "fraction of that, so treat this as the worst case and the "
+               "reported <i>relaxation_steps_total</i> as what it actually "
+               "cost.<br>Each cycle relaxes the proposal to "
+               "<b>%4 eV/Å</b>, so the Metropolis test compares two local "
+               "minima — which is what this module is for, and what a "
+               "GO/MCMD burst cannot promise. The walk is over MINIMA, not "
+               "over a canonical ensemble: the temperature is the Metropolis "
+               "parameter and nothing more.")
+                .arg(ceiling)
+                .arg(cycles_->value())
+                .arg(optimizerMaxSteps_->value())
+                .arg(fmax_->value(), 0, 'f', 3));
+        return;
+    }
+    if (!mdSteps_)
         return;
 
     const bool npt = ensemble_ && ensemble_->currentData().toInt() == 1;
@@ -431,9 +648,9 @@ void GrapheneOxideMdmcWizard::refreshCost()
            "quick check."));
 }
 
-core::GrapheneOxideMdmcConfig GrapheneOxideMdmcWizard::collectConfig() const
+core::GrapheneOxideMcmdConfig GrapheneOxideMcmdWizard::collectConfig() const
 {
-    core::GrapheneOxideMdmcConfig config;
+    core::GrapheneOxideMcmdConfig config;
     config.calculator = baseCalculatorConfig();
     if (temperature_)
         config.temperatureK = temperature_->value();
@@ -470,14 +687,44 @@ core::GrapheneOxideMdmcConfig GrapheneOxideMdmcWizard::collectConfig() const
     // control here to read it from any more.
     if (castPerFrame_)
         config.castPerFrame = castPerFrame_->isChecked();
+
+    // GO/MC-Opt. Set unconditionally from the hook, then the controls that
+    // only exist in that mode. Under GO/MCMD the relaxation stays
+    // MolecularDynamics and every optimizer field keeps its struct default,
+    // which the generator writes but the script never reads.
+    config.relaxation = relaxationMode();
+    if (optimizer_) {
+        config.optimizer = static_cast<core::GoMcOptimizer>(
+            optimizer_->currentData().toInt());
+    }
+    if (fmax_)
+        config.fmax = fmax_->value();
+    if (optimizerMaxSteps_)
+        config.optimizerMaxSteps = optimizerMaxSteps_->value();
+    if (optimizerMaxStep_)
+        config.optimizerMaxStep = optimizerMaxStep_->value();
+    // The cell group writes into a CalculatorConfig — that is the shape the
+    // shared control speaks — and the five fields are copied across rather
+    // than the whole config being handed over: config.calculator is the ENGINE
+    // configuration, and putting a relaxCell on it would reach
+    // vaspDrivesRelaxation() and change the emitted VASP block for a module
+    // that drives its own optimizer.
+    core::CalculatorConfig cell;
+    cellControls_.applyTo(cell);
+    config.relaxCell = cell.relaxCell;
+    config.cellFilter = cell.cellFilter;
+    config.cellHydrostatic = cell.cellHydrostatic;
+    config.cellCustomMask = cell.cellCustomMask;
+    for (int i = 0; i < 6; ++i)
+        config.cellMask[i] = cell.cellMask[i];
     return config;
 }
 
-QString GrapheneOxideMdmcWizard::generateScript() const
+QString GrapheneOxideMcmdWizard::generateScript() const
 {
     config_ = collectConfig();
     return QString::fromStdString(
-        core::GrapheneOxideMdmcScriptGenerator::generate(config_));
+        core::GrapheneOxideMcmdScriptGenerator::generate(config_));
 }
 
 } // namespace calango::gui

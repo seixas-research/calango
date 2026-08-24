@@ -91,7 +91,8 @@ Q_SIGNALS:
     void loadResultRequested(const QString& directory);
     /// A task was DOUBLE-CLICKED. Carries its id and name as well as its
     /// directory, because what a double-click should do depends on what kind
-    /// of run it is: a GO-MDMC row opens that run's Summary window, every
+    /// of run it is: a GO/MCMD or GO/MC-Opt row opens that run's Summary
+    /// window, every
     /// other row keeps the "load this run's result" behaviour double-click
     /// has always had (which is what this signal used to emit directly, as
     /// loadResultRequested).

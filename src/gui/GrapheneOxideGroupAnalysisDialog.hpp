@@ -22,7 +22,8 @@ class LinePlotWidget;
 class ViewportWidget;
 
 /// Modules -> Graphene Oxide -> "GO Functional Group Analysis…": a read-only
-/// analysis of a Graphene Oxide Build's (or GO-MDMC trajectory's) functional-
+/// analysis of a Graphene Oxide Build's (or a GO/MCMD / GO/MC-Opt
+/// trajectory's) functional-
 /// group census and the geometric distortion each group produces —
 /// core::analyzeGrapheneOxideGroups() run per frame, never a second
 /// classification of its own.

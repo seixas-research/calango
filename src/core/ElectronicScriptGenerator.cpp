@@ -667,7 +667,9 @@ std::string generateElectronicScript(const ElectronicConfig& c)
                    // to BandPath.__format__"), and without reciprocal=True
                    // the fractional coordinates it DOES accept would be
                    // written as if they were already Cartesian 1/A.
-                   "             directory=\".\", kpts=bandpath.kpts,\n"
+                << AseScriptGenerator::vaspHubbardKeywords(c.gpaw,
+                                                           "             ")
+                << "             directory=\".\", kpts=bandpath.kpts,\n"
                    "             reciprocal=True)\n"
                    "atoms.calc = bands\n"
                    "atoms.get_potential_energy()\n"
@@ -704,7 +706,13 @@ std::string generateElectronicScript(const ElectronicConfig& c)
                 << "scf = Vasp(xc=\"PBE\", encut=" << c.ecutEv << ",\n"
                    "           kpts=(kgrid, kgrid, kgrid), ismear=0, sigma=0.05,\n"
                 << "           prec=\"" << vaspPrec << "\",\n"
-                   "           lcharg=True, directory=\".\")\n"
+                // DFT+U on BOTH passes, and it has to be both: an ICHARG = 11
+                // band run reads the density the SCF wrote and then builds its
+                // own Hamiltonian, so a band pass without the correction
+                // diagonalizes plain PBE against a DFT+U density.
+                << AseScriptGenerator::vaspHubbardKeywords(c.gpaw,
+                                                           "           ")
+                << "           lcharg=True, directory=\".\")\n"
                    "atoms.calc = scf\n"
                    "atoms.get_potential_energy()\n"
                    "efermi = float(atoms.calc.get_fermi_level())\n"
@@ -715,7 +723,9 @@ std::string generateElectronicScript(const ElectronicConfig& c)
                 << ", icharg=11,\n"
                    "             ismear=0, sigma=0.05,\n"
                 << "             prec=\"" << vaspPrec << "\",\n"
-                   "             directory=\".\", kpts=bandpath.kpts,\n"
+                << AseScriptGenerator::vaspHubbardKeywords(c.gpaw,
+                                                           "             ")
+                << "             directory=\".\", kpts=bandpath.kpts,\n"
                    "             reciprocal=True)\n"
                    "atoms.calc = bands\n"
                    "atoms.get_potential_energy()\n"

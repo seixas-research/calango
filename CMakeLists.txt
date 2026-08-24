@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.8.41
+    VERSION 26.8.42
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -243,7 +243,7 @@ qt_add_executable(calango
     src/core/GrapheneOxidePairCorrelation.hpp
     src/core/GrapheneOxidePairCorrelation.cpp
     src/core/WorkflowReport.cpp
-    src/core/GrapheneOxideMdmcScriptGenerator.cpp
+    src/core/GrapheneOxideMcmdScriptGenerator.cpp
     src/core/BornChargesScriptGenerator.hpp
     src/core/BornChargesScriptGenerator.cpp
     src/core/PolarizationScriptHelpers.hpp
@@ -523,9 +523,9 @@ qt_add_executable(calango
     src/gui/MoleculeCanvas.cpp
     src/gui/MolecularDesignDialog.hpp
     src/gui/MolecularDesignDialog.cpp
-    src/gui/MdmcSummaryDialog.hpp
-    src/gui/MdmcSummaryDialog.cpp
-    src/gui/GoMdmcLiveTabs.hpp
+    src/gui/McmdSummaryDialog.hpp
+    src/gui/McmdSummaryDialog.cpp
+    src/gui/GoMcmdLiveTabs.hpp
     src/gui/SlabWizard.hpp
     src/gui/SlabWizard.cpp
     src/gui/PreferencesDialog.hpp
@@ -562,6 +562,8 @@ qt_add_executable(calango
     src/gui/LocalEntropyDialog.cpp
     src/gui/RingPercolationDialog.hpp
     src/gui/RingPercolationDialog.cpp
+    src/gui/PiPercolationDialog.hpp
+    src/gui/PiPercolationDialog.cpp
     src/gui/VolumeViewWidget.hpp
     src/gui/VolumeViewWidget.cpp
     src/gui/VisualEffectsPanel.hpp
@@ -781,8 +783,10 @@ qt_add_executable(calango
     src/gui/GrainCasts.cpp
     src/gui/GrapheneOxideWizard.hpp
     src/gui/GrapheneOxideWizard.cpp
-    src/gui/GrapheneOxideMdmcWizard.hpp
-    src/gui/GrapheneOxideMdmcWizard.cpp
+    src/gui/GrapheneOxideMcmdWizard.hpp
+    src/gui/GrapheneOxideMcmdWizard.cpp
+    src/gui/GrapheneOxideMcOptWizard.hpp
+    src/gui/GrapheneOxideMcOptWizard.cpp
     src/gui/GrapheneOxideGroupAnalysisDialog.hpp
     src/gui/GrapheneOxideGroupAnalysisDialog.cpp
     src/gui/GrapheneOxidePairCorrelationDialog.hpp
@@ -1108,8 +1112,8 @@ endif()
 #   cmake -B build -DCALANGO_BUILD_TESTS=ON ... && ctest --test-dir build
 # ---------------------------------------------------------------------------
 # The native counterpart to core::analyzeRingPercolationTrajectory() reachable
-# from outside the GUI: a test harness verifying a real MDMC trajectory
-# (tests/graphene_oxide_percolation_mdmc_test.py), or a user who already has a
+# from outside the GUI: a test harness verifying a real MCMD trajectory
+# (tests/graphene_oxide_percolation_mcmd_test.py), or a user who already has a
 # trajectory file and wants the ring/percolation numbers for it without
 # opening the app. Reads via ase.io (any format ASE knows), hence embeds
 # Python. (Formerly paired with calango-elph-analyze, a headless
@@ -1899,8 +1903,15 @@ if(CALANGO_BUILD_TESTS)
         src/python_bridge/MaterialsProject.cpp
         src/gui/FilmTimelineWidget.cpp
         src/gui/GrapheneOxideWizard.cpp
-        src/gui/GrapheneOxideMdmcWizard.cpp
-        src/core/GrapheneOxideMdmcScriptGenerator.cpp
+        src/gui/GrapheneOxideMcmdWizard.cpp
+        src/gui/GrapheneOxideMcOptWizard.cpp
+        # Phonon joins the dialog test for the VASP DFT+U audit: it is the
+        # one of the four launch wizards that does NOT override
+        # calculatorElements(), so it is the one whose Hubbard table depends
+        # on the host-supplied route.
+        src/gui/PhononWizard.cpp
+        src/core/PhononScriptGenerator.cpp
+        src/core/GrapheneOxideMcmdScriptGenerator.cpp
         src/gui/WorkflowReportDialog.cpp
         src/core/WorkflowReport.cpp
         src/core/BandGap.cpp
@@ -2081,7 +2092,7 @@ if(CALANGO_BUILD_TESTS)
         # "Send to 3D Viewport" emits a structure.
         src/gui/MoleculeCanvas.cpp
         src/gui/MolecularDesignDialog.cpp
-        src/gui/MdmcSummaryDialog.cpp
+        src/gui/McmdSummaryDialog.cpp
         src/core/MoleculeGraph.cpp
         src/core/Smiles.cpp
         src/core/MoleculeEmbed3d.cpp
@@ -2265,6 +2276,12 @@ if(CALANGO_BUILD_TESTS)
         tests/OrchestrationSiTest.cpp
         src/gui/OrchestrationWindow.cpp
         src/gui/OrchestrationDocument.cpp
+        # The Graphene Oxide Builder node's editor IS the menu's own wizard —
+        # one definition of what a Build is — so every target that compiles
+        # the canvas needs it.
+        src/gui/GrapheneOxideWizard.cpp
+        src/core/GrapheneOxideBuilder.cpp
+        src/core/GrapheneOxideSites.cpp
         src/python_bridge/BulkBuilder.cpp
         src/gui/OrchestrationTransforms.cpp
         # The Random Noise Setup transform perturbs its incoming structure in
@@ -2360,6 +2377,12 @@ if(CALANGO_BUILD_TESTS)
         tests/MaceTrainerPreflightTest.cpp
         src/gui/OrchestrationWindow.cpp
         src/gui/OrchestrationDocument.cpp
+        # The Graphene Oxide Builder node's editor IS the menu's own wizard —
+        # one definition of what a Build is — so every target that compiles
+        # the canvas needs it.
+        src/gui/GrapheneOxideWizard.cpp
+        src/core/GrapheneOxideBuilder.cpp
+        src/core/GrapheneOxideSites.cpp
         src/python_bridge/BulkBuilder.cpp
         src/gui/OrchestrationTransforms.cpp
         src/core/Noise.cpp
@@ -2438,6 +2461,12 @@ if(CALANGO_BUILD_TESTS)
         tests/OrchestrationHandoffTest.cpp
         src/gui/OrchestrationWindow.cpp
         src/gui/OrchestrationDocument.cpp
+        # The Graphene Oxide Builder node's editor IS the menu's own wizard —
+        # one definition of what a Build is — so every target that compiles
+        # the canvas needs it.
+        src/gui/GrapheneOxideWizard.cpp
+        src/core/GrapheneOxideBuilder.cpp
+        src/core/GrapheneOxideSites.cpp
         src/python_bridge/BulkBuilder.cpp
         src/gui/OrchestrationTransforms.cpp
         # The Random Noise Setup transform perturbs its incoming structure in
@@ -2535,6 +2564,12 @@ if(CALANGO_BUILD_TESTS)
         tests/OrchestrationBatchTest.cpp
         src/gui/OrchestrationWindow.cpp
         src/gui/OrchestrationDocument.cpp
+        # The Graphene Oxide Builder node's editor IS the menu's own wizard —
+        # one definition of what a Build is — so every target that compiles
+        # the canvas needs it.
+        src/gui/GrapheneOxideWizard.cpp
+        src/core/GrapheneOxideBuilder.cpp
+        src/core/GrapheneOxideSites.cpp
         src/python_bridge/BulkBuilder.cpp
         src/gui/OrchestrationTransforms.cpp
         src/core/ClusterExpansionFit.cpp
@@ -3132,7 +3167,7 @@ if(CALANGO_BUILD_TESTS)
         src/core/DsimScriptGenerator.cpp
         src/core/Structure.cpp
         src/core/Element.cpp
-        src/core/GrapheneOxideMdmcScriptGenerator.cpp
+        src/core/GrapheneOxideMcmdScriptGenerator.cpp
         # The one script in the project that imports pycalphad. It is here
         # precisely because it cannot be run in CI — pycalphad is installed
         # nowhere — so the static check is the only thing standing between a
@@ -3467,32 +3502,32 @@ if(CALANGO_BUILD_TESTS)
                 $<TARGET_FILE:calango_script_test>)
     set_tests_properties(xtb_integration PROPERTIES TIMEOUT 1800)
 
-    # Hydroxyls antiposition, RUN through a real MDMC trajectory on plain
+    # Hydroxyls antiposition, RUN through a real MCMD trajectory on plain
     # Lennard-Jones (no MACE/GPAW/xTB needed): independently re-derives
     # pairing from geometry, on every frame, and checks it never breaks —
     # the bug this generator used to have. Self-skips without an interpreter
     # that has ase.
-    add_test(NAME graphene_oxide_mdmc_antiposition
+    add_test(NAME graphene_oxide_mcmd_antiposition
         COMMAND ${Python3_EXECUTABLE}
-                ${CMAKE_CURRENT_SOURCE_DIR}/tests/graphene_oxide_mdmc_antiposition_test.py
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/graphene_oxide_mcmd_antiposition_test.py
                 $<TARGET_FILE:calango_script_test>)
-    set_tests_properties(graphene_oxide_mdmc_antiposition PROPERTIES TIMEOUT 600)
+    set_tests_properties(graphene_oxide_mcmd_antiposition PROPERTIES TIMEOUT 600)
 
-    # Ring/percolation analysis against that SAME kind of real MDMC
+    # Ring/percolation analysis against that SAME kind of real MCMD
     # trajectory (plain Lennard-Jones, no MD burst): unlike
     # GrapheneOxidePercolationTest.cpp's closed-form fixtures, this is a
     # moving target — the carbon lattice topology and the total
-    # functionalized-carbon count are conserved by construction (MDMC only
+    # functionalized-carbon count are conserved by construction (MCMD only
     # relocates existing groups), so ring-count == N/2 and sp2 fraction ==
     # constant on EVERY frame are exact, closed-form checks against a
     # trajectory this test did not hand-construct. Self-skips without an
     # interpreter that has ase.
-    add_test(NAME graphene_oxide_percolation_mdmc
+    add_test(NAME graphene_oxide_percolation_mcmd
         COMMAND ${Python3_EXECUTABLE}
-                ${CMAKE_CURRENT_SOURCE_DIR}/tests/graphene_oxide_percolation_mdmc_test.py
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/graphene_oxide_percolation_mcmd_test.py
                 $<TARGET_FILE:calango_script_test>
                 $<TARGET_FILE:calango-ring-percolation-analyze>)
-    set_tests_properties(graphene_oxide_percolation_mdmc PROPERTIES TIMEOUT 600)
+    set_tests_properties(graphene_oxide_percolation_mcmd PROPERTIES TIMEOUT 600)
 
     # The protocol itself, on a REAL potential (MACE-MP-0 small, CPU): the
     # two Lennard-Jones harnesses above run with the dynamics OFF, which left
@@ -3504,22 +3539,22 @@ if(CALANGO_BUILD_TESTS)
     # antiposition pair, the unscaled vacuum axis and the boundary C-C bonds
     # from raw geometry on every frame. Self-skips without an interpreter
     # that has mace, or without the cached checkpoint (never downloads).
-    add_test(NAME graphene_oxide_mdmc_mace
+    add_test(NAME graphene_oxide_mcmd_mace
         COMMAND ${Python3_EXECUTABLE}
-                ${CMAKE_CURRENT_SOURCE_DIR}/tests/graphene_oxide_mdmc_mace_test.py
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/graphene_oxide_mcmd_mace_test.py
                 $<TARGET_FILE:calango_script_test>)
-    set_tests_properties(graphene_oxide_mdmc_mace PROPERTIES TIMEOUT 1800)
+    set_tests_properties(graphene_oxide_mcmd_mace PROPERTIES TIMEOUT 1800)
 
     # Edge-group moves on a nanoflake (Lennard-Jones, dynamics off): the
     # rim's hydrogen inventory is conserved — an edge move swaps the
     # terminating H to the vacated carbon rather than landing the group on
     # top of it and leaving a dangling bond behind. Re-derived from raw
     # geometry on every frame. Self-skips without an interpreter that has ase.
-    add_test(NAME graphene_oxide_mdmc_flake
+    add_test(NAME graphene_oxide_mcmd_flake
         COMMAND ${Python3_EXECUTABLE}
-                ${CMAKE_CURRENT_SOURCE_DIR}/tests/graphene_oxide_mdmc_flake_test.py
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/graphene_oxide_mcmd_flake_test.py
                 $<TARGET_FILE:calango_script_test>)
-    set_tests_properties(graphene_oxide_mdmc_flake PROPERTIES TIMEOUT 600)
+    set_tests_properties(graphene_oxide_mcmd_flake PROPERTIES TIMEOUT 600)
 
     # DSIM vs. its own reference implementation (oncapintada), live: EMT-relax
     # a Cu/Pd 27-atom fcc supercell case, run it through oncapintada, check
@@ -3869,11 +3904,11 @@ if(CALANGO_BUILD_TESTS)
         extxyz_attributes frame_streaming
         generated_ase_scripts generated_script_lint gpaw_output_parser graphene_band_symmetry
         graphene_2d_bands_qe graphene_2d_bands_siesta
-        graphene_oxide graphene_oxide_group_analysis graphene_oxide_mdmc_antiposition
-        graphene_oxide_mdmc_mace graphene_oxide_mdmc_flake
+        graphene_oxide graphene_oxide_group_analysis graphene_oxide_mcmd_antiposition
+        graphene_oxide_mcmd_mace graphene_oxide_mcmd_flake
         graphene_oxide_pair_correlation
         graphene_oxide_percolation
-        graphene_oxide_percolation_mdmc graphene_oxide_sites graphene_tetrahedron
+        graphene_oxide_percolation_mcmd graphene_oxide_sites graphene_tetrahedron
         energy_diagram_benchmark
         gpaw_mpi_preflight
         gw_qp_parser gw_silicon hubbard_linear_response hydrogen_bonds

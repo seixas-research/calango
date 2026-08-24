@@ -96,20 +96,57 @@ namespace calango::core {
 /// count of free sites of that region is the same before and after, and the
 /// reverse move is exactly as likely to be proposed as the forward one. No
 /// separate Hastings correction is introduced or needed.
-struct GrapheneOxideMdmcConfig {
+/// How a proposed move is relaxed before it is judged — which is the whole
+/// difference between the two modules this generator serves.
+///
+/// GO/MCMD (MolecularDynamics) runs a short thermostatted BURST after each
+/// move: cheap, finite-temperature, and it samples the thermal ensemble. Its
+/// weakness is measurable and was measured: a freshly rebuilt group carries
+/// several eV of placement strain, and a burst too short to drain it hands
+/// Metropolis a trial energy biased upward by that much, so the acceptance
+/// ratio collapses whatever the temperature says (one 200-cycle run accepted
+/// 3 moves, with a median trial ΔE of +3.9 eV = 150 kT).
+///
+/// GO/MC-Opt (Optimization) relaxes each proposal to a LOCAL MINIMUM instead,
+/// with a force criterion. Both sides of the Metropolis test are then at a
+/// minimum, so the comparison is between two arrangements rather than between
+/// an arrangement and a placement artifact — the structural fix for the bias
+/// above. It costs more per cycle (an optimization is many force evaluations,
+/// not a fixed handful) and it samples the ATHERMAL landscape: the walk is
+/// over local minima, not over a canonical ensemble, so the temperature is a
+/// Metropolis parameter and nothing else. That is the right tool for "find me
+/// the best decoration" and the wrong one for "sample the 300 K ensemble".
+enum class GoMcRelaxation {
+    MolecularDynamics, ///< GO/MCMD — a thermostatted burst per cycle
+    Optimization,      ///< GO/MC-Opt — relax to a local minimum per cycle
+};
+
+/// Local-optimizer choice for GoMcRelaxation::Optimization. Append-only: the
+/// value is written into the generated script as an ASE class name.
+enum class GoMcOptimizer {
+    Bfgs,   ///< ase.optimize.BFGS — the default, quasi-Newton, robust
+    Lbfgs,  ///< ase.optimize.LBFGS — limited memory, better for large cells
+    Fire,   ///< ase.optimize.FIRE — no Hessian, tolerant of bad starts
+    Mdmin,  ///< ase.optimize.MDMin — cheapest per step, slowest to converge
+};
+
+/// The ASE class name `optimizer` selects, for the generated script.
+const char* goMcOptimizerName(GoMcOptimizer optimizer);
+
+struct GrapheneOxideMcmdConfig {
     /// Structure staged next to run.py — the builder's output.
     std::string inputStructure = "structure.extxyz";
     /// Lowest-energy arrangement found, which is what the run is for. Note
     /// this is NOT the last frame: a finite-temperature walk ends wherever it
     /// happens to be, and reporting that as the answer throws away the best
     /// configuration the sampler visited.
-    std::string outputStructure = "mdmc_optimized.extxyz";
+    std::string outputStructure = "mcmd_optimized.extxyz";
     /// Accepted configurations, in order — every one of them, appended as
     /// the walk accepts it, each frame carrying its own 0-based
     /// acceptance ordinal and the per-frame provenance of the
     /// all-structures log.
     ///
-    /// This replaced `mdmc_trajectory.extxyz`, which held the same
+    /// This replaced `mcmd_trajectory.extxyz`, which held the same
     /// quantity worse: written once at the end from an in-memory list,
     /// throttled by `snapshotInterval`, and seeded at index 0 with the
     /// post-equilibration structure — a frame that was never an accepted
@@ -204,7 +241,7 @@ struct GrapheneOxideMdmcConfig {
     /// drawn opposite-face split — so a swap can never separate a pair
     /// onto two independently sited carbons.
     ///
-    /// ON by default, and exposed as a real checkbox on the wizard's MDMC
+    /// ON by default, and exposed as a real checkbox on the wizard's MCMD
     /// settings page. It used to be inherited state, read off the input
     /// Graphene Oxide Build's own "go_pair_id" scalar field and never
     /// offered as a control, on the argument that a toggle could disagree
@@ -222,7 +259,7 @@ struct GrapheneOxideMdmcConfig {
     std::uint32_t seed = 0;
 
     /// NO LONGER READ by this generator, and no longer emitted into the
-    /// script. It throttled `mdmc_trajectory.extxyz`, which no longer
+    /// script. It throttled `mcmd_trajectory.extxyz`, which no longer
     /// exists: `trajectory` above now receives EVERY accepted
     /// configuration, because an acceptance ordinal that skips is not an
     /// ordinal. Kept as a field so the wizard that sets it still compiles;
@@ -267,24 +304,73 @@ struct GrapheneOxideMdmcConfig {
     /// application does.
     bool streamMdFrames = true;
 
-    /// NOT read by this generator, and not emitted into the script — MDMC's
+    /// NOT read by this generator, and not emitted into the script — MCMD's
     /// classification of which carbon belongs to which functional group is
     /// already the C++ classifier (core::GrapheneOxideBuilder::
     /// functionalGroupLabels()), and re-deriving it from the streamed
     /// geometry client-side, once per frame, is exactly as cheap as deriving
-    /// it once. Kept on this config purely because GrapheneOxideMdmcWizard
+    /// it once. Kept on this config purely because GrapheneOxideMcmdWizard
     /// already collects every other Output-page toggle here, and having
     /// MainWindow read `wizard.castPerFrame()` (which forwards to this
     /// field) match the shape of `wizard.streamMdFrames()`-style access
     /// beat inventing a second, parallel place for one bool to live. See
-    /// MainWindow::openGoMdmc() and
+    /// MainWindow::openGoMcmd() and
     /// MainWindow::redefineFunctionalGroupCastForFrame().
     bool castPerFrame = true;
+
+    // -- GO/MC-Opt ----------------------------------------------------------
+
+    /// Which module this configuration is for — see GoMcRelaxation.
+    GoMcRelaxation relaxation = GoMcRelaxation::MolecularDynamics;
+    /// Optimization only: the local optimizer.
+    GoMcOptimizer optimizer = GoMcOptimizer::Bfgs;
+    /// Optimization only: the force convergence criterion, in eV/Å. The value
+    /// every relaxation in this application defaults to, and the one a reader
+    /// expects to see quoted beside a relaxed energy.
+    double fmax = 0.05;
+    /// Optimization only: the step ceiling per cycle. A cap, not a target —
+    /// convergence to `fmax` is what ends a relaxation, and this is what stops
+    /// one cycle of a 200-cycle run from spending an afternoon on a proposal
+    /// that was never going to converge. A cycle that hits it is recorded as
+    /// unconverged and still judged: refusing to judge it would silently drop
+    /// the hardest proposals out of the statistics.
+    int optimizerMaxSteps = 200;
+    /// Optimization only: cap on the distance one optimizer step may move an
+    /// atom, in Å (ase's own `maxstep`). The default is ase's; raising it
+    /// speeds up a badly strained start and risks stepping over the minimum.
+    double optimizerMaxStep = 0.2;
+    // -- Variable-cell relaxation -------------------------------------------
+    //
+    // The SAME four questions Geometry Optimization asks, and deliberately not
+    // a simplified version of them: an MC-Opt run whose cell was relaxed
+    // isotropically is not comparable with one relaxed anisotropically, so a
+    // module that offered only an on/off switch would be producing energies a
+    // user cannot line up against the relaxations they already ran. Collected
+    // by the shared gui::CellRelaxationControls, which is the one
+    // implementation of the rules between them.
+
+    /// Relax the CELL as well as the atoms. Off by default — a graphene oxide
+    /// sheet in vacuum has no meaningful cell degree of freedom along the
+    /// vacuum axis, and letting one move is how a slab collapses onto its own
+    /// image.
+    bool relaxCell = false;
+    /// Which ASE cell filter wraps the atoms. FrechetCellFilter is the
+    /// better-behaved default; UnitCellFilter is the classic one.
+    CellFilter cellFilter = CellFilter::FrechetCell;
+    /// Constrain the strain to hydrostatic (isotropic) rather than the full
+    /// anisotropic stress relaxation.
+    bool cellHydrostatic = false;
+    /// Use the per-component Voigt mask below instead of the isotropic /
+    /// anisotropic presets — how a 2D sheet releases its two in-plane axes and
+    /// pins the vacuum one.
+    bool cellCustomMask = false;
+    /// Voigt-order mask [xx, yy, zz, yz, xz, xy]: true = relax that component.
+    bool cellMask[6] = {true, true, true, true, true, true};
 };
 
-class GrapheneOxideMdmcScriptGenerator {
+class GrapheneOxideMcmdScriptGenerator {
 public:
-    static std::string generate(const GrapheneOxideMdmcConfig& config);
+    static std::string generate(const GrapheneOxideMcmdConfig& config);
 };
 
 } // namespace calango::core

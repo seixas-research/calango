@@ -40,7 +40,6 @@ neighbouring menus, and this section documents those too:
 | Bond Length / Angle Distributions | {menuselection}`Analysis --> Bond Length / Angle Distributions…` | {doc}`/analysis/structural` |
 | Coordination Numbers (CN / GCN) | {menuselection}`Analysis --> Coordination Numbers (CN / GCN)…` | {doc}`/analysis/order` |
 | Local Entropy | {menuselection}`Analysis --> Local Entropy Analysis…` | {doc}`/analysis/order` |
-| Benzene-Ring / sp2 Percolation | {menuselection}`Analysis --> Benzene-Ring / sp2 Percolation Analysis…` | {doc}`/analysis/percolation` |
 | Partial Charge Analysis | {menuselection}`Analysis --> Partial Charge Analysis…` | {doc}`/electronic/charges` |
 | Velocity Autocorrelation (VACF) | {menuselection}`Analysis --> Velocity Autocorrelation Function (VACF)…` | {doc}`/analysis/structural` |
 | Charge Density Difference (CDD) | {menuselection}`Analysis --> Charge Density Difference (CDD)…` | {doc}`/electronic/charges` |
@@ -48,6 +47,8 @@ neighbouring menus, and this section documents those too:
 | Warren–Cowley Analysis | {menuselection}`Modules --> Alloys --> Warren-Cowley Analysis…` | {doc}`/analysis/order` |
 | GO Functional Group Analysis | {menuselection}`Modules --> Graphene Oxide --> GO Functional Group Analysis…` | {doc}`/builders/nanomaterials` |
 | GO Pair Correlation | {menuselection}`Modules --> Graphene Oxide --> GO Pair Correlation…` | {doc}`/builders/nanomaterials` |
+| Aromatic Percolation Analysis | {menuselection}`Modules --> Graphene Oxide --> Aromatic Percolation Analysis…` | {doc}`/analysis/percolation` |
+| π Percolation Analysis | {menuselection}`Modules --> Graphene Oxide --> π Percolation Analysis…` | {doc}`/analysis/percolation` |
 | Volumetric Data dock | {menuselection}`View --> Volumetric Data` | {doc}`/analysis/volumetric` |
 | Brillouin Zone Builder | {menuselection}`Build --> Brillouin Zone Builder…` | {doc}`/analysis/reciprocal` |
 
@@ -74,9 +75,13 @@ The pages in this section split by what kind of question is being asked:
   generalized coordination numbers, Warren–Cowley short-range-order
   parameters, and the Piaggi–Parrinello local-entropy fingerprint.
 - {doc}`/analysis/percolation` — *does the sp2 network still connect?*
-  Benzene-ring formation/disruption in graphene oxide and whether the intact
+  Aromatic-ring formation/disruption in graphene oxide and whether the intact
   rings still percolate the periodic cell, current structure or across an
-  MDMC trajectory.
+  GO/MCMD or GO/MC-Opt trajectory. Opened from
+  {menuselection}`Modules --> Graphene Oxide`
+  with the rest of that module, since it reads the Graphene Oxide Builder's
+  own classification; documented here because the question it answers is a
+  structural one.
 - {doc}`/analysis/symmetry` — *what group does the structure realize?*
   Space-group and factor-group analysis with Raman/IR activity, and the
   magnetic space group determined from coordinates plus magnetic moments.

@@ -142,8 +142,9 @@ Velocity Autocorrelation Function (VACF)… · Charge Density Difference
 
 **{guilabel}`Modules`** — MLIP (Trainer…, Dataset Manager…) · 2D Materials
 (2D Bands…, 2D Optics…, 2D Workfunction…, Charged Defects in 2D Materials…)
-· Graphene Oxide (Graphene Oxide Builder…, GO-MDMC…, GO Functional Group
-Analysis…, GO Pair Correlation…) · Alloys (Cluster Expansion Builder…,
+· Graphene Oxide (Graphene Oxide Builder…, GO/MCMD…, GO/MC-Opt…, GO
+Functional Group Analysis…, GO Pair Correlation…, Aromatic Percolation
+Analysis…) · Alloys (Cluster Expansion Builder…,
 Cluster Expansion Calculation…, Special Quasirandom Structure (SQS)…,
 Warren-Cowley Analysis…) · Parameters Convergence (Plane-wave Cutoff
 Convergence…, K-points Convergence…)

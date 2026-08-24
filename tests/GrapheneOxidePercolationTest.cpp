@@ -27,13 +27,18 @@
 
 #include "core/GrapheneOxideBuilder.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
 
+using calango::core::analyzePiPercolation;
 using calango::core::analyzeRingPercolation;
 using calango::core::analyzeRingPercolationTrajectory;
+using calango::core::Atom;
 using calango::core::GrapheneOxideBuilder;
+using calango::core::PiPercolationResult;
+using calango::core::Vec3;
 using calango::core::RingPercolationResult;
 using calango::core::Structure;
 using Base = GrapheneOxideBuilder::Base;
@@ -157,7 +162,7 @@ int main()
     }
 
     std::printf("\nPer-frame trajectory analysis — a deterministic, seeded progressive-oxidation "
-                "sequence (a live MDMC/ASE run is Python-driven and out of scope for a native "
+                "sequence (a live MCMD/ASE run is Python-driven and out of scope for a native "
                 "Qt-free test; this exercises the same per-frame analysis loop the trajectory "
                 "viewer calls):\n");
     {
@@ -192,7 +197,119 @@ int main()
               "the last, most-oxidized frame has strictly fewer intact rings than the first");
     }
 
-    std::printf(failures == 0 ? "\nAll ring-percolation checks passed.\n"
+    // -----------------------------------------------------------------------
+    // pi percolation — the same question, the weaker criterion
+    // -----------------------------------------------------------------------
+    std::printf("\nPi percolation on a pristine sheet — agrees with the "
+                "ring analysis where they should agree:\n");
+    {
+        Config config;
+        config.lattice = Lattice::Rectangular;
+        config.supercell[0] = 4;
+        config.supercell[1] = 4;
+        const Structure sheet = GrapheneOxideBuilder::pristine(config);
+
+        const PiPercolationResult pi = analyzePiPercolation(sheet);
+        check(pi.piCarbons.size() == sheet.size(),
+              "every carbon of a pristine sheet carries a pi orbital");
+        check(pi.piCarbonFraction == 1.0, "so the fraction is 1");
+        check(pi.domains.size() == 1,
+              "and they form ONE conjugated network");
+        check(pi.largestDomainFraction == 1.0,
+              "which is the whole of it");
+        check(pi.percolatesAxis[0] && pi.percolatesAxis[1]
+                  && !pi.percolatesAxis[2],
+              "percolating both in-plane axes and not the vacuum axis — the "
+              "same answer the ring criterion gives on an unoxidized sheet");
+        check(pi.atomDomain.size() == sheet.size()
+                  && pi.atomDomain[0] == 0,
+              "the per-atom domain map is index-aligned with the structure");
+    }
+
+    std::printf("\nAn sp3 carbon carries no pi orbital, even unoxidized:\n");
+    {
+        // Two carbons and enough hydrogens to make one of them
+        // four-coordinate: ethane-like. Neither carbon carries an OXYGEN
+        // group, so functionalGroupLabels() reports -1 for both and
+        // sp2CarbonFraction would call them both sp2 — the coordination test
+        // is the only thing that can tell them apart, which is exactly why
+        // this criterion has one.
+        Structure molecule;
+        Atom atom;
+        atom.atomicNumber = 6;
+        atom.position = {0.0, 0.0, 0.0};
+        molecule.addAtom(atom);
+        atom.position = {1.50, 0.0, 0.0};
+        molecule.addAtom(atom);
+        atom.atomicNumber = 1;
+        for (const Vec3& offset :
+             {Vec3{-0.54, 1.03, 0.0}, Vec3{-0.54, -0.51, 0.89},
+              Vec3{-0.54, -0.51, -0.89}}) {
+            atom.position = offset;
+            molecule.addAtom(atom);
+        }
+
+        const PiPercolationResult pi = analyzePiPercolation(molecule);
+        // Carbon 0 has three hydrogens plus carbon 1 = four sigma bonds.
+        check(std::find(pi.piCarbons.begin(), pi.piCarbons.end(), 0)
+                  == pi.piCarbons.end(),
+              "the four-coordinate carbon is excluded");
+        check(std::find(pi.piCarbons.begin(), pi.piCarbons.end(), 1)
+                  != pi.piCarbons.end(),
+              "the one-coordinate one is not");
+        check(!pi.percolatesAxis[0] && !pi.percolatesAxis[1]
+                  && !pi.percolatesAxis[2],
+              "and a non-periodic molecule percolates nothing");
+    }
+
+    std::printf("\nWhere the two criteria DIVERGE — oxidation that cuts "
+                "every ring but leaves a conjugated path:\n");
+    {
+        // The case the pi criterion exists for. A single epoxide destroys
+        // three hexagons at once, so a scattering of them can take the
+        // intact-ring network to pieces while the sp2 carbons between them
+        // are still bonded to one another in an unbroken path across the
+        // cell. Ring percolation scores that as dead; conduction does not.
+        Config config;
+        config.lattice = Lattice::Rectangular;
+        config.supercell[0] = 6;
+        config.supercell[1] = 6;
+        config.dosing = Dosing::ExplicitCoverage;
+        config.setCoverage(Group::Epoxide, 0.16);
+        config.seed = 11;
+        const Structure sheet = GrapheneOxideBuilder::build(config);
+
+        const RingPercolationResult rings = analyzeRingPercolation(sheet);
+        const PiPercolationResult pi = analyzePiPercolation(sheet);
+
+        std::printf("      intact rings %.3f, pi carbons %.3f, largest pi "
+                    "domain %.3f\n",
+                    rings.intactRingFraction, pi.piCarbonFraction,
+                    pi.largestDomainFraction);
+        std::printf("      ring percolation %d%d, pi percolation %d%d\n",
+                    rings.percolatesAxis[0] ? 1 : 0,
+                    rings.percolatesAxis[1] ? 1 : 0,
+                    pi.percolatesAxis[0] ? 1 : 0,
+                    pi.percolatesAxis[1] ? 1 : 0);
+
+        // The inequality is the assertion, and it holds by construction:
+        // every carbon of an intact ring is a pi carbon, so the pi network
+        // contains the intact-ring network as a subgraph and can only ever
+        // be MORE connected. A build where the pi network is the more broken
+        // of the two would be a bug in one of them.
+        check(pi.piCarbonFraction >= rings.intactRingFraction,
+              "the pi network is never smaller than the intact-ring network — "
+              "it contains it");
+        for (int axis = 0; axis < 2; ++axis) {
+            check(!rings.percolatesAxis[static_cast<std::size_t>(axis)]
+                      || pi.percolatesAxis[static_cast<std::size_t>(axis)],
+                  "an axis the rings percolate is always one the pi network "
+                  "percolates too");
+        }
+        check(pi.domains.size() >= 1, "and there is a conjugated network");
+    }
+
+    std::printf(failures == 0 ? "\nAll percolation checks passed.\n"
                               : "\n%d check(s) FAILED.\n",
                 failures);
     return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;

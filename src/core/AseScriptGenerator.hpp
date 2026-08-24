@@ -60,7 +60,7 @@ public:
     /// a trajectory frame for the viewport.
     ///
     /// Exposed so a generator that drives its own loop (the graphene oxide
-    /// MDMC sampler) streams through the SAME code path as a relaxation or an
+    /// MCMD sampler) streams through the SAME code path as a relaxation or an
     /// MD run. A second implementation of the block format would be a second
     /// thing to keep in step with the parser, and the parser is one regex.
     ///
@@ -196,6 +196,19 @@ public:
     /// backend among them — MUST emit the SAME one, not rely on VASP's own
     /// default (Normal), or the grids silently stop matching the moment
     /// anyone picks anything but the default precision.
+    /// The `ldau=…` keyword lines for a `Vasp(…)` call, or "" when the run
+    /// asks for no Hubbard correction.
+    ///
+    /// Public because Electronic Structure (and anything else that builds its
+    /// own Vasp() rather than going through the shared emitter) has to write
+    /// the same block: a generator that forgets it produces a plain-PBE run
+    /// from a wizard that collected a U, with nothing anywhere saying so.
+    ///
+    /// `withLmaxmix` false where the caller writes its own LMAXMIX line.
+    static std::string vaspHubbardKeywords(const CalculatorConfig& c,
+                                           const std::string& indent,
+                                           bool withLmaxmix = true);
+
     static std::string vaspPrecString(VaspPrecision prec);
 };
 
