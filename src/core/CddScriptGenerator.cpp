@@ -71,8 +71,7 @@ std::string cddExternalEngine(const CddRunConfig& c)
             "\n"
             "\n"
             "atoms, rho_ab = _read_vasp_density(baseline_dir)\n"
-        + AseScriptGenerator::vaspPotcarResolutionSnippet(
-              c.calculator.vaspPotcarPath)
+        + AseScriptGenerator::vaspPotcarResolutionSnippet(c.calculator)
         +
             "_ngx, _ngy, _ngz = rho_ab.shape\n"
             "print('CALANGO_INFO parent grid %dx%dx%d' % rho_ab.shape,\n"

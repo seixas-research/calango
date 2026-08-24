@@ -572,32 +572,21 @@ rm -rf "$MNT"; rm -f "$PROBE_LOG"
 # Every shipped Mach-O must load only relative (@executable_path/
 # @loader_path/@rpath) or system (/System, /usr/lib) paths — anything else
 # is a build-machine path (Homebrew, a conda prefix, $HOME, ...) that will
-# not exist on the machine installing this .dmg. Added after calango
-# 26.8.36's calango-dftb-run binary (the native DFTB engine's helper,
-# since removed along with the engine itself — see CMakeLists.txt) shipped
-# linked directly against /opt/homebrew/opt/openblas/lib/libopenblas.0.dylib
-# (an unconstrained find_package(LAPACK) preferred Homebrew's openblas
-# over Accelerate on that build machine, and nothing downstream of its
-# plain install(TARGETS) rewrote load commands the way macdeployqt
-# rewrites `calango` itself). The fix to that root cause was a since-
-# removed CALANGO_BLAS option, superseded by removing every consumer of
-# find_package(LAPACK) entirely — this audit is the backstop that now
-# catches the same class of leak on any OTHER bundled library.
+# not exist on the machine installing this .dmg. A binary installed by a
+# plain install(TARGETS) keeps whatever it was linked with — nothing
+# downstream rewrites its load commands the way macdeployqt rewrites
+# `calango` itself — so this audit is what catches it.
 #
 # The embedded Python payload (Contents/Resources/python and the linked
-# Contents/Frameworks/Python.framework) is EXCLUDED here, not because it is
-# clean — auditing that same 26.8.36 .dmg found it is NOT: six stdlib
-# extension modules and the framework's own python3.14/Python binaries
-# loaded Homebrew OpenSSL/sqlite/zstd/mpdecimal/xz directly, meaning that
-# artifact was built against a Homebrew-linked interpreter rather than the
-# relocatable python-build-standalone tree this script normally downloads
-# (see PYTHON_BIN / CALANGO_EMBEDDED_PYTHON_DIR above). That is a separate,
-# pre-existing bug in the Python-provisioning path, already partly covered
-# by the --probe-python check just above (which catches "ASE won't import"
-# but not "every dylib is relocatable") — fixing it is tracked, not done
-# here; see packaging/README.md's "BLAS/LAPACK backend" section for the
-# full incident writeup. Re-run this script without the two
-# --exclude flags below once that is fixed, to turn this into a full gate.
+# Contents/Frameworks/Python.framework) is EXCLUDED here, and NOT because
+# it is known clean: an interpreter built against Homebrew's
+# OpenSSL/sqlite/zstd/mpdecimal/xz carries the same class of undeclared
+# dependency in its stdlib extension modules. The --probe-python check just
+# above catches "ASE won't import", not "every dylib is relocatable".
+# Build the framework via the documented default flow (the relocatable
+# python-build-standalone tree — see PYTHON_BIN /
+# CALANGO_EMBEDDED_PYTHON_DIR above) and drop the two --exclude flags below
+# to turn this into a full gate.
 echo ""
 echo "==> Auditing shipped Mach-O binaries for build-machine paths"
 if ! python3 "$SCRIPT_DIR/audit_macho_deps.py" "$FINAL" \

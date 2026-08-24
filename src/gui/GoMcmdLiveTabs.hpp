@@ -70,7 +70,19 @@ inline QString goMcOptTaskLabel()
     return QObject::tr("GO/MC-Opt");
 }
 
-/// Is `taskLabel` one of the two graphene-oxide Monte Carlo modules?
+/// The task label a GO Grand Canonical MC run is launched under.
+///
+/// A third distinct label, for the same reason the second one is distinct:
+/// the Processes row, the Summary window's title and the viewport tab
+/// titles all have to say which module produced the run. The output-file
+/// layout is shared with the other two, so every consumer downstream reads
+/// all three without knowing which.
+inline QString goGcmcTaskLabel()
+{
+    return QObject::tr("GO/GCMC");
+}
+
+/// Is `taskLabel` one of the graphene-oxide Monte Carlo modules?
 ///
 /// The question every tab, dialog and dispatch site actually wants: the two
 /// behave identically in all of them, and asking it once here is what keeps a
@@ -78,12 +90,34 @@ inline QString goMcOptTaskLabel()
 inline bool isGoMonteCarloTask(const QString& taskLabel)
 {
     return taskLabel == goMcmdTaskLabel()
-        || taskLabel == goMcOptTaskLabel();
+        || taskLabel == goMcOptTaskLabel()
+        || taskLabel == goGcmcTaskLabel();
 }
 
-/// Every viewport tab a run of `taskLabel` creates, in creation order.
-/// EXACTLY two, for either module. Empty for anything else.
-inline std::vector<GoMcmdLiveView> goMcmdLiveViews(const QString& taskLabel)
+/// Which of the three trajectory files a run should open a live tab for.
+///
+/// THE FILES ARE ALWAYS WRITTEN — all three of them, on every run. This
+/// selects viewing only, which is why the wizard's own tooltip says so: a
+/// user unchecking a box is choosing not to watch a file, never to lose it.
+struct GoMcmdLiveTabSelection {
+    /// One frame per MC cycle: the configuration the Metropolis test was
+    /// handed. On by default — it is the per-cycle record, and the one that
+    /// answers "what is it proposing?".
+    bool candidates = true;
+    /// The distinct accepted configurations. On by default — the ensemble.
+    bool accepted = true;
+    /// Every frame of every inner phase. Off by default: it is the longest
+    /// file by far (one frame per MD or optimizer step) and watching it is a
+    /// deliberate choice, not a starting point.
+    bool allStructures = false;
+};
+
+/// Every viewport tab a run of `taskLabel` creates, in creation order,
+/// filtered by `selection`. Empty for a label that is not a GO Monte Carlo
+/// module — and empty is also a legitimate answer for one, if every box was
+/// unchecked.
+inline std::vector<GoMcmdLiveView> goMcmdLiveViews(
+    const QString& taskLabel, const GoMcmdLiveTabSelection& selection = {})
 {
     if (!isGoMonteCarloTask(taskLabel))
         return {};
@@ -91,12 +125,27 @@ inline std::vector<GoMcmdLiveView> goMcmdLiveViews(const QString& taskLabel)
     // module produced the run. Two modules never share a proc_<id>/, so there
     // is nothing for a shared name to collide with, and one set of names is
     // what lets the Summary window and the analysis modules read either.
-    return {
-        {QStringLiteral("mcmd_all_structures.extxyz"),
-         QObject::tr("%1 — All Structures").arg(taskLabel)},
-        {QStringLiteral("accepted_structures.extxyz"),
-         QObject::tr("%1 — Accepted").arg(taskLabel)},
-    };
+    //
+    // Creation order is the reading order: candidates (one per cycle), then
+    // the accepted subset, then the full step-by-step record.
+    std::vector<GoMcmdLiveView> views;
+    if (selection.candidates)
+        views.push_back({QStringLiteral("candidates_structures.extxyz"),
+                         QObject::tr("%1 — Candidates").arg(taskLabel)});
+    if (selection.accepted)
+        views.push_back({QStringLiteral("accepted_structures.extxyz"),
+                         QObject::tr("%1 — Accepted").arg(taskLabel)});
+    if (selection.allStructures)
+        views.push_back({QStringLiteral("mcmd_all_structures.extxyz"),
+                         QObject::tr("%1 — All Structures").arg(taskLabel)});
+    return views;
+}
+
+/// Every tab the module CAN open, selection ignored — for the wizard's own
+/// checkbox list and for tests that enumerate the full set.
+inline std::vector<GoMcmdLiveView> goMcmdAllLiveViews(const QString& taskLabel)
+{
+    return goMcmdLiveViews(taskLabel, GoMcmdLiveTabSelection{true, true, true});
 }
 
 /// GO/MCMD's two tabs — the no-argument form, kept for callers that mean that

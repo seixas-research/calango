@@ -183,8 +183,16 @@ void SimulationWizardBase::buildUi()
     connect(cancelButton, &QPushButton::clicked, this, &QDialog::reject);
     connect(exportButton_, &QPushButton::clicked, this,
             &SimulationWizardBase::exportScript);
+    // The run TARGET is passed into the pre-flights, not inferred. Both
+    // POTCAR and vasp_ncl checks used to close with a paragraph about HPC
+    // cluster profiles no matter which button was pressed, so a purely
+    // LOCAL run that failed a local check was answered with advice about
+    // remote execution — the message described a machine the user was not
+    // using (2026-08-24). preflightGpawMpi() already had this right: it is
+    // local-only and says so.
     connect(runLocalButton_, &QPushButton::clicked, this, [this] {
-        if (!preflightVaspPotcar() || !preflightVaspNcl() || !preflightSecondary()
+        if (!preflightVaspPotcar(RunTarget::Local)
+            || !preflightVaspNcl(RunTarget::Local) || !preflightSecondary()
             || !preflightGpawMpi() || !preflightVaspHubbardConsistency()
             || !preflightVaspHybrid())
             return;
@@ -192,7 +200,8 @@ void SimulationWizardBase::buildUi()
         accept();
     });
     connect(runRemoteButton_, &QPushButton::clicked, this, [this] {
-        if (!preflightVaspPotcar() || !preflightVaspNcl() || !preflightSecondary()
+        if (!preflightVaspPotcar(RunTarget::Remote)
+            || !preflightVaspNcl(RunTarget::Remote) || !preflightSecondary()
             || !preflightVaspHubbardConsistency() || !preflightVaspHybrid())
             return;
         action_ = Action::RunRemote;
@@ -1526,27 +1535,38 @@ bool SimulationWizardBase::preflightVaspHybrid()
     return true;
 }
 
-bool SimulationWizardBase::preflightVaspPotcar()
+bool SimulationWizardBase::preflightVaspPotcar(RunTarget target)
 {
     if (selectedCalculator() != core::CalculatorKind::Vasp)
         return true;
     const core::CalculatorConfig cfg = baseCalculatorConfig();
+    // The functional too, not just the path: it is what picks the POTCAR
+    // family ASE searches, and checking a different one is how a correct
+    // directory got reported as a missing POTCAR.
     const auto result = checkVaspPotcar(
-        QString::fromStdString(cfg.vaspPotcarPath), suggestionElements());
+        QString::fromStdString(cfg.vaspPotcarPath), suggestionElements(),
+        QString::fromStdString(cfg.vaspXc));
     if (result.ok)
         return true;
-    QMessageBox::warning(
-        this, tr("VASP POTCAR directory"),
-        tr("%1\n\nNothing was launched. This is a LOCAL check — a remote "
-           "job's cluster profile may configure its own POTCAR directory "
-           "(HPC panel → Scheduler → VASP POTCAR directory) that lives on "
-           "a machine this check cannot see; that path is validated when "
-           "the job actually runs, the same way this one was checked here.")
-            .arg(result.errorMessage));
+    // The closing advice depends on where the run was actually going. A
+    // local run has exactly one POTCAR directory that matters and it is the
+    // one just checked; bringing up cluster profiles there describes a
+    // machine the user is not using.
+    const QString advice = target == RunTarget::Local
+        ? tr("Nothing was launched. Set the directory in Preferences → "
+             "External Files (VASP).")
+        : tr("Nothing was launched. This is a LOCAL check — a remote job's "
+             "cluster profile may configure its own POTCAR directory (HPC "
+             "panel → Scheduler → VASP POTCAR directory) that lives on a "
+             "machine this check cannot see; that path is validated when "
+             "the job actually runs, the same way this one was checked "
+             "here.");
+    QMessageBox::warning(this, tr("VASP POTCAR directory"),
+                         tr("%1\n\n%2").arg(result.errorMessage, advice));
     return false;
 }
 
-bool SimulationWizardBase::preflightVaspNcl()
+bool SimulationWizardBase::preflightVaspNcl(RunTarget target)
 {
     if (selectedCalculator() != core::CalculatorKind::Vasp)
         return true;
@@ -1568,16 +1588,20 @@ bool SimulationWizardBase::preflightVaspNcl()
             .trimmed();
     if (!nclPath.isEmpty())
         return true;
+    const QString advice = target == RunTarget::Local
+        ? tr("Nothing was launched. Set it in Preferences → External Files → "
+             "VASP executables.")
+        : tr("Nothing was launched. Set it in Preferences → External Files → "
+             "VASP executables. This is a LOCAL check — a remote job's "
+             "cluster profile may configure its own vasp_ncl path that "
+             "lives on a machine this check cannot see; the generated "
+             "script refuses at runtime just the same if that is missing "
+             "too.");
     QMessageBox::warning(
         this, tr("VASP spin-orbit executable"),
         tr("Spin-orbit coupling (Non-Collinear spin) needs vasp_ncl — "
            "vasp_std cannot run a noncollinear calculation at all — and "
-           "none is configured.\n\n"
-           "Nothing was launched. Set it in Preferences → External Files → "
-           "VASP executables. This is a LOCAL check — a remote job's "
-           "cluster profile may configure its own vasp_ncl path that lives "
-           "on a machine this check cannot see; the generated script "
-           "refuses at runtime just the same if that is missing too."));
+           "none is configured.\n\n%1").arg(advice));
     return false;
 }
 
@@ -2420,6 +2444,7 @@ void SimulationWizardBase::buildDftGpawGroups(QWidget* parent,
     // nobody finds twice. GPAW keeps its own XC combo on the row below,
     // because GPAW's list is different (it carries the vdW functionals).
     vaspXcCombo_ = new QComboBox(modeBasisGroup_);
+    vaspXcCombo_->setObjectName(QStringLiteral("vaspXcCombo"));
     vaspXcCombo_->setEditable(true);
     vaspXcCombo_->addItems({QStringLiteral("PBE"), QStringLiteral("PBEsol"),
                             QStringLiteral("RPBE"), QStringLiteral("LDA"),
@@ -2432,13 +2457,21 @@ void SimulationWizardBase::buildDftGpawGroups(QWidget* parent,
     vaspXcLabel_ = new QLabel(tr("XC functional"), modeBasisGroup_);
 
     cutoffRow_ = new QWidget(modeBasisGroup_);
+    cutoffRow_->setObjectName(QStringLiteral("cutoffRow"));
     auto* cutoffLayout = new QHBoxLayout(cutoffRow_);
     cutoffLayout->setContentsMargins(0, 0, 0, 0);
     cutoffLayout->addWidget(cutoffSpin_);
     cutoffLayout->addWidget(vaspXcLabel_);
     cutoffLayout->addWidget(vaspXcCombo_, 1);
     cutoffLayout->addStretch(1);
-    modeForm->addRow(tr("Plane-wave cutoff:"), cutoffRow_);
+    // The form label is kept rather than let QFormLayout own it, because a
+    // wizard whose sweep stage owns the cutoff (Cutoff Convergence) hides
+    // the SPIN BOX and keeps the row for the XC combo alone — at which
+    // point "Plane-wave cutoff:" would be labelling a functional. Pairing
+    // the two on one row is deliberate (see above); labelling the pair with
+    // the half that is not there is not.
+    cutoffRowLabel_ = new QLabel(tr("Plane-wave cutoff:"), modeBasisGroup_);
+    modeForm->addRow(cutoffRowLabel_, cutoffRow_);
 
     gpawGridSpacingSpin_ = new QDoubleSpinBox(modeBasisGroup_);
     gpawGridSpacingSpin_->setRange(0.05, 0.50);
@@ -2969,9 +3002,25 @@ void SimulationWizardBase::updateGpawRows()
     // ... and hidden outright for a wizard whose sweep stage owns the cutoff
     // (Cutoff Convergence) — there the row would be a control the generated
     // script ignores.
-    setRowVisible(cutoffRow_, mode == core::GpawMode::PlaneWave
-                      && !inheritsCalculatorFromBaseline()
-                      && showsPlaneWaveCutoffRow());
+    // The ROW carries two independent decisions — the cutoff and (for VASP)
+    // the XC functional. Hiding it outright when the sweep owns the cutoff
+    // took the functional with it, which is exactly how Cutoff Convergence
+    // ended up with no way to choose PBE (2026-08-24). Hide the spin box
+    // instead, keep the row for whatever else is on it, and drop the row
+    // only when nothing is left.
+    const bool wantsCutoff = mode == core::GpawMode::PlaneWave
+        && !inheritsCalculatorFromBaseline() && showsPlaneWaveCutoffRow();
+    const bool wantsVaspXc = vaspXcCombo_ && vaspXcCombo_->isVisible();
+    if (cutoffSpin_)
+        cutoffSpin_->setVisible(wantsCutoff);
+    setRowVisible(cutoffRow_, wantsCutoff || wantsVaspXc);
+    if (cutoffRowLabel_)
+        cutoffRowLabel_->setText(wantsCutoff ? tr("Plane-wave cutoff:")
+                                             : tr("XC functional:"));
+    // With the form label carrying it, the inline one beside the combo is a
+    // duplicate; it earns its place only when the cutoff shares the row.
+    if (vaspXcLabel_)
+        vaspXcLabel_->setVisible(wantsCutoff && wantsVaspXc);
 }
 
 // ---------------------------------------------------------------------------
@@ -3180,9 +3229,18 @@ void SimulationWizardBase::updateCalculatorEnabled()
     // the sweep and a second toggle here would be a control the script ignores.
     const bool showsGamma =
         core::usesPlaneWaveCutoff(kind) && showsKpointGridRow();
-    setFormRowVisible(bzGroup_, gpawBzTogglesRow_, showsGamma);
+    // The row carries TWO independent toggles — Γ-centering and "Symmetry
+    // off" — so hiding it wholesale because the sweep owns Γ-centering
+    // would take the symmetry toggle with it. The same one-row-two-decisions
+    // trap that hid VASP's XC functional behind the plane-wave cutoff row.
+    // Latent rather than live today (no wizard both hides the k-grid row and
+    // wants the symmetry toggle), and cheaper to close than to remember.
+    const bool showsSymmetry = isGpaw && showsGpawSymmetryToggle();
+    if (gpawGammaCheck_)
+        gpawGammaCheck_->setVisible(showsGamma);
     if (gpawSymmetryOffCheck_)
-        gpawSymmetryOffCheck_->setVisible(isGpaw && showsGpawSymmetryToggle());
+        gpawSymmetryOffCheck_->setVisible(showsSymmetry);
+    setFormRowVisible(bzGroup_, gpawBzTogglesRow_, showsGamma || showsSymmetry);
 
     // The XC note is gone for every engine now. It said the functional
     // "defaults to PBE in the script (editable in Stage 4)", which was true
@@ -3269,9 +3327,24 @@ void SimulationWizardBase::updateCalculatorEnabled()
         // whatever their nearest parameter was — for SIESTA, its real-space
         // mesh — so raising it to converge "the basis" refined a grid while
         // the basis stayed exactly as small.
-        setFormRowVisible(modeBasisGroup_, cutoffRow_,
-                          core::usesPlaneWaveCutoff(kind)
-                              && showsPlaneWaveCutoffRow());
+        // Same reasoning as updateModeRows(): the row is shared with VASP's
+        // XC functional, so it survives a hidden cutoff and only the spin
+        // box goes. A wizard that sweeps the cutoff must still be able to
+        // choose the functional the sweep is run with.
+        {
+            const bool wantsCutoff = core::usesPlaneWaveCutoff(kind)
+                && showsPlaneWaveCutoffRow();
+            if (cutoffSpin_)
+                cutoffSpin_->setVisible(wantsCutoff);
+            setFormRowVisible(modeBasisGroup_, cutoffRow_,
+                              wantsCutoff || isVasp);
+            if (cutoffRowLabel_)
+                cutoffRowLabel_->setText(wantsCutoff
+                                             ? tr("Plane-wave cutoff:")
+                                             : tr("XC functional:"));
+            if (vaspXcLabel_)
+                vaspXcLabel_->setVisible(wantsCutoff && isVasp);
+        }
     if (inheritGpaw) {
         setFormRowVisible(modeBasisGroup_, gpawXcCombo_, false);
         setFormRowVisible(modeBasisGroup_, gpawModeCombo_, false);

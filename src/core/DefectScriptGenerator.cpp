@@ -322,8 +322,7 @@ atoms_host, E_host = _read_energy(PRISTINE)
             // subject) applies regardless of which structure's elements
             // are checked.
             out << "atoms = atoms_host\n"
-                << AseScriptGenerator::vaspPotcarResolutionSnippet(
-                       cfg.calculator.vaspPotcarPath);
+                << AseScriptGenerator::vaspPotcarResolutionSnippet(cfg.calculator);
         }
         out << R"PY(
 E_VBM, E_CBM = _read_band_edges(PRISTINE)

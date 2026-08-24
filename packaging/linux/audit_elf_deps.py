@@ -2,22 +2,15 @@
 """Fail the Linux packaging build if a shipped ELF needs a library the .deb
 does not declare.
 
-Written after calango 26.8.36 shipped a .deb that dynamically needed
-libmkl_intel_lp64.so.3 / libmkl_intel_thread.so.3 / libmkl_core.so.3 /
-libiomp5.so -- present on the build machine (an unconstrained
-find_package(LAPACK) picked up MKL there), completely absent from the
-control file's Depends, and therefore absent on every clean machine
-`apt install` was run on. Not even a Calango-specific gap: CMake's own
+THE GAP THIS CLOSES, and it is not Calango-specific: CMake's own
 CPackDeb.cmake unconditionally passes `dpkg-shlibdeps --ignore-missing-info`
 when the installed dpkg-shlibdeps supports it, which downgrades what would
 otherwise be a hard "no dependency information found" build failure into a
-silent omission of exactly that dependency -- true for every project with
-CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON, not just this one. The fix to the root
-cause was pinning BLA_VENDOR via a since-removed CALANGO_BLAS option --
-superseded by removing the native DFT/DFTB engines that were LAPACK's only
-consumers entirely (see CMakeLists.txt). This script is the backstop that
-turns the NEXT such leak, on any other library, into a build failure here,
-not a bug report from a user's machine.
+SILENT omission of exactly that dependency. Any project with
+CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON can therefore ship a .deb that installs
+cleanly and dies on first launch, on any machine that lacks a library the
+build machine happened to have. This script turns that into a build failure
+here rather than a bug report from a user's machine.
 
 Usage (run from the Linux build machine, after `cpack` produced the .deb,
 before it is published -- packaging/linux/build_deb.sh does this):
@@ -74,13 +67,12 @@ BASE_SYSTEM_ALLOWLIST = {
     "ld-linux-armhf.so.3",
 }
 
-# Never acceptable in a shipped binary, no matter what Depends says --
-# these are exactly the sonames the 26.8.36 incident shipped, back when
-# the native DFT/DFTB engines still linked LAPACK at all (see
-# CMakeLists.txt; both were since removed, taking every BLAS dependency
-# with them). Banned outright rather than relying on that removal alone:
-# a build whose artifact still needs these at runtime must never leave
-# this machine, whatever introduces the link.
+# Never acceptable in a shipped binary, no matter what Depends says.
+# Nothing in this codebase links MKL or the Intel OpenMP runtime, and
+# nothing should: they are not redistributable through a .deb's Depends
+# and are absent from every clean machine. Banned outright rather than
+# relying on nothing pulling them in -- a build whose artifact needs them
+# at runtime must never leave this machine, whatever introduced the link.
 BANNED_SONAME_PATTERNS = [
     re.compile(r"^libmkl_"),
     re.compile(r"^libiomp5"),

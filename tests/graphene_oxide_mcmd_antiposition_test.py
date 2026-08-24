@@ -305,6 +305,75 @@ def verify(python, trajectory, fixture):
     return json.loads(result.stdout) if result.returncode == 0 else None
 
 
+
+def count_extxyz_frames(path):
+    """Frames in an extended-XYZ file: one per atom-count header line."""
+    count = 0
+    with open(path) as handle:
+        while True:
+            line = handle.readline()
+            if not line:
+                return count
+            try:
+                natoms = int(line.strip())
+            except ValueError:
+                return count
+            count += 1
+            handle.readline()                      # the comment/info line
+            for _ in range(natoms):
+                handle.readline()
+
+
+def decorations(path):
+    """Each frame's functional-group configuration, as a hashable key.
+
+    Read off the per-atom `go_group_id` column the frames carry, so two
+    frames compare equal iff the same carbons host the same groups.
+    """
+    keys = []
+    with open(path) as handle:
+        while True:
+            line = handle.readline()
+            if not line:
+                return keys
+            try:
+                natoms = int(line.strip())
+            except ValueError:
+                return keys
+            info = handle.readline()
+            columns = [c.strip() for c in info.split("Properties=")[-1]
+                       .split()[0].split(":")] if "Properties=" in info else []
+            # Column index of go_group_id among the per-atom fields.
+            index, cursor = None, 0
+            for i in range(0, len(columns) - 2, 3):
+                name, _kind, width = columns[i], columns[i + 1], int(columns[i + 2])
+                if name == "go_group_id":
+                    index = cursor
+                cursor += width
+            rows = [handle.readline().split() for _ in range(natoms)]
+            if index is None:
+                keys.append(None)
+            else:
+                keys.append(tuple(r[index] if index < len(r) else ""
+                                  for r in rows))
+
+
+def last_metric_values(path):
+    """The last value of every series in a metrics.json, flattened.
+
+    The file is {"metrics": [{"step": n, <field>: value, ...}, ...]} --
+    _calango_metric() writes one flat entry per sample and skips None
+    fields, so a key is present iff the run ever recorded it.
+    """
+    data = json.loads(open(path).read())
+    last = {}
+    for entry in data.get("metrics", []):
+        for key, value in entry.items():
+            if key != "step" and isinstance(value, (int, float)):
+                last[key] = value
+    return last
+
+
 def main():
     if len(sys.argv) < 2:
         raise SystemExit(
@@ -360,6 +429,72 @@ def main():
                   f"at least one move was actually accepted "
                   f"({summary.get('accepted')} of {summary.get('cycles')} "
                   f"cycles) — otherwise nothing below would be exercised")
+
+            # --- The three-file scheme (Task 2, 2026-08-24) -------------
+            #
+            # THE ARITHMETIC. candidates_structures.extxyz holds the state
+            # each cycle's inner phase ended on -- the configuration the
+            # Metropolis test was handed -- so its length is the cycle count
+            # EXACTLY, cycles that never reached a Metropolis test included
+            # (a broken topology, a saturated site pool; those frames carry
+            # the phase that says so). accepted_structures is the subset
+            # that was accepted, so it can only be shorter.
+            candidates_path = job / "candidates_structures.extxyz"
+            check(candidates_path.is_file(),
+                  "the candidates trajectory was written")
+            if candidates_path.is_file():
+                counted = count_extxyz_frames(candidates_path)
+                check(summary["candidates_frames_expected"]
+                      == summary["cycles"],
+                      f"one candidate frame per MC cycle is what the run "
+                      f"expects ({summary['candidates_frames_expected']} "
+                      f"for {summary['cycles']} cycles)")
+                check(summary["candidates_frames"]
+                      == summary["candidates_frames_expected"],
+                      f"the summary agrees with itself "
+                      f"({summary['candidates_frames']})")
+                check(counted == summary["candidates_frames_expected"],
+                      f"and the FILE holds exactly that many ({counted})")
+
+                accepted_counted = (count_extxyz_frames(trajectory_path)
+                                    if trajectory_path.is_file() else 0)
+                check(accepted_counted <= counted,
+                      f"accepted ({accepted_counted}) is a subset of "
+                      f"candidates ({counted}), never longer")
+                check(accepted_counted == summary.get("accepted"),
+                      f"and matches the accepted count the run reports "
+                      f"({summary.get('accepted')})")
+
+                # accepted ⊆ candidates BY CONFIGURATION, not just by count:
+                # every accepted structure must appear among the candidates.
+                acc = decorations(trajectory_path) if trajectory_path.is_file() \
+                    else []
+                cand = decorations(candidates_path)
+                missing = [d for d in acc if d not in cand]
+                check(not missing,
+                      f"every accepted configuration appears among the "
+                      f"candidates ({len(missing)} did not)")
+
+            # --- The Summary window's payload (Task 3) ------------------
+            #
+            # The window reads these keys out of metrics.json. Asserting
+            # they are present AND agree with the file-derived counts is
+            # what says the window cannot show a number the files contradict.
+            metrics_path = job / "metrics.json"
+            check(metrics_path.is_file(), "metrics.json was written")
+            if metrics_path.is_file():
+                last = last_metric_values(metrics_path)
+                for key in ("mcmd_cycles_done", "mcmd_cycles_total",
+                            "mcmd_accepted", "mcmd_relax_steps_done",
+                            "mcmd_md_steps_done", "acceptance_attempts"):
+                    check(key in last,
+                          f"the Summary payload carries {key}")
+                check(last.get("mcmd_cycles_total") == summary["cycles"],
+                      "the cycle total matches the run")
+                check(last.get("mcmd_accepted") == summary.get("accepted"),
+                      f"and the accepted count matches the FILE-derived one "
+                      f"({last.get('mcmd_accepted')} vs "
+                      f"{summary.get('accepted')})")
 
         if done.returncode == 0 and trajectory_path.is_file():
             frames = verify(python, trajectory_path, fixture)

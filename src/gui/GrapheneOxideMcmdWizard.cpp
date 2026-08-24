@@ -542,6 +542,48 @@ QWidget* GrapheneOxideMcmdWizard::finishSettingsPage(QWidget* page,
     outputForm->addRow(castPerFrame_);
     layout->addWidget(outputBox);
 
+    // --- Which of the three trajectory files to WATCH -------------------
+    //
+    // All three are always written. This chooses which ones open a live
+    // viewport tab at run start, and the tooltip says so out loud: a user
+    // who reads "Live viewport tabs" and unchecks a box must not have to
+    // wonder whether they just discarded the data.
+    auto* tabsBox = new QGroupBox(tr("Live viewport tabs"), page);
+    auto* tabsForm = new QFormLayout(tabsBox);
+    const QString sharedTip =
+        tr("All three trajectory files are ALWAYS written to the run "
+           "directory. These boxes choose which of them open a live "
+           "viewport tab when the run starts — viewing only, never what is "
+           "recorded. Any of them can be opened afterwards from the run "
+           "directory.");
+    liveTabCandidates_ = new QCheckBox(
+        tr("Candidates — one frame per MC cycle"), tabsBox);
+    liveTabCandidates_->setChecked(true);
+    liveTabCandidates_->setToolTip(
+        tr("candidates_structures.extxyz: the configuration each cycle "
+           "handed to the Metropolis test, accepted or not — exactly one "
+           "frame per cycle.\n\n%1").arg(sharedTip));
+    tabsForm->addRow(liveTabCandidates_);
+
+    liveTabAccepted_ = new QCheckBox(
+        tr("Accepted — the distinct accepted configurations"), tabsBox);
+    liveTabAccepted_->setChecked(true);
+    liveTabAccepted_->setToolTip(
+        tr("accepted_structures.extxyz: the subset of candidates the "
+           "Metropolis test accepted — the ensemble the run is "
+           "sampling.\n\n%1").arg(sharedTip));
+    tabsForm->addRow(liveTabAccepted_);
+
+    liveTabAllStructures_ = new QCheckBox(
+        tr("All structures — every inner-phase step"), tabsBox);
+    liveTabAllStructures_->setChecked(false);
+    liveTabAllStructures_->setToolTip(
+        tr("mcmd_all_structures.extxyz: one frame per MD or optimizer step, "
+           "so by far the longest of the three. Off by default — watching it "
+           "is a deliberate choice.\n\n%1").arg(sharedTip));
+    tabsForm->addRow(liveTabAllStructures_);
+    layout->addWidget(tabsBox);
+
     costLabel_ = new QLabel(page);
     costLabel_->setWordWrap(true);
     costLabel_->setTextFormat(Qt::RichText);
@@ -725,6 +767,20 @@ QString GrapheneOxideMcmdWizard::generateScript() const
     config_ = collectConfig();
     return QString::fromStdString(
         core::GrapheneOxideMcmdScriptGenerator::generate(config_));
+}
+
+GoMcmdLiveTabSelection GrapheneOxideMcmdWizard::liveTabSelection() const
+{
+    // Defaults live in the struct, so a wizard whose page was never built
+    // (a headless generate) still answers with candidates + accepted.
+    GoMcmdLiveTabSelection selection;
+    if (liveTabCandidates_)
+        selection.candidates = liveTabCandidates_->isChecked();
+    if (liveTabAccepted_)
+        selection.accepted = liveTabAccepted_->isChecked();
+    if (liveTabAllStructures_)
+        selection.allStructures = liveTabAllStructures_->isChecked();
+    return selection;
 }
 
 } // namespace calango::gui

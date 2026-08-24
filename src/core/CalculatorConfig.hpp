@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cctype>
 #include <string>
 #include <vector>
 
@@ -578,6 +579,36 @@ struct VaspHybridTags {
 /// has to stop compiling until this table names it too, because the failure
 /// mode of a silent fallthrough here is a run that says HSE06 in the UI and
 /// computes PBE0.
+/// The POTCAR family directory ASE will actually look in for a given `xc`.
+///
+/// ASE derives a `pp` from `xc` and then searches
+/// `$VASP_PP_PATH/<family>/<El>/POTCAR`, where the family is `potpaw_PBE`
+/// for pp='PBE' and the UNVERSIONED `potpaw` for pp='LDA' (verified against
+/// ase/calculators/vasp/create_input.py's own loop:
+///   for pp_alias, pp_folder in (('lda', f'potpaw_LDA.{v}' if v else 'potpaw'),
+///                               ('pbe', f'potpaw_PBE.{v}' if v else 'potpaw_PBE'))
+/// and confirmed empirically: PBE/PBEsol/RPBE/SCAN/r2SCAN/HSE06 all give
+/// pp='PBE'; only LDA gives pp='LDA').
+///
+/// This exists so the generated script's pre-flight and the wizard's own
+/// pre-flight check the SAME directory ASE will use. They used to search a
+/// fixed list — potpaw_PBE, then potpaw, then potpaw_LDA — and validate
+/// whichever existed first, which passes happily on a library that has only
+/// potpaw_PBE while xc is LDA, and then fails deep inside ASE looking for
+/// `potpaw`. That is a correct directory reported as a missing POTCAR.
+inline const char* vaspPotcarFamilyDir(const std::string& xc)
+{
+    std::string upper;
+    upper.reserve(xc.size());
+    for (char ch : xc)
+        upper.push_back(static_cast<char>(std::toupper(
+            static_cast<unsigned char>(ch))));
+    // Only LDA maps away from the PBE library. Everything else Calango
+    // offers -- the GGAs, the meta-GGAs and the hybrids -- is built on PBE
+    // PAW datasets.
+    return upper == "LDA" ? "potpaw" : "potpaw_PBE";
+}
+
 inline VaspHybridTags vaspHybridTagsFor(VaspFunctional functional)
 {
     VaspHybridTags tags;

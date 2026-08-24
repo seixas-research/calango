@@ -3,6 +3,7 @@
 #include "core/CalculatorConfig.hpp"
 #include "core/GrapheneOxideBuilder.hpp"
 #include "core/StructureTransforms.hpp"
+#include "gui/GoMcmdLiveTabs.hpp"
 #include "render/Camera.hpp"
 #include "render/Film.hpp"
 
@@ -155,6 +156,7 @@ private Q_SLOTS:
     /// LOCAL MINIMUM instead of through a burst of dynamics — see
     /// gui/GrapheneOxideMcOptWizard.hpp for why the module exists and what it
     /// costs.
+    void openGoGcmc();
     void openGoMcOpt();
     /// The launcher both graphene-oxide Monte Carlo modules share: pick an
     /// eligible Build, copy it, run `wizard`, stage the copy without opening a
@@ -987,7 +989,8 @@ private:
     /// `castPerFrame` is the wizard's "Redefine Cast on every accepted move".
     void setUpGoMcmdLiveFiles(const QString& jobDir, int processId,
                               const std::shared_ptr<core::Structure>& seed,
-                              bool castPerFrame, const QString& taskLabel);
+                              bool castPerFrame, const QString& taskLabel,
+                              const GoMcmdLiveTabSelection& selection);
     /// Titles of the viewport tabs `setUpGoMcmdLiveFiles()` created for
     /// `processId`, in creation order. Empty for a process that is not a
     /// GO/MCMD run (or whose tabs the user has since closed).
@@ -1251,6 +1254,11 @@ private:
         /// a run that queues behind another job reaches launchJob() long
         /// after its wizard is gone. Ignored by every other job type.
         bool mcmdCastPerFrame = true;
+        /// Which of the three trajectory files this job opens live
+        /// viewport tabs for. Captured at SUBMIT time, like every
+        /// other field here: the wizard is long gone by the time a
+        /// queued job actually starts.
+        GoMcmdLiveTabSelection mcmdLiveTabs;
     };
     /// Jobs waiting for the runner, oldest first. Submitting while something
     /// runs appends here instead of being refused; each finish pops one.
@@ -1341,6 +1349,11 @@ private:
     /// runScript() the way stagedRunStructure_ is for the next stageJob();
     /// copied into QueuedJob::mcmdCastPerFrame there and reset to its default.
     bool pendingMcmdCastPerFrame_ = true;
+    /// Which of the three GO Monte Carlo trajectory files open a live
+    /// viewport tab, staged for the next runScript() exactly like
+    /// pendingMcmdCastPerFrame_ above. The FILES are always written; this
+    /// only decides what is watched.
+    GoMcmdLiveTabSelection pendingMcmdLiveTabs_;
     /// Calculator provenance JSON staged as calculator.json on the next
     /// stageJob (set by runSimulationWizard); consumed and cleared there. Lets
     /// the MLWF wizard inherit a completed baseline's engine + parameters.

@@ -760,9 +760,9 @@ diffusion coefficient) is not what this module produces. For that, use GO/MCMD.
 
 ### Output
 
-Byte-for-byte the same layout as GO/MCMD — `mcmd_all_structures.extxyz`,
-`accepted_structures.extxyz`, `mcmd_optimized.extxyz`, `mcmd_summary.json` — so every
-downstream analysis reads either module without knowing which produced the run. The
+Byte-for-byte the same layout as GO/MCMD — the [three trajectory
+files](#the-three-trajectory-files), `mcmd_optimized.extxyz`, `mcmd_summary.json` — so
+every downstream analysis reads either module without knowing which produced the run. The
 summary names which one did: `relaxation` is `"optimization"` or
 `"molecular_dynamics"`, and the optimizer settings travel beside it.
 
@@ -771,6 +771,178 @@ whose length is not known in advance: **one frame per optimizer step**, the init
 relaxation included, with the last frame of each cycle carrying that cycle's verdict.
 `all_structures_frames` and `all_structures_frames_expected` in the summary are equal by
 construction, and a reader can check the file against them.
+
+(the-three-trajectory-files)=
+## The three trajectory files
+
+Every GO Monte Carlo module — GO/MCMD, GO/MC-Opt and GO Grand Canonical MC — writes the
+same three files into its run directory. **All three are always written.** The wizard's
+{guilabel}`Live viewport tabs` group chooses which of them open a live viewport tab at
+run start; it controls *viewing*, never what is recorded, and the tooltip says so.
+
+| File | One frame per | Default tab |
+|---|---|---|
+| `candidates_structures.extxyz` | **MC cycle** — the state that cycle's inner phase ended on, which is the configuration handed to the Metropolis test | checked |
+| `accepted_structures.extxyz` | accepted move — the distinct configurations the walk actually visited | checked |
+| `mcmd_all_structures.extxyz` | MD or optimizer **step** — by far the longest of the three | unchecked |
+
+**The arithmetic, and it is exact.** `candidates_structures.extxyz` holds exactly as many
+frames as the run has MC cycles. That is true by construction rather than by counting:
+the frame is written in the one function every cycle calls exactly once on every branch,
+so a cycle that never reached a Metropolis test at all — a broken topology, a saturated
+site pool — still contributes its frame and carries the phase tag that says which.
+`candidates_frames` and `candidates_frames_expected` in the summary are equal, and equal
+to `cycles`.
+
+`accepted_structures.extxyz` is the **subset** of those that were accepted, so it can
+only be shorter, and every configuration in it appears among the candidates. The
+regression tests assert both — by count and by functional-group configuration.
+
+Each frame carries the standard per-atom group columns plus its own provenance: the cycle
+index, that cycle's energy, and the accepted flag.
+
+## GO Grand Canonical MC — sampling the composition
+
+{menuselection}`Modules --> Graphene Oxide --> GO Grand Canonical MC…` is the third
+member of the family, and the one where the number of functional groups is **not
+conserved**. GO/MCMD and GO/MC-Opt relocate a fixed inventory: whatever decoration the
+builder produced is the decoration they sample arrangements of. This module opens that
+inventory to a reservoir, so the moves also **insert** and **delete** groups and the
+composition becomes something the walk determines rather than something it is handed.
+
+That is the difference between *"where do these groups sit?"* and *"how many should there
+be at all?"* — and it is what lets a run start from **pristine graphene** and grow an
+oxide whose stoichiometry the chemical potentials select.
+
+### The reservoir and its references
+
+Δμ_H and Δμ_O are set relative to reference potentials the run computes for itself:
+
+$$\mu_\mathrm{H}^{0} = \tfrac{1}{2} E_\mathrm{tot}(\mathrm{H_2})$$
+
+$$\mu_\mathrm{O}^{0} = E_\mathrm{tot}(\mathrm{H_2O}) - E_\mathrm{tot}(\mathrm{H_2})$$
+
+Hydrogen from the H₂ molecule; oxygen from water in equilibrium with H₂ — the standard
+humid-environment reference. The potentials the criterion uses are
+$\mu_s = \mu_s^{0} + \Delta\mu_s$.
+
+:::{important}
+**The references must come from the same calculator and settings as the sheet energies,
+and that is why the run computes them rather than taking them as numbers.** The
+acceptance criterion subtracts a reference from a sheet energy. A reference from a
+different engine, cutoff or functional leaves a per-species constant in *every*
+acceptance decision that has nothing to do with the chemistry — and it would be invisible,
+because the run would still look healthy and still produce an oxide, just the wrong one.
+
+The two molecular calculations run once, before the walk, and are cached under a
+calculator+settings signature next to the run directory. A scan over Δμ pays for them
+once; a run with different settings recomputes rather than silently inheriting them.
+Both energies and the resulting absolute μ are reported in the run log.
+:::
+
+### The move set and the acceptance criterion
+
+Three move classes, drawn by configurable weights ({guilabel}`Move weight — swap /
+insert / delete`, equal by default):
+
+- **swap** — relocate an existing group, exactly the move the other two modules run.
+  Kept in the mix on purpose: a pure insert/delete walk finds the right *number* of
+  groups long before it finds a sensible arrangement of them at that number.
+- **insert** — place a new group of a chosen type at a free site, through the builder's
+  own placement rules (including antiposition pairing for hydroxyls when it is on).
+- **delete** — remove an existing group entirely.
+
+A move is accepted on
+
+$$\Delta E - \sum_s \Delta n_s\, \mu_s$$
+
+where $\Delta n_s$ counts the atoms of species $s$ the move added or removed. A swap has
+$\Delta n = 0$ for every species, so the term vanishes and the criterion collapses to the
+conserving one — which is why the same line serves all three classes.
+
+**The stoichiometry table is read off the group recipes, not written beside them:**
+
+| Group | ΔC | ΔO | ΔH |
+|---|---|---|---|
+| epoxide | 0 | 1 | 0 |
+| hydroxyl | 0 | 1 | 1 |
+| hydroxyl pair (antiposition) | 0 | 2 | 2 |
+| carbonyl | 0 | 1 | 0 |
+| carboxyl | **1** | 2 | 1 |
+
+The carboxyl row is the one worth reading twice: it brings a **carbon of its own**
+("−COOH replacing an edge H"), which a table written from chemical intuition leaves out.
+One miscounted atom biases every acceptance by one whole chemical potential.
+
+:::{note}
+**Only the basal groups are inserted and deleted** — epoxide and hydroxyl. An edge
+carbon carries either a group or a terminating hydrogen and never both, so inserting a
+carbonyl or a carboxyl would also have to *remove* that hydrogen, and deleting one would
+have to put it back: a second species entering and leaving the reservoir on the same
+move. A swap handles the edge case by *moving* the cap hydrogen between hosts, which
+conserves it; an insertion has no partner to trade with. Shipping that unverified would
+put a wrong ΔH into the criterion for exactly the moves whose stoichiometry is hardest to
+check.
+
+For the module's headline case — pristine *periodic* graphene grown into an oxide —
+there are no edge carbons at all, so nothing is lost. A run whose move somehow changed
+the carbon count is refused by name rather than priced at zero.
+:::
+
+### Settings
+
+The GO/MC-Opt wizard's four stages, plus a {guilabel}`Reservoir (chemical potentials)`
+group: {guilabel}`Δμ_H`, {guilabel}`Δμ_O` and the three move weights. The relaxation
+strategy is pluggable exactly as in the shared core, and **optimization is the default**:
+relaxing both sides of the Metropolis test to a minimum is what removed the
+placement-strain bias that made GO/MCMD's trial deltas 150 kT, and an insertion arrives
+with *more* placement strain than a relocation, not less.
+
+### Output
+
+The same [three trajectory files](#the-three-trajectory-files), the same live tabs, the
+same summary — plus the grand-canonical extras: the group counts and the composition at
+each cycle. **The composition trace is written as metric series** (`gcmc_n_O`,
+`gcmc_n_H`, `gcmc_n_groups`), which puts it on the Results dock's *Energy* area beside
+the energy trace rather than in a tab of its own. That is the deliberate choice: the
+question a reader has is whether the composition *plateaued while the energy settled*,
+and two curves on one axis answer it where two tabs do not.
+
+### What was verified
+
+**The algorithmic invariants**, in `graphene_oxide_gcmc` — no calculator needed, so it
+runs everywhere:
+
+- the stoichiometry table above, read out of the shipped script and compared against what
+  `collect_groups()` actually puts in each group's member list, carboxyl carbon included;
+- the **sign** of μ: at Δμ = −5 eV inserting a hydroxyl costs +10 eV at ΔE = 0, a
+  Metropolis probability below 10⁻³⁰; at +5 eV the same insertion gains 10 eV and is
+  accepted outright; deletion is the exact negative of insertion at the same μ;
+- a swap prices at exactly zero, so the criterion is the conserving one.
+
+**The physics**, in `graphene_oxide_gcmc_mace` — needs MACE, self-skips without it.
+Starting from pristine periodic graphene (18 C, 30 cycles), the run computes
+μ_H⁰ = −3.278 eV and μ_O⁰ = −7.481 eV from its own H₂ and H₂O calculations, and the
+composition responds to the reservoir:
+
+| Δμ_O | accepted | O | H | O/C |
+|---|---|---|---|---|
+| 0 eV | **0** | 0 | 0 | 0.00 |
+| +3 eV | 8 | 10 | 6 | 0.56 |
+| +5 eV | 10 | 8 | 4 | 0.44 |
+| +7 eV | 10 | 8 | 4 | 0.44 |
+
+μ_O is referenced to **water in equilibrium with H₂**, so μ_O⁰ is already deeply
+negative and oxidising graphene at Δμ_O = 0 is thermodynamically *uphill*: the run
+accepts nothing at all and the sheet stays pristine. That is the whole-module check on
+the sign of μ in the criterion. Push the reservoir oxidising and the onset is sharp —
+by +3 eV the sheet carries a real graphene-oxide composition (O/C ≈ 0.5, in the range
+experiment reports) — and above that it **plateaus at the site pool's own limit** rather
+than climbing to full coverage, which is the saturation a finite sheet must show.
+
+The test asserts the two ends of that: nothing placed at Δμ_O = 0, an oxide that
+plateaus at +5 eV. It does not assert the intermediate shape — 30 cycles on an
+18-carbon sheet is a direction and a plateau, not a curve.
 
 ## GO Functional Group Analysis — census and geometry
 

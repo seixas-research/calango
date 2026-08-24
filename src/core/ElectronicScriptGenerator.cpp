@@ -9,6 +9,18 @@ namespace calango::core {
 
 namespace {
 
+/// `calculator` with its POTCAR directory guaranteed present -- see the
+/// identical helper in TwoDBandsScriptGenerator.cpp. ElectronicConfig
+/// mirrors the path in a field beside its CalculatorConfig, and the resolver
+/// needs the directory AND the `xc` that picks the family inside it.
+CalculatorConfig potcarConfig(CalculatorConfig calculator,
+                              const std::string& mirroredPath)
+{
+    if (calculator.vaspPotcarPath.empty())
+        calculator.vaspPotcarPath = mirroredPath;
+    return calculator;
+}
+
 /// A double-quoted Python string literal. The channel label and the element
 /// filter are free text the user typed into the wizard, and a stray quote or
 /// backslash in either would turn a generated script into a SyntaxError that
@@ -694,7 +706,7 @@ std::string generateElectronicScript(const ElectronicConfig& c)
                "import shutil\n"
                "\n"
             << AseScriptGenerator::vaspPotcarResolutionSnippet(
-                   c.vaspPotcarPath)
+                   potcarConfig(c.gpaw, c.vaspPotcarPath))
             << "kgrid = " << c.scfKpts << "\n";
         // PREC sets VASP's FFT grid density for a given ENCUT; every
         // Vasp() call below that reads a CHGCAR via ICHARG=11 (the

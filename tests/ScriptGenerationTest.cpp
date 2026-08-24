@@ -24,6 +24,7 @@
 #include "core/XasScriptGenerator.hpp"
 #include "core/ElectronicScriptGenerator.hpp"
 #include "core/GwScriptGenerator.hpp"
+#include "core/CutoffConvergenceScriptGenerator.hpp"
 #include "core/KpointsConvergenceScriptGenerator.hpp"
 #include "core/NonlinearOpticsScriptGenerator.hpp"
 #include "core/OpticsScriptGenerator.hpp"
@@ -106,6 +107,21 @@ CalculatorConfig gpawConfig()
     CalculatorConfig c;
     c.calculator = CalculatorKind::Gpaw;
     c.task = TaskKind::SinglePoint;
+    return c;
+}
+
+/// A VASP config with everything a convergence sweep needs to reach the
+/// POTCAR resolver: an engine, an XC functional and a configured POTCAR
+/// directory. The sweeps hand the shared calculator snippet to a HELPER
+/// FUNCTION rather than to module scope, which is the context the snippet's
+/// own preconditions (`atoms` bound, `os` imported) have to hold in.
+CalculatorConfig vaspSweepConfig()
+{
+    CalculatorConfig c;
+    c.calculator = CalculatorKind::Vasp;
+    c.task = TaskKind::SinglePoint;
+    c.vaspXc = "PBE";
+    c.vaspPotcarPath = "/opt/vasp/POTCARs";
     return c;
 }
 
@@ -379,6 +395,38 @@ int main(int argc, char** argv)
             kpts.plasmaFrequency = true;
             dumpText("kpoints_convergence_plasma.py",
                      KpointsConvergenceScriptGenerator::generate(kpts));
+
+            // The VASP branches of BOTH sweeps. Neither was ever dumped, so
+            // generated_script_lint had never byte-compiled either one --
+            // and the VASP branch is where the calculator snippet (POTCAR
+            // resolution included) gets spliced into a helper function.
+            KpointsConvergenceRunConfig kvasp;
+            kvasp.calculator = vaspSweepConfig();
+            kvasp.meshes = {{{2, 2, 2}, 2}, {{4, 4, 4}, 4}};
+            dumpText("kpoints_convergence_vasp.py",
+                     KpointsConvergenceScriptGenerator::generate(kvasp));
+
+            CutoffConvergenceRunConfig ecut;
+            ecut.calculator = gpawConfig();
+            ecut.cutoffsEv = {300.0, 400.0, 500.0};
+            dumpText("cutoff_convergence.py",
+                     CutoffConvergenceScriptGenerator::generate(ecut));
+            CutoffConvergenceRunConfig ecutVasp;
+            ecutVasp.calculator = vaspSweepConfig();
+            ecutVasp.cutoffsEv = {300.0, 400.0, 500.0};
+            dumpText("cutoff_convergence_vasp.py",
+                     CutoffConvergenceScriptGenerator::generate(ecutVasp));
+
+            // GO Grand Canonical MC: a third branch of the shared MC core,
+            // with its own move classes, its own reference pre-stage and a
+            // different acceptance criterion.
+            GrapheneOxideMcmdConfig gcmc;
+            gcmc.grandCanonical = true;
+            gcmc.relaxation = GoMcRelaxation::Optimization;
+            gcmc.deltaMuHEv = -0.2;
+            gcmc.deltaMuOEv = -1.5;
+            dumpText("graphene_oxide_gcmc.py",
+                     GrapheneOxideMcmdScriptGenerator::generate(gcmc));
         }
 
         // Thermodynamic integration. Four dumps, because the branches that
@@ -2499,8 +2547,12 @@ int main(int argc, char** argv)
 
         checkContains(script, "os.environ['VASP_PP_PATH'] = _potcar_root",
                       "the POTCAR directory is exported, not assumed");
-        checkContains(script, "'potpaw_PBE', 'potpaw', 'potpaw_LDA'",
-                      "and a flat POTCAR layout is detected");
+        checkContains(script, "_potcar_shim",
+                      "and a flat POTCAR layout is shimmed so ASE can read "
+                      "it");
+        checkContains(script, "'potpaw_PBE', 'potpaw_LDA', 'potpaw'",
+                      "the shim carries every family name, since a later "
+                      "step in the same directory may use a different xc");
         checkContains(script, "os.symlink(_potcar_root, _link)",
                       "then shimmed, since ASE cannot be pointed elsewhere");
         // ISMEAR is the one mapping a reader cannot verify by inspection.
@@ -2636,13 +2688,16 @@ int main(int argc, char** argv)
                       "dict.fromkeys(atoms.get_chemical_symbols())",
                       "every element the STRUCTURE actually needs is "
                       "checked, not a fixed list");
-        checkContains(script, "No POTCAR for {",
+        checkContains(script, "'No POTCAR for '",
                       "and a missing one is named specifically");
         checkContains(script,
-                      "PAW variants (_sv/_pv/_d) and the LDA/PBE library "
-                      "choice are not",
+                      "PAW variants (_sv/_pv/_d) are not auto-selected",
                       "with an honest note that variant selection is not "
                       "automatic");
+        // The LDA/PBE library choice IS automatic now -- it is derived from
+        // xc rather than left to the user to line up by hand.
+        checkContains(script, "the PBE-based functionals use potpaw_PBE",
+                      "and the family rule spelled out");
     }
 
     std::printf("VASP hybrid functionals (Task 1):\n");
@@ -2891,6 +2946,66 @@ int main(int argc, char** argv)
                           "route");
         checkContains(semi, "icharg=11",
                       "including its fixed-density band pass");
+    }
+
+    // -- The convergence sweeps with VASP (Task 4, 2026-08-24) -----------
+    std::printf("Convergence sweeps with VASP:\n");
+    {
+        CutoffConvergenceRunConfig ecut;
+        ecut.calculator = vaspSweepConfig();
+        ecut.cutoffsEv = {300.0, 400.0, 500.0};
+        const std::string script =
+            CutoffConvergenceScriptGenerator::generate(ecut);
+
+        checkContains(script, "CUTOFFS = [300, 400, 500]",
+                      "the ENCUT series is the sweep");
+        checkContains(script, "atoms.calc.set(encut=float(ecut)",
+                      "and ENCUT is what varies per point");
+        checkContains(script, "xc=\"PBE\"",
+                      "the functional reaches the script — the sweep reuses "
+                      "the SAME calculator block Single-point emits, not a "
+                      "stripped-down clone");
+        // The POTCAR family is derived from that functional, in ONE place
+        // shared with the wizard's own pre-flight.
+        checkContains(script, "_potcar_family = 'potpaw_PBE'",
+                      "and picks the POTCAR family ASE will actually search "
+                      "for it");
+        checkContains(script, "_potcar_xc = 'PBE'",
+                      "recording which functional decided that");
+        checkNotContains(script, "for _d in ('potpaw_PBE', 'potpaw',",
+                          "never a fixed family list — validating whichever "
+                          "exists first is how a PBE-only library passed "
+                          "under xc=LDA and then failed inside ASE");
+
+        CutoffConvergenceRunConfig lda = ecut;
+        lda.calculator.vaspXc = "LDA";
+        const std::string ldaScript =
+            CutoffConvergenceScriptGenerator::generate(lda);
+        checkContains(ldaScript, "_potcar_family = 'potpaw'",
+                      "LDA maps to the UNVERSIONED potpaw, which is what "
+                      "ASE's own loop uses when no pp_version is set");
+
+        // The error the user actually reads when neither layout resolves.
+        checkContains(script, "Expected one of two layouts",
+                      "a failure names the layouts, not just the miss");
+        checkContains(script, "(the library parent), or",
+                      "the configured directory as the family PARENT");
+        checkContains(script, "(the directory IS the library)",
+                      "and the configured directory AS the family level");
+        checkContains(script, "'Searched:",
+                      "listing every path that was tried");
+
+        KpointsConvergenceRunConfig kpts;
+        kpts.calculator = vaspSweepConfig();
+        kpts.meshes = {{{2, 2, 2}, 2}, {{4, 4, 4}, 4}, {{6, 6, 6}, 6}};
+        const std::string kScript =
+            KpointsConvergenceScriptGenerator::generate(kpts);
+        checkContains(kScript, "xc=\"PBE\"",
+                      "the k-points sibling reuses the same block");
+        checkContains(kScript, "_potcar_family = 'potpaw_PBE'",
+                      "and the same family resolution");
+        checkContains(kScript, "MESHES = [",
+                      "its own sweep variable is the mesh series");
     }
 
     // ICHARG = 11 + a hybrid is not a bad idea, it is INVALID: the VASP
@@ -7669,6 +7784,7 @@ int main(int argc, char** argv)
         checkContains(script,
                       "frames_written = {\"equilibration\": 0, \"md\": 0, "
                       "\"mc_trial\": 0, \"accepted\": 0,\n"
+                      "                  \"candidates\": 0,\n"
                       "                  \"failed\": 0}",
                       "the per-kind frame counters exist, all starting at 0 — "
                       "\"failed\" among them, for the cycle whose energy "
@@ -7690,6 +7806,8 @@ int main(int argc, char** argv)
         checkContains(script,
                       "        key = (\"accepted\" if path == "
                       "accepted_structures_path\n"
+                      "               else \"candidates\" if path == "
+                      "candidates_structures_path\n"
                       "               else frame.info[\"phase\"])",
                       "the accepted file is counted by PATH, because the frame "
                       "it holds is the same \"mc_trial\" snapshot");
@@ -7799,10 +7917,12 @@ int main(int argc, char** argv)
         checkContains(script,
                       "    \"all_structures_frames\": "
                       "sum(frames_written[key] for key in frames_written\n"
-                      "                                 if key != "
-                      "\"accepted\"),",
+                      "                                 if key not in "
+                      "(\"accepted\", \"candidates\")),",
                       "and counts every phase there is, rather than the ones "
-                      "that existed when the line was written");
+                      "that existed when the line was written — with the two "
+                      "PATH-keyed files excluded, since their frames are "
+                      "copies of ones already counted by phase");
         {
             // Every branch of the cycle loop must write that one frame, or a
             // cycle that took an unusual exit leaves a hole. Five exits:

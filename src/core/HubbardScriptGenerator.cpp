@@ -503,8 +503,7 @@ std::string generateHubbardScript(const HubbardRunConfig& config,
            "primitive = read(\""
         << structureFile << "\")\n"
         << "atoms = primitive.repeat(_SUPERCELL)\n"
-        << (vasp ? AseScriptGenerator::vaspPotcarResolutionSnippet(
-                       c.vaspPotcarPath)
+        << (vasp ? AseScriptGenerator::vaspPotcarResolutionSnippet(c)
                 : std::string())
         << "_calango_event('info',\n"
            "               f'{len(primitive)} atoms -> {len(atoms)} in a '\n"

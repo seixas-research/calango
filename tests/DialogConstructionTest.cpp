@@ -52,6 +52,8 @@
 #include "gui/MaceTrainerDialog.hpp"
 #include "gui/MolecularDesignDialog.hpp"
 #include "gui/MoleculeCanvas.hpp"
+#include "gui/VaspPotcarPreflight.hpp"
+#include "gui/GrapheneOxideGcmcWizard.hpp"
 #include "gui/ElectronicBandsWizard.hpp"
 #include "gui/DislocationWizard.hpp"
 #include "gui/LiquidInterfaceWizard.hpp"
@@ -894,24 +896,43 @@ int main(int argc, char** argv)
               "and an ordinary MD run is not");
         for (const QString& label : {calango::gui::goMcmdTaskLabel(),
                                      calango::gui::goMcOptTaskLabel()}) {
+            // THE DEFAULT SELECTION: candidates + accepted, all-structures
+            // off. Three files are always written; two tabs open.
             const auto views = calango::gui::goMcmdLiveViews(label);
             check(views.size() == 2,
-                  ("both open exactly two viewport tabs (" + label + ")")
-                      .toStdString());
+                  ("both open exactly two viewport tabs by default ("
+                   + label + ")").toStdString());
             if (views.size() == 2) {
                 // The FILES are shared — that is what lets every downstream
                 // analysis read either module — and the TITLES are not.
                 check(views[0].fileName
-                          == QStringLiteral("mcmd_all_structures.extxyz")
+                          == QStringLiteral("candidates_structures.extxyz")
                           && views[1].fileName
                               == QStringLiteral("accepted_structures.extxyz"),
-                      ("following the same two files (" + label + ")")
+                      ("following candidates then accepted (" + label + ")")
                           .toStdString());
                 check(views[0].title.startsWith(label)
                           && views[1].title.startsWith(label),
                       ("titled after the module that produced the run ("
                        + label + ")").toStdString());
             }
+            // All three, when asked for.
+            check(calango::gui::goMcmdAllLiveViews(label).size() == 3,
+                  ("all three trajectory files can be followed (" + label
+                   + ")").toStdString());
+            // EXACTLY the checked tabs, nothing else — the guarantee the tab
+            // audit established, now under the user's control.
+            calango::gui::GoMcmdLiveTabSelection none{false, false, false};
+            check(calango::gui::goMcmdLiveViews(label, none).empty(),
+                  ("unchecking everything opens no tab at all (" + label
+                   + ")").toStdString());
+            calango::gui::GoMcmdLiveTabSelection allOnly{false, false, true};
+            const auto justAll = calango::gui::goMcmdLiveViews(label, allOnly);
+            check(justAll.size() == 1
+                      && justAll[0].fileName
+                             == QStringLiteral("mcmd_all_structures.extxyz"),
+                  ("one box checked opens exactly that one (" + label + ")")
+                      .toStdString());
             check(!calango::gui::opensStreamedTrajectoryTab(label),
                   ("and neither takes a stdout-streamed tab (" + label + ")")
                       .toStdString());
@@ -922,14 +943,14 @@ int main(int argc, char** argv)
     {
         const auto views = calango::gui::goMcmdLiveViews();
         check(views.size() == 2,
-              "a GO/MCMD run creates exactly two viewport tabs (it was four)");
+              "a GO/MCMD run creates exactly two viewport tabs by default "
+              "(it was four before the audit, and three files are written)");
         if (views.size() == 2) {
             check(views[0].fileName
-                      == QStringLiteral("mcmd_all_structures.extxyz"),
-                  "the first follows mcmd_all_structures.extxyz");
-            check(views[0].title
-                      == QStringLiteral("GO/MCMD — All Structures"),
-                  "titled \"GO/MCMD — All Structures\"");
+                      == QStringLiteral("candidates_structures.extxyz"),
+                  "the first follows candidates_structures.extxyz");
+            check(views[0].title == QStringLiteral("GO/MCMD — Candidates"),
+                  "titled \"GO/MCMD — Candidates\"");
             check(views[1].fileName
                       == QStringLiteral("accepted_structures.extxyz"),
                   "the second follows accepted_structures.extxyz");
@@ -973,6 +994,25 @@ int main(int argc, char** argv)
               "the per-move-kind block keeps its four");
         check(!summary.isModal(),
               "modeless -- the numbers are meant to sit beside the viewport");
+
+        // THE TITLE NAMES THE MODULE (Task 3, 2026-08-24). A GO/MC-Opt run
+        // used to open a window headed "MCMD Summary" -- naming a module it
+        // had not run. One dialog parameterized by module, not two.
+        summary.bindProcess(7, calango::gui::goMcmdTaskLabel(), false);
+        check(summary.windowTitle() == QStringLiteral("GO/MCMD Summary"),
+              "a GO/MCMD run titles it \"GO/MCMD Summary\"");
+        check(!summary.isOptimization(),
+              "and is not an optimization run");
+        summary.bindProcess(8, calango::gui::goMcOptTaskLabel(), false);
+        check(summary.windowTitle() == QStringLiteral("GO/MC-Opt Summary"),
+              "a GO/MC-Opt run titles it \"GO/MC-Opt Summary\" -- the "
+              "reported defect");
+        check(summary.isOptimization(),
+              "and IS an optimization run, so its inner-phase counter reads "
+              "\"Optimizer steps\" rather than \"MD steps: 0\"");
+        summary.bindProcess(9, calango::gui::goGcmcTaskLabel(), false);
+        check(summary.windowTitle() == QStringLiteral("GO/GCMC Summary"),
+              "and the grand-canonical module gets its own title too");
 
         // Binding clears whatever the previous run left behind, so a window
         // re-pointed at another process can never show a mix of the two.
@@ -7145,6 +7185,174 @@ int main(int argc, char** argv)
 
         exerciseControls(&dialog);
         check(true, "survives every control being toggled");
+    }
+
+    // --- GO Grand Canonical MC: the wizard reaches the generator with the
+    //     grand-canonical switch and the reservoir settings on.
+    std::printf("GO Grand Canonical MC wizard:\n");
+    {
+        calango::pybridge::PythonEngine python;
+        GrapheneOxideGcmcWizard wizard;
+        wizard.show();
+        check(true, "constructs");
+
+        auto* muO = wizard.findChild<QDoubleSpinBox*>(
+            QStringLiteral("gcmcDeltaMuO"));
+        auto* muH = wizard.findChild<QDoubleSpinBox*>(
+            QStringLiteral("gcmcDeltaMuH"));
+        check(muO && muH, "offers both chemical-potential offsets");
+        auto* insert = wizard.findChild<QDoubleSpinBox*>(
+            QStringLiteral("gcmcInsertWeight"));
+        auto* del = wizard.findChild<QDoubleSpinBox*>(
+            QStringLiteral("gcmcDeleteWeight"));
+        auto* swap = wizard.findChild<QDoubleSpinBox*>(
+            QStringLiteral("gcmcSwapWeight"));
+        check(insert && del && swap,
+              "and a weight for each of the three move classes");
+
+        if (muO) {
+            muO->setValue(-1.25);
+            const QString script = wizard.script();
+            check(script.contains(QStringLiteral("grand_canonical = True")),
+                  "the generated script has the grand-canonical switch on");
+            check(script.contains(QStringLiteral("delta_mu_O = -1.25")),
+                  "carrying the offset the wizard was set to");
+            check(script.contains(QStringLiteral("relax_to_minimum = True")),
+                  "and relaxes to a minimum by default — an insertion "
+                  "arrives with MORE placement strain than a relocation, "
+                  "not less");
+        }
+
+        // The three modules share every output path, so this one is a GO
+        // Monte Carlo task like its siblings.
+        check(calango::gui::isGoMonteCarloTask(
+                  calango::gui::goGcmcTaskLabel()),
+              "and it is recognised as a GO Monte Carlo run, so it gets the "
+              "three files, the live tabs and the Summary window");
+    }
+
+    // --- Task 4 (2026-08-24): the convergence sweeps with VASP.
+    //
+    // Three reported failures, three separate defects, all verified here.
+    std::printf("Convergence sweeps: VASP parameter page and POTCAR:\n");
+    {
+        calango::pybridge::PythonEngine python;
+
+        // (1) The XC functional must be reachable on a wizard whose sweep
+        //     stage OWNS the plane-wave cutoff. It was not: the VASP xc
+        //     combo lives inside the "Plane-wave cutoff" row widget, and
+        //     hiding that row for the sweep took the functional with it.
+        CutoffConvergenceWizard cutoff;
+        cutoff.show();
+        const int vaspKind =
+            static_cast<int>(calango::core::CalculatorKind::Vasp);
+        for (QComboBox* combo : cutoff.findChildren<QComboBox*>()) {
+            const int idx = combo->findData(vaspKind);
+            if (idx >= 0) { combo->setCurrentIndex(idx); break; }
+        }
+        auto* xc = cutoff.findChild<QComboBox*>(QStringLiteral("vaspXcCombo"));
+        auto* row = cutoff.findChild<QWidget*>(QStringLiteral("cutoffRow"));
+        check(xc != nullptr,
+              "the VASP XC combo exists on the cutoff-sweep calculator page");
+        // isHidden(), not isVisibleTo(): the calculator page is a
+        // non-current stacked page here, so nothing on it is "visible" —
+        // but the defect was an EXPLICIT hide of the row the combo sits in,
+        // which is exactly what isHidden() reports.
+        if (xc && row) {
+            check(!row->isHidden(),
+                  "and its row survives — hiding the swept cutoff must not "
+                  "hide the functional that shares that row");
+            check(!xc->isHidden(), "so the combo itself is not hidden");
+            check(xc->findText(QStringLiteral("PBE")) >= 0,
+                  "with PBE among its entries");
+        }
+        // The swept parameter itself stays gone: it would be a control the
+        // generated script ignores.
+        bool cutoffSpinShown = false;
+        for (QDoubleSpinBox* spin : cutoff.findChildren<QDoubleSpinBox*>()) {
+            if (spin->suffix().trimmed() == QStringLiteral("eV")
+                && spin->maximum() <= 2000.5 && spin->minimum() >= 99.5
+                && spin->isVisibleTo(&cutoff))
+                cutoffSpinShown = true;
+        }
+        check(!cutoffSpinShown,
+              "and the single-cutoff spin box is still withdrawn — the "
+              "sweep is the cutoff");
+
+        // The k-points sibling never had the XC defect (it hides a
+        // different row), but the check is what says so rather than
+        // assuming it.
+        KpointsConvergenceWizard kpts;
+        kpts.show();
+        for (QComboBox* combo : kpts.findChildren<QComboBox*>()) {
+            const int idx = combo->findData(vaspKind);
+            if (idx >= 0) { combo->setCurrentIndex(idx); break; }
+        }
+        auto* kxc = kpts.findChild<QComboBox*>(QStringLiteral("vaspXcCombo"));
+        auto* krow = kpts.findChild<QWidget*>(QStringLiteral("cutoffRow"));
+        check(kxc && krow && !krow->isHidden() && !kxc->isHidden(),
+              "the k-points sweep offers the XC functional too");
+    }
+
+    // (2) POTCAR resolution: both documented layouts, and the
+    //     functional-to-family mapping that decides which one is searched.
+    std::printf("VASP POTCAR resolution (both layouts):\n");
+    {
+        const QString base =
+            QDir::tempPath() + QStringLiteral("/calango-potcar-test");
+        QDir(base).removeRecursively();
+        const auto put = [](const QString& path) {
+            QDir().mkpath(QFileInfo(path).absolutePath());
+            QFile f(path);
+            if (f.open(QIODevice::WriteOnly | QIODevice::Text))
+                QTextStream(&f) << "  PAW_PBE fixture\n";
+        };
+        // Layout A: the configured directory IS the family level.
+        const QString flat = base + QStringLiteral("/flat");
+        put(flat + QStringLiteral("/Cu/POTCAR"));
+        put(flat + QStringLiteral("/O/POTCAR"));
+        // Layout B: the configured directory is the PARENT of family dirs,
+        // carrying ONLY the PBE library.
+        const QString family = base + QStringLiteral("/family");
+        put(family + QStringLiteral("/potpaw_PBE/Cu/POTCAR"));
+
+        const QStringList cu{QStringLiteral("Cu")};
+
+        auto r = checkVaspPotcar(flat, QStringList{QStringLiteral("Cu"),
+                                                   QStringLiteral("O")},
+                                 QStringLiteral("PBE"));
+        check(r.ok, "the flat layout resolves (the directory IS the library)");
+
+        r = checkVaspPotcar(family, cu, QStringLiteral("PBE"));
+        check(r.ok, "the family-parent layout resolves under PBE");
+        check(r.searchedPath.endsWith(QStringLiteral("potpaw_PBE")),
+              "and reports the family directory it actually used");
+
+        // THE REPORTED BUG. A PBE-only library under xc=LDA: ASE would look
+        // for `potpaw` and fail. The old check accepted potpaw_PBE because
+        // it took whichever family existed first, so a run passed the
+        // pre-flight and then died inside ASE.
+        r = checkVaspPotcar(family, cu, QStringLiteral("LDA"));
+        check(!r.ok,
+              "a PBE-only library is REFUSED under xc=LDA — ASE would "
+              "search potpaw, which is not there");
+        check(r.errorMessage.contains(QStringLiteral("potpaw"))
+                  && r.errorMessage.contains(QStringLiteral("LDA")),
+              "and the message names both the family searched and the "
+              "functional that chose it");
+        check(r.errorMessage.contains(QStringLiteral("Searched:")),
+              "listing every path tried");
+
+        // A genuinely missing element, in a layout that is otherwise right.
+        r = checkVaspPotcar(family, QStringList{QStringLiteral("Ni")},
+                            QStringLiteral("PBE"));
+        check(!r.ok && r.missingElements.contains(QStringLiteral("Ni")),
+              "a missing element is named");
+
+        r = checkVaspPotcar(QString(), cu, QStringLiteral("PBE"));
+        check(!r.ok && r.errorMessage.contains(QStringLiteral("Preferences")),
+              "an unconfigured directory says where to set it");
+        QDir(base).removeRecursively();
     }
 
     // --- The hybrid band-structure route reaches the generator at all.

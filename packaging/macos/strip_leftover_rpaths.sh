@@ -3,26 +3,21 @@
 # staged .app -- run after macdeployqt, before the final codesign.
 #
 # macdeployqt correctly rewrites a copied library's own LC_LOAD_DYLIB
-# entries to @executable_path-relative, but does not clean up the ORIGINAL
-# build machine's LC_RPATH search-path entries it shipped with. calango
-# 26.8.36's bundled libopenblas.0.dylib carried three:
-#   /opt/homebrew/opt/gcc/lib/gcc/current/gcc/aarch64-apple-darwin25/15
-#   /opt/homebrew/opt/gcc/lib/gcc/current/gcc
-#   /opt/homebrew/opt/gcc/lib/gcc/current
-# On the build machine these happened to be exactly how dyld's chained
-# rpath search found libgcc_s.1.1.dylib (a dependency of the also-bundled
-# libgfortran.5.dylib, itself never actually copied into the bundle) --
-# on a clean Mac without that exact Homebrew GCC install, every one of
-# those paths misses and the app aborts at launch before main() runs
-# (see CrashReport.md, 2026-08-21). The real fix for THAT specific chain
-# was pinning BLA_VENDOR to Accelerate (a system framework needing none
-# of this) via a since-removed CALANGO_BLAS option — since superseded by
-# removing the native DFT/DFTB engines that were LAPACK's only consumers
-# entirely, so there is no chain left to link on any platform. This
-# script is defense in depth for every OTHER bundled library macdeployqt
-# leaves a leftover build-machine rpath on -- auditing the same .dmg found
-# it on libdbus-1.3.dylib, libjasper.7.dylib and libjpeg.8.dylib too, none
-# of them BLAS-related.
+# entries to @executable_path-relative, but does NOT clean up the original
+# build machine's LC_RPATH search-path entries the library shipped with --
+# absolute paths like /opt/homebrew/opt/<formula>/lib.
+#
+# Why that matters even when every load path looks right: dyld's chained
+# rpath search will happily resolve a dependency THROUGH one of those
+# leftover paths on the build machine, so the bundle appears complete
+# there while the file was never actually copied into it. On a clean Mac
+# none of those paths exist, nothing resolves, and the app aborts at
+# launch before main() runs. A bundle-relative load path is proof of
+# form, not of resolution.
+#
+# So this runs over EVERY bundled Mach-O, not a chosen few: any library
+# macdeployqt copies can carry one, and the ones that do are not
+# predictable from what the library is for.
 #
 # Deleting a leftover rpath is only safe once nothing actually needs it to
 # resolve a real dependency -- which is true for macdeployqt-bundled
@@ -38,7 +33,7 @@
 # Excludes the embedded Python payload (Contents/Resources/python,
 # Contents/Frameworks/Python.framework) -- its relocatability is a
 # separate, already-documented, not-yet-fixed issue (packaging/README.md's
-# "BLAS/LAPACK backend" section); this script does not touch it.
+# "Dependency audit" section); this script does not touch it.
 #
 #   strip_leftover_rpaths.sh path/to/calango.app
 set -euo pipefail

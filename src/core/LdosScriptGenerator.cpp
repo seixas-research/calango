@@ -170,7 +170,7 @@ std::string generateVaspLdosScript(const LdosConfig& cfg)
            "\n"
         << AseScriptGenerator::jsonLoggerPreamble()
         << "atoms = read('structure.extxyz')\n"
-        << AseScriptGenerator::vaspPotcarResolutionSnippet(c.vaspPotcarPath)
+        << AseScriptGenerator::vaspPotcarResolutionSnippet(c)
         << "_calango_progress(1, 4)\n"
            "\n"
         << "_base = r\"" << cfg.baselineDir << "\"\n"

@@ -444,8 +444,7 @@ std::string vaspEngineBlock(const RamanIrConfig& cfg)
            "from ase.calculators.vasp import Vasp\n"
            "\n";
     out << "atoms = read('structure.extxyz')\n"
-        << AseScriptGenerator::vaspPotcarResolutionSnippet(
-               cfg.calculator.vaspPotcarPath)
+        << AseScriptGenerator::vaspPotcarResolutionSnippet(cfg.calculator)
         << "masses = atoms.get_masses()\n"
            "symbols = atoms.get_chemical_symbols()\n"
            "natoms = len(atoms)\n"

@@ -48,6 +48,15 @@ class SimulationWizardBase : public QDialog {
 public:
     enum class Action { None, RunLocal, RunRemote };
 
+    /// Where a run is actually going, passed into the pre-flight checks.
+    ///
+    /// Separate from `Action` because a pre-flight runs BEFORE `action_` is
+    /// set — it is what decides whether the run happens at all. Without it
+    /// the VASP checks closed every failure with advice about HPC cluster
+    /// profiles, including on a purely local run, which described a machine
+    /// the user was not using.
+    enum class RunTarget { Local, Remote };
+
     Action action() const { return action_; }
 
     QString script() const;            ///< the (possibly edited) preview text
@@ -535,7 +544,7 @@ private:
     /// Run (Local) and Run (Remote). A no-op (returns true without a
     /// dialog) for every calculator other than VASP. See
     /// gui/VaspPotcarPreflight.hpp for what it can and cannot see.
-    bool preflightVaspPotcar();
+    bool preflightVaspPotcar(RunTarget target);
     /// The same shape of check as preflightVaspPotcar(), for vasp_ncl: a
     /// Non-Collinear (spin-orbit) run with no vasp_ncl configured in
     /// Preferences → External Files → VASP executables is refused before
@@ -543,7 +552,7 @@ private:
     /// at all, so this is not an optimization to skip. A no-op (returns
     /// true) for every calculator other than VASP, and for VASP runs that
     /// are not Non-Collinear.
-    bool preflightVaspNcl();
+    bool preflightVaspNcl(RunTarget target);
     /// A second, independent preflight check run alongside
     /// preflightVaspPotcar(), for anything the concrete wizard wants
     /// checked before Run (Local)/Run (Remote) that is not the VASP POTCAR
@@ -675,6 +684,9 @@ private:
     /// rather than the spin box nested inside.
     QWidget* cutoffRow_ = nullptr;
     QLabel* vaspXcLabel_ = nullptr;
+    /// The form label of `cutoffRow_`, retitled when the cutoff spin box
+    /// is hidden and the row carries only the XC functional.
+    QLabel* cutoffRowLabel_ = nullptr;
     /// Eigensolver row: GPAW's solver combo or VASP's ALGO combo, plus the
     /// matching SCF step cap (GPAW's, or VASP's NELM). One row serving both,
     /// with the other engine's widgets hidden.

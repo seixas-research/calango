@@ -3,37 +3,22 @@
 build-machine path, OR references a bundle-relative path that does not
 actually resolve to a file inside the bundle.
 
-Companion to packaging/linux/audit_elf_deps.py, same incident class, now
-found on both ends of the load chain:
+Companion to packaging/linux/audit_elf_deps.py. A build-machine library can
+leak into a .app at either end of the load chain, and this checks both:
 
-  * calango 26.8.36's calango-dftb-run linked
-    /opt/homebrew/opt/openblas/lib/libopenblas.0.dylib directly -- an
-    unconstrained find_package(LAPACK) preferred Homebrew's openblas over
-    Accelerate on that build machine, and nothing downstream of that
-    target's plain install(TARGETS) rewrites load commands the way
-    macdeployqt rewrites `calango` itself.
-  * The SAME build's `calango` binary crashed on a user's Mac at launch
-    (dyld: "Library not loaded: @rpath/libgcc_s.1.1.dylib") even though
-    THIS script's first version (path-form only) would have passed it:
-    the bundled libopenblas.0.dylib's LC_LOAD_DYLIB entries were correctly
-    rewritten to @executable_path/..., but macdeployqt left THREE of its
-    original absolute Homebrew rpaths
-    (/opt/homebrew/opt/gcc/lib/gcc/current/gcc/...) on its LC_RPATH list,
-    and never copied libgcc_s.1.1.dylib (a transitive dependency of the
-    ALSO-bundled libgfortran.5.dylib) into Contents/Frameworks at all. On
-    the build machine dyld's chained rpath search silently found
-    libgcc_s.1.1.dylib via one of those leftover absolute rpaths; on a
-    clean Mac without that exact Homebrew GCC install, every one of those
-    paths misses and dyld aborts at launch, before main() ever runs.
-    "@rpath/..." alone is NOT proof of relocatability -- only proof of
-    FORM. This script now checks resolution, not just form.
+  * a binary installed by a plain install(TARGETS) keeps whatever absolute
+    load commands it was linked with -- nothing rewrites them the way
+    macdeployqt rewrites `calango` itself;
+  * a library macdeployqt DID rewrite can still keep the build machine's
+    original absolute LC_RPATH entries. On that machine dyld's chained
+    rpath search resolves a dependency through one of them, so the bundle
+    looks complete while the file was never copied into it; on a clean Mac
+    every one of those paths misses and dyld aborts before main() runs.
 
-The fix to the root cause was pinning BLA_VENDOR to Accelerate (a system
-framework with none of this dependency chain) via a since-removed
-CALANGO_BLAS option -- superseded by removing the native DFT/DFTB engines
-that were LAPACK's only consumers entirely (see CMakeLists.txt). This
-script is the backstop for the next leak, on any
-bundled library, of any vendor.
+Hence the rule this script enforces: "@rpath/..." alone is NOT proof of
+relocatability, only proof of FORM. Every relative dependency is checked
+for RESOLUTION against the bundle's own pooled rpath set, and every
+LC_RPATH entry for relocatability.
 
 Usage (run after the .dmg/.app is built, before publishing -- see
 packaging/macos/build_dmg.sh):
@@ -280,9 +265,8 @@ def main(argv: list[str]) -> int:
                         failures.append(
                             f"{rel}: loads '{dep}' but no LC_RPATH in the "
                             f"bundle resolves it to a file that actually "
-                            f"exists -- this is what crashed calango "
-                            f"26.8.36 at launch (missing "
-                            f"libgcc_s.1.1.dylib)")
+                            f"exists -- the bundle is incomplete and this "
+                            f"will abort at launch on a clean Mac")
                     continue
 
                 # Absolute or otherwise-unrecognized path outside the OS.

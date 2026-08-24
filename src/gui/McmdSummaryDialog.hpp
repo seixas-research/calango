@@ -45,7 +45,19 @@ public:
 
     /// Bind the window to a process: its id, the label its row carries, and
     /// whether that run is still going (which only changes the subtitle).
+    ///
+    /// `label` is the MODULE's task label ("GO/MCMD", "GO/MC-Opt"), and it
+    /// retitles the window — one dialog parameterized by module rather than
+    /// two nearly identical ones. Before this, a GO/MC-Opt run opened a
+    /// window headed "MCMD Summary", naming a module it had not run.
     void bindProcess(int id, const QString& label, bool running);
+
+    /// Whether this run relaxes each proposal to a minimum (GO/MC-Opt)
+    /// rather than running a burst of dynamics (GO/MCMD). Only the label of
+    /// the inner-phase step counter depends on it — "Optimizer steps" vs
+    /// "MD steps" — but showing "MD steps: 0" for a module that runs no
+    /// dynamics is a number that reads as a bug.
+    bool isOptimization() const { return optimization_; }
     int processId() const { return processId_; }
     void setRunning(bool running);
 
@@ -57,6 +69,10 @@ public:
     /// MainWindow::updateMcmdSummaryTable().
     QTableWidget* moveBreakdownTable() const { return moveBreakdownTable_; }
 
+    /// The module label this window is currently bound to, for the tests
+    /// and for MainWindow's own label choices.
+    QString moduleLabel() const { return processLabel_; }
+
 private Q_SLOTS:
     /// Both blocks, run first, separated by a blank line — byte for byte the
     /// file the Results tab's "Export CSV…" wrote, so anything that already
@@ -67,6 +83,7 @@ private:
     void refreshSubtitle();
 
     int processId_ = -1;
+    bool optimization_ = false;
     QString processLabel_;
     bool running_ = false;
 

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.8.43
+    VERSION 26.8.44
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -786,7 +786,8 @@ qt_add_executable(calango
     src/gui/GrapheneOxideMcmdWizard.hpp
     src/gui/GrapheneOxideMcmdWizard.cpp
     src/gui/GrapheneOxideMcOptWizard.hpp
-    src/gui/GrapheneOxideMcOptWizard.cpp
+    src/gui/GrapheneOxideGcmcWizard.cpp
+        src/gui/GrapheneOxideMcOptWizard.cpp
     src/gui/GrapheneOxideGroupAnalysisDialog.hpp
     src/gui/GrapheneOxideGroupAnalysisDialog.cpp
     src/gui/GrapheneOxidePairCorrelationDialog.hpp
@@ -1904,6 +1905,7 @@ if(CALANGO_BUILD_TESTS)
         src/gui/FilmTimelineWidget.cpp
         src/gui/GrapheneOxideWizard.cpp
         src/gui/GrapheneOxideMcmdWizard.cpp
+        src/gui/GrapheneOxideGcmcWizard.cpp
         src/gui/GrapheneOxideMcOptWizard.cpp
         # Phonon joins the dialog test for the VASP DFT+U audit: it is the
         # one of the four launch wizards that does NOT override
@@ -3175,6 +3177,7 @@ if(CALANGO_BUILD_TESTS)
         src/core/CalphadScriptGenerator.cpp
         # The k-point sweep, which brings its shared measurement/analysis
         # blocks with it (ConvergenceSweepBlocks).
+        src/core/CutoffConvergenceScriptGenerator.cpp
         src/core/KpointsConvergenceScriptGenerator.cpp
         src/core/ConvergenceSweepBlocks.cpp
         # Thermodynamic integration. Its script defines two ASE
@@ -3545,6 +3548,23 @@ if(CALANGO_BUILD_TESTS)
                 $<TARGET_FILE:calango_script_test>)
     set_tests_properties(graphene_oxide_mcmd_mace PROPERTIES TIMEOUT 1800)
 
+    # GO Grand Canonical MC: the algorithmic invariants (stoichiometry read
+    # off the group recipes, and the SIGN of mu in the acceptance criterion),
+    # from the shipped script. No calculator, so it runs everywhere.
+    add_test(NAME graphene_oxide_gcmc
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/graphene_oxide_gcmc_test.py
+                $<TARGET_FILE:calango_script_test>)
+
+    # The same module on pristine graphene with MACE: the reference
+    # potentials against their own definitions, and a composition that
+    # plateaus. Self-skips without mace-torch.
+    add_test(NAME graphene_oxide_gcmc_mace
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/graphene_oxide_gcmc_mace_test.py
+                $<TARGET_FILE:calango_script_test>)
+    set_tests_properties(graphene_oxide_gcmc_mace PROPERTIES TIMEOUT 1800)
+
     # Edge-group moves on a nanoflake (Lennard-Jones, dynamics off): the
     # rim's hydrogen inventory is conserved — an edge move swaps the
     # terminating H to the vacated carbon rather than landing the group on
@@ -3756,6 +3776,13 @@ if(CALANGO_BUILD_TESTS)
     # fixture carrying cu_wannier_spread_benchmark.py's own real, previously
     # -measured spreads. Self-skips (exit 0) without ase. Seconds, not an
     # hour: no DFT of any kind runs here.
+    # The two Parameters-Convergence sweeps with VASP, end to end, in both
+    # POTCAR library layouts. Self-skips without VASP.
+    add_test(NAME vasp_convergence_sweeps
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/vasp_convergence_sweeps_test.py
+                $<TARGET_FILE:calango_script_test>)
+
     # Hybrid band structure via KPOINTS_OPT, end to end against a real VASP
     # binary: HSE06 must open Si's direct gap at Gamma well past PBE's,
     # toward the experimental ~3.4 eV. Self-skips without VASP.
@@ -3919,7 +3946,7 @@ if(CALANGO_BUILD_TESTS)
         cluster_expansion_fit cluster_presets cluster_variation convex_hull
         cpa_solver crpa_solver crpa_vasp_validation cu_wannier_spread
         cu_wannier_vasp_fixture
-        vasp_lpard_ldos vasp_hybrid_bands
+        vasp_lpard_ldos vasp_hybrid_bands vasp_convergence_sweeps
         ternary_convex_hull
         dataset_split egqca
         defect_2d_correction defect_2d_monolayer
@@ -3929,6 +3956,7 @@ if(CALANGO_BUILD_TESTS)
         graphene_2d_bands_qe graphene_2d_bands_siesta
         graphene_oxide graphene_oxide_group_analysis graphene_oxide_mcmd_antiposition
         graphene_oxide_mcmd_mace graphene_oxide_mcmd_flake
+        graphene_oxide_gcmc graphene_oxide_gcmc_mace
         graphene_oxide_pair_correlation
         graphene_oxide_percolation
         graphene_oxide_percolation_mcmd graphene_oxide_sites graphene_tetrahedron

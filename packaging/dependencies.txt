@@ -47,17 +47,17 @@ Legend:  [required] must be present   [optional] enables a feature subset
           MetricPlotWidget / PhononPlotWindow) drawn with QPainter. QCustomPlot
           is NOT a dependency (only referenced as a possible future swap-in).
 
-                  NONE ............... no LAPACK/BLAS dependency at all. There
-                                       used to be a CALANGO_BLAS build option
-                                       (native DFT/DFTB's shared eigensolver,
-                                       src/dft/LinearAlgebra.cpp) — removed
-                                       along with those two engines; see
-                                       packaging/README.md's "BLAS/LAPACK
-                                       backend" section for the incident that
-                                       built (and then retired) it, and why
-                                       packaging/linux/audit_elf_deps.py /
-                                       packaging/macos/audit_macho_deps.py
-                                       stay regardless.
+                  NONE ............... no LAPACK/BLAS dependency at all.
+                                       Nothing in this codebase calls
+                                       find_package(LAPACK), and the packaged
+                                       binary links no BLAS implementation.
+                                       The dependency audit
+                                       (packaging/linux/audit_elf_deps.py,
+                                       packaging/macos/audit_macho_deps.py)
+                                       is independent of that: it guards every
+                                       shipped library, not a numerical one.
+                                       See packaging/README.md's "Dependency
+                                       audit" section.
 
 ------------------------------------------------------------------------------
 3. Embedded Python interpreter (the .venv Calango ships/points at)

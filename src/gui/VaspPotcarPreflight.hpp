@@ -41,10 +41,22 @@ struct VaspPotcarPreflightResult {
 /// (typically the unique species of the structure about to be run) — an
 /// empty list checks only that the directory itself resolves to something
 /// usable, which is what a caller with no structure-level element list on
-/// hand should pass. Both a flat layout (element folders directly under
-/// `potcarPath`) and the nested potpaw_PBE/potpaw/potpaw_LDA layout are
-/// recognised, exactly like the in-script shim.
+/// hand should pass. Both documented layouts are recognised, exactly like
+/// the in-script resolver: the configured directory as the PARENT of the
+/// family dirs, and the configured directory AS the family level (element
+/// folders directly inside it, which the script handles with a symlink
+/// shim).
+///
+/// `xc` is the run's exchange-correlation functional, and it is REQUIRED to
+/// get right: ASE derives the POTCAR family from it
+/// (core::vaspPotcarFamilyDir — potpaw_PBE for the PBE-based functionals,
+/// the unversioned potpaw for LDA). This check used to try a fixed list and
+/// accept whichever family existed first, so a PBE-only library passed under
+/// xc=LDA and the run then failed inside ASE looking for `potpaw`: a correct
+/// directory reported as a missing POTCAR. An empty `xc` is treated as the
+/// PBE family, matching what the wizard's own combo defaults to.
 VaspPotcarPreflightResult checkVaspPotcar(const QString& potcarPath,
-                                          const QStringList& elements = {});
+                                          const QStringList& elements = {},
+                                          const QString& xc = {});
 
 } // namespace calango::gui

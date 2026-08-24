@@ -156,8 +156,7 @@ std::string generateVaspWannier90Script(const WannierConfig& cfg)
            "\n"
         << AseScriptGenerator::jsonLoggerPreamble()
         << "atoms = read('structure.extxyz')\n"
-        << AseScriptGenerator::vaspPotcarResolutionSnippet(
-               cfg.calculator.vaspPotcarPath)
+        << AseScriptGenerator::vaspPotcarResolutionSnippet(cfg.calculator)
         << "_calango_progress(1, 4)\n"
            "\n";
 

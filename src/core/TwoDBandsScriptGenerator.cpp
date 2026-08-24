@@ -7,6 +7,26 @@
 
 namespace calango::core {
 
+namespace {
+
+/// `calculator` with its POTCAR directory guaranteed present.
+///
+/// This config type mirrors the path in a field of its own beside the
+/// CalculatorConfig, and the resolver needs BOTH halves of the answer — the
+/// directory and the `xc` that picks the family inside it. Taking the config
+/// and topping up the path is what keeps those two from being read from
+/// different places.
+CalculatorConfig potcarConfig(CalculatorConfig calculator,
+                              const std::string& mirroredPath)
+{
+    if (calculator.vaspPotcarPath.empty())
+        calculator.vaspPotcarPath = mirroredPath;
+    return calculator;
+}
+
+} // namespace
+
+
 std::string generateTwoDBandsScript(const TwoDBandsConfig& cfg)
 {
     // Clamped here rather than trusted from the dialog: this generator is also
@@ -61,7 +81,7 @@ std::string generateTwoDBandsScript(const TwoDBandsConfig& cfg)
                "\n"
                "atoms = read(\"structure.extxyz\")\n"
             << AseScriptGenerator::vaspPotcarResolutionSnippet(
-                   cfg.vaspPotcarPath)
+                   potcarConfig(cfg.gpaw, cfg.vaspPotcarPath))
             << "_calango_progress(1, 4)\n"
                "\n";
         break;

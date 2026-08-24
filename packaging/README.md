@@ -8,110 +8,36 @@ The user-facing version is the single source of truth in `CMakeLists.txt`
 
 ---
 
-## BLAS/LAPACK backend
+## Dependency audit
 
-**Status: there is no BLAS/LAPACK backend anymore.** The native DFT engine's
-generalised eigenproblem (`src/dft/LinearAlgebra.cpp`) and the native DFTB
-engine that shared it were LAPACK's only consumers in this codebase — both
-were removed entirely (see git history: they were substantially implemented
-but narrowly exposed, with no downstream feature wiring). The packaged
-`calango` binary now links no BLAS/LAPACK implementation at all — not
-Accelerate, not OpenBLAS, not MKL. This whole section is kept as history:
-it explains an incident that shaped the packaging pipeline's dependency
-audit, which remains active and still matters for every OTHER shipped
-library, not just BLAS.
+The packaged `calango` binary links no BLAS/LAPACK implementation at all: the
+native DFT and DFTB engines that were LAPACK's only consumers in this codebase
+have been removed, and nothing calls `find_package(LAPACK)` any more. There is
+no numerical-library vendor here to choose, or to get wrong.
 
-The fix at the time was a CMake option, `CALANGO_BLAS`
-(`Accelerate|OpenBLAS|Generic|MKL|Auto`, pinning `BLA_VENDOR` explicitly
-instead of letting `find_package(LAPACK)` guess). **That option no longer
-exists** — removed along with its only two consumers.
+The audit below is not about that and does not go away with it. It guards a
+general class of defect — *a library from the build machine leaking into a
+shipped artifact without being declared* — which applies to every library the
+package touches: Qt, HDF5, the Python framework's extension modules, the
+compiler runtime. That is why it runs on every build rather than on the ones
+somebody thought were risky.
 
-### The incident this exists to prevent
+### Load paths and rpaths on macOS
 
-calango 26.8.36's shipped `.deb` needed `libmkl_intel_lp64.so.3`,
-`libmkl_intel_thread.so.3`, `libmkl_core.so.3` and `libiomp5.so` at runtime —
-present on the build machine (an unconstrained `find_package(LAPACK)` picked
-up MKL there, likely visible via a pip `mkl` install, a sourced oneAPI
-environment, or a conda env left on `LD_LIBRARY_PATH`), completely absent
-from a clean `apt install ./calango_*.deb`, and **not declared as a
-`Depends`** — `dpkg-shlibdeps` could not attribute those `.so` files to any
-installed package. That's not even a Calango-specific gap: CMake's own
-`CPackDeb.cmake` (confirmed by reading the module shipped with this
-machine's CMake) unconditionally passes `dpkg-shlibdeps
---ignore-missing-info` whenever the installed `dpkg-shlibdeps` supports the
-flag — downgrading what would otherwise be a `FATAL_ERROR` (aborting
-`cpack` outright) into a silent omission of exactly that dependency.
-`CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON` behaves this way for every project, not
-just this one. The result installed fine and crashed on first launch with a
-missing-library error, on any machine without that exact MKL install.
+The macOS audit checks **two** things, and the second is the one that matters.
+Every `LC_RPATH` entry on a bundled Mach-O must be
+`@loader_path`/`@executable_path`-relative; and every relative dependency must
+actually **resolve** to a file present in the bundle. A bundle-relative load
+path is proof of *form*, not of *resolution*: a library can carry a
+correct-looking `@rpath/...` dependency and still be found only through a
+leftover absolute rpath pointing at the build machine, which no clean Mac has.
 
-The same build round's `.dmg` had the identical disease via a different
-vendor: `calango-dftb-run` linked
-`/opt/homebrew/opt/openblas/lib/libopenblas.0.dylib` directly — Homebrew's
-`openblas`, picked over Apple's Accelerate framework because it was
-discoverable on that machine's CMake search path, and never rewritten
-because nothing downstream of that target's plain `install(TARGETS)` runs
-`install_name_tool`/`macdeployqt` over it the way `calango` itself gets
-processed. Absent on any Mac without `brew install openblas`.
+`packaging/macos/strip_leftover_rpaths.sh` enforces the first half before the
+audit checks it. It is wired into `CMakeLists.txt`'s install step — after
+`macdeployqt`'s two passes, before the final `codesign` — and deletes any
+non-relocatable `LC_RPATH` entry from every bundled Mach-O.
 
-Pinning `BLA_VENDOR` explicitly used to fix both: CMake's
-`find_package(LAPACK)` with a vendor set only looks for that vendor's own
-library name patterns, so it could no longer silently substitute whatever
-else happened to be on a given build machine's search path. Removing the
-only two things that ever called `find_package(LAPACK)` at all is the more
-complete version of the same fix — there is no vendor left to substitute.
-
-### The startup crash `Accelerate` alone didn't catch
-
-A user's Mac never got past launch: `CrashReport.md` (2026-08-21) showed
-`Termination Reason: Namespace DYLD, Code 1, Library missing` —
-`Library not loaded: @rpath/libgcc_s.1.1.dylib`, referenced from the
-bundled `libgfortran.5.dylib`. Same version, 26.8.36, same `.dmg` as the
-incident above — this was a SECOND defect in the exact same shipped
-artifact, past what pinning `BLA_VENDOR` alone fixes:
-
-- `calango`'s own bundled `libopenblas.0.dylib` had its LC_LOAD_DYLIB
-  entries correctly rewritten to `@executable_path/...` by macdeployqt,
-  but kept THREE of its original absolute Homebrew rpaths
-  (`/opt/homebrew/opt/gcc/lib/gcc/current/gcc/...`) on its LC_RPATH list.
-- `libgcc_s.1.1.dylib` — a dependency of the also-bundled
-  `libgfortran.5.dylib` — was never actually copied into
-  `Contents/Frameworks` at all.
-- On the build machine, dyld's chained rpath search silently found
-  `libgcc_s.1.1.dylib` via one of those leftover absolute rpaths. On a
-  clean Mac without that exact Homebrew GCC install, every one of those
-  paths misses and the app aborts before `main()` ever runs.
-
-`@rpath/...` is proof of *form*, not of *resolution* — the first version of
-`audit_macho_deps.py` (path-form only) would have passed this bundle. Two
-fixes landed together at the time:
-
-1. **`CALANGO_BLAS` defaulting to `Accelerate` on macOS** removed the entire
-   openblas → gfortran → gcc_s/quadmath/omp chain outright — verified by
-   rebuilding: a fresh `.dmg` linked `calango` and `calango-dftb-run`
-   against `Accelerate.framework` only, nothing from `/opt/homebrew`.
-   Since superseded by removing the native DFT/DFTB engines entirely
-   (see the section header above): there is now no BLAS chain to link at
-   all, on any platform.
-2. **`packaging/macos/strip_leftover_rpaths.sh`**, run after macdeployqt's
-   two passes and before the final `codesign` in `CMakeLists.txt`'s
-   install step, deletes any LC_RPATH entry on any bundled Mach-O that
-   isn't `@loader_path`/`@executable_path`-relative. Auditing the same
-   `.dmg` found this same leftover-rpath pattern on three OTHER, unrelated
-   libraries too — `libdbus-1.3.dylib`, `libjasper.7.dylib`,
-   `libjpeg.8.dylib` — none of them BLAS-related, all left behind by
-   macdeployqt the same way. **This one is still active**: defense in
-   depth for every future bundled library, not just the BLAS vendor that
-   is now gone.
-
-`audit_macho_deps.py` was extended to match: it now checks every LC_RPATH
-entry for the same acceptable-prefix rule (see below), and — the check that
-actually catches THIS bug — resolves every `@rpath/`/`@loader_path/`/
-`@executable_path/`-prefixed dependency against the bundle's own pooled
-rpath set and fails if the referenced file does not actually exist,
-regardless of whether the load-path string itself looks relative.
-
-### Dependency audit
+### What the scripts check
 
 `packaging/linux/audit_elf_deps.py` and `packaging/macos/audit_macho_deps.py`
 run automatically at the end of `build_deb.sh`/`build_dmg.sh` respectively —
@@ -144,21 +70,18 @@ enough to tell a relative/system load path from a build-machine one.
 
 **Known gap, not silently swept under the audit:** the macOS audit excludes
 `Contents/Resources/python/*` and `Contents/Frameworks/Python.framework/*`
-(`build_dmg.sh`'s two `--exclude` flags). Auditing the 26.8.36 `.dmg` found
-that embedded Python payload has the *same* disease — six stdlib extension
-modules (`_ssl`, `_hashlib`, `_decimal`, `_lzma`, `_sqlite3`, `_zstd`) plus
-the framework's own `python3.14`/`Python` binaries loaded Homebrew OpenSSL,
-sqlite, zstd, mpdecimal and xz directly, meaning that particular artifact
-was built against a Homebrew-linked interpreter rather than the relocatable
-`python-build-standalone` tree this script is documented to download by
-default (see `PYTHON_BIN`/`CALANGO_EMBEDDED_PYTHON_DIR` above). That's a
-separate, pre-existing bug in Python provisioning, not the BLAS/MKL issue
-this audit was built for, and fixing it is out of scope here — the existing
-`--probe-python` launch check catches the "ASE won't import" symptom but not
-"every dylib is relocatable". Rebuild via the documented default flow (no
-`PYTHON_BIN`/`CALANGO_EMBEDDED_PYTHON_DIR` override) and re-run
-`audit_macho_deps.py` **without** the two `--exclude` flags to confirm a
-given build is actually clean there before treating this as closed.
+(`build_dmg.sh`'s two `--exclude` flags), so **that tree is not audited**. The
+exclusion is a concession, not a statement that the tree is clean: an
+interpreter built against Homebrew's OpenSSL, sqlite, zstd, mpdecimal or xz
+carries exactly the same class of undeclared dependency in its stdlib
+extension modules, and the `--probe-python` launch check catches "ASE won't
+import", not "every dylib is relocatable".
+
+Build the framework via the documented default flow — the relocatable
+`python-build-standalone` tree, with no `PYTHON_BIN` /
+`CALANGO_EMBEDDED_PYTHON_DIR` override — and re-run `audit_macho_deps.py`
+**without** the two `--exclude` flags to confirm a given build is actually
+clean there. Removing the two flags is what closes this gap for good.
 
 ---
 
@@ -218,8 +141,8 @@ against it, failing the build if the packaged app cannot import ASE:
 Right after that, it runs `packaging/macos/audit_macho_deps.py` over the same
 mounted image and fails the build if `calango` or any bundled binary or Qt
 framework loads a build-machine path (Homebrew, a conda prefix, ...) — see
-[BLAS/LAPACK backend](#blaslapack-backend) above for the incident that added
-this and the one known gap (`--exclude`d) it doesn't yet cover.
+[Dependency audit](#dependency-audit) above for what it checks and the one
+known gap (`--exclude`d) it doesn't yet cover.
 
 The image is **ad-hoc signed and not notarized**; Gatekeeper will warn on first
 launch elsewhere unless you sign with a Developer ID and notarize.
@@ -336,7 +259,7 @@ packaging/linux/build_deb.sh        # → installers/calango_<version>_<arch>.de
 The script recreates the build directory from scratch, configures against
 `/usr/bin/python3`, aborts if the binary ends up linking a non-system
 `libpython`, runs CPack, and then audits the resulting `.deb` (see
-[BLAS/LAPACK backend](#blaslapack-backend) above) before publishing it.
+[Dependency audit](#dependency-audit) above) before publishing it.
 Flags: `-p` (interpreter), `-b` (build directory), `-j` (jobs).
 
 **Never run it under `sudo`** — only the closing `apt install` needs root. A
@@ -354,7 +277,7 @@ optional `chemical-mime-data` package is installed. `dpkg-shlibdeps` derives
 the Qt6/OpenGL/libpython runtime dependencies from the linked shared
 libraries — `apt install ./calango_*.deb` resolves all of it, no separate
 step for the user. `packaging/linux/audit_elf_deps.py` (wired into
-`build_deb.sh`, see [BLAS/LAPACK backend](#blaslapack-backend) above)
+`build_deb.sh`, see [Dependency audit](#dependency-audit) above)
 verifies that derivation actually covered everything shipped, rather than
 trusting it silently.
 

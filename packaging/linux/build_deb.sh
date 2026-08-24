@@ -165,16 +165,10 @@ fi
 # dpkg-shlibdeps (CPACK_DEBIAN_PACKAGE_SHLIBDEPS, CMakeLists.txt) derives
 # Depends: from whatever the binary actually links — but a library it
 # cannot attribute to any installed package, it silently DROPS rather than
-# failing the build on. calango 26.8.36 shipped exactly that way: `calango`
-# and `calango-dftb-run` needed libmkl_intel_lp64.so.3,
-# libmkl_intel_thread.so.3, libmkl_core.so.3 and libiomp5.so — present on
-# that build machine (an unconstrained find_package(LAPACK) picked up MKL
-# there), completely absent from the control file, and therefore absent on
-# every clean `apt install` target. The fix to the root cause was pinning
-# BLA_VENDOR via a since-removed CALANGO_BLAS option -- superseded by
-# removing the native DFT/DFTB engines that were LAPACK's only consumers
-# entirely (see CMakeLists.txt). This is the backstop that catches the
-# NEXT such leak, on any other library, here, not on an end user's machine.
+# failing the build on. A .deb can therefore install cleanly and die at
+# launch on any machine that lacks a library the build machine happened to
+# have — with nothing in the control file to say so. This is the backstop
+# that catches such a leak here, not on an end user's machine.
 echo ">> Auditing shipped ELF binaries for undeclared library dependencies"
 if ! python3 "$SCRIPT_DIR/audit_elf_deps.py" "$DEB"; then
     echo "error: audit_elf_deps.py found a NEEDED library that is not" >&2

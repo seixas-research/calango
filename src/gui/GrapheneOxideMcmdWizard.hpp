@@ -2,6 +2,7 @@
 
 #include "core/GrapheneOxideMcmdScriptGenerator.hpp"
 #include "gui/CellRelaxationControls.hpp"
+#include "gui/GoMcmdLiveTabs.hpp"
 #include "gui/SimulationWizardBase.hpp"
 
 namespace calango::core {
@@ -116,6 +117,20 @@ protected:
     /// second stage — the base drops a stage whose header is empty.
     QString secondSettingsHeader() const override;
     QWidget* buildSecondSettingsPage() override;
+
+    /// Every field the base wizard's controls define. `virtual` so a
+    /// subclass can add its own on top rather than reassembling the forty
+    /// the base already fills — GO Grand Canonical MC's four reservoir
+    /// settings are exactly that case.
+    virtual core::GrapheneOxideMcmdConfig collectConfig() const;
+
+public:
+    /// Which of the three trajectory files this run should open live tabs
+    /// for. Read by MainWindow at launch; persisted per module so the choice
+    /// survives the wizard.
+    GoMcmdLiveTabSelection liveTabSelection() const;
+
+protected:
     QString generateScript() const override;
     QString exportFileName() const override
     {
@@ -129,7 +144,7 @@ private Q_SLOTS:
     void refreshCost();
 
 private:
-    core::GrapheneOxideMcmdConfig collectConfig() const;
+
 
     QDoubleSpinBox* temperature_ = nullptr;
     QSpinBox* cycles_ = nullptr;
@@ -171,6 +186,11 @@ private:
     /// there is no separate "also show the dynamics" checkbox any more.
     QSpinBox* viewportEvery_ = nullptr;
     QCheckBox* castPerFrame_ = nullptr;
+    /// Which trajectory files open a live viewport tab. The FILES are always
+    /// written; these choose what is watched. See liveTabSelection().
+    QCheckBox* liveTabCandidates_ = nullptr;
+    QCheckBox* liveTabAccepted_ = nullptr;
+    QCheckBox* liveTabAllStructures_ = nullptr;
     QLabel* costLabel_ = nullptr;
     QLabel* substrateLabel_ = nullptr;
 

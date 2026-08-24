@@ -93,6 +93,7 @@
 #include "gui/OpticsWizard.hpp"
 #include "gui/OverlayPanel.hpp"
 #include "gui/GoMcmdLiveTabs.hpp"
+#include "gui/GrapheneOxideGcmcWizard.hpp"
 #include "gui/GrapheneOxideMcOptWizard.hpp"
 #include "gui/GrapheneOxideMcmdWizard.hpp"
 #include "gui/GrapheneOxideWizard.hpp"
@@ -1868,6 +1869,15 @@ void MainWindow::createMenusAndDocks()
                         "acceptance test compares two minima. Costs more per "
                         "cycle and samples minima rather than a canonical "
                         "ensemble"));
+    grapheneOxideMenu
+        ->addAction(tr("GO &Grand Canonical MC…"), this,
+                    &MainWindow::openGoGcmc)
+        ->setToolTip(tr("The same Monte Carlo with the group inventory "
+                        "OPENED to a reservoir: the moves also add and "
+                        "remove functional groups, governed by chemical "
+                        "potentials for H and O, so the COMPOSITION is "
+                        "sampled rather than fixed. Starts from a decorated "
+                        "sheet or from pristine graphene"));
     grapheneOxideMenu->addSeparator();
     grapheneOxideMenu
         ->addAction(tr("GO Functional &Group Analysis…"), this,
@@ -8496,6 +8506,16 @@ void MainWindow::openGoMcmd()
     runGoMonteCarlo(wizard, goMcmdTaskLabel());
 }
 
+void MainWindow::openGoGcmc()
+{
+    // GO Grand Canonical MC: the same launcher and the same eligibility
+    // rules, with one difference the rules themselves have to know about —
+    // this module accepts a PRISTINE framework, since its move set can
+    // place the first group itself.
+    GrapheneOxideGcmcWizard wizard(this);
+    runGoMonteCarlo(wizard, goGcmcTaskLabel());
+}
+
 void MainWindow::openGoMcOpt()
 {
     // GO/MC-Opt: the same launcher, the same eligibility rules, the same
@@ -8623,6 +8643,7 @@ void MainWindow::runGoMonteCarlo(GrapheneOxideMcmdWizard& wizard,
     // a hole the old code documented rather than closed. Staged here, it
     // survives the wait and reaches setUpGoMcmdLiveFiles() with its run.
     pendingMcmdCastPerFrame_ = wizard.castPerFrame();
+    pendingMcmdLiveTabs_ = wizard.liveTabSelection();
 
     // expectFrames: the run produces frames, so the live tabs follow the
     // annealing rather than waiting for the end. GO/MCMD is the one such run
@@ -10199,8 +10220,16 @@ void MainWindow::showMcmdSummary(int processId, const QString& label)
                                                : QString();
     mcmdSummaryDialog_->bindProcess(processId, name,
                                     processId == currentTaskId_);
-    refreshMcmdSummaryDialog();
+    // show() BEFORE the repaint, not after. bindProcess() clears both
+    // tables, and refreshMcmdSummaryDialog() bails out on a window that is
+    // not visible yet — so opening the window used to paint nothing into it
+    // and leave the cleared tables on screen. For a LIVE run the next
+    // metrics poll filled them a second later and it looked like a slow
+    // start; for a FINISHED run no further poll ever comes, so the window
+    // stayed empty for good. That is the "opens empty" report, and it was
+    // never specific to GO/MC-Opt — that is just where it was noticed.
     mcmdSummaryDialog_->show();
+    refreshMcmdSummaryDialog();
     mcmdSummaryDialog_->raise();
     mcmdSummaryDialog_->activateWindow();
 }
@@ -10339,7 +10368,13 @@ void MainWindow::updateMcmdRunSummary(const ProcessRecord& record)
     // Clamped to the total: "cycles/total" may never read 101/100.
     const qlonglong cyclesDone =
         std::min(count(lastValue("mcmd_cycles_done")), cyclesTotal);
-    const qlonglong mdSteps = count(lastValue("mcmd_md_steps_done"));
+    // The inner phase is dynamics for GO/MCMD and a relaxation for
+    // GO/MC-Opt, so the counter is a different quantity with a different
+    // name. Reading only the MD one showed "MD steps: 0" on every MC-Opt
+    // run -- a module that runs no dynamics reporting none of them.
+    const bool optimization = mcmdSummaryDialog_->isOptimization();
+    const qlonglong innerSteps = count(lastValue(
+        optimization ? "mcmd_relax_steps_done" : "mcmd_md_steps_done"));
     const qlonglong accepted = count(lastValue("mcmd_accepted"));
 
     // Accepted per cycle COMPLETED — the same ratio mcmd_summary.json reports
@@ -10377,7 +10412,8 @@ void MainWindow::updateMcmdRunSummary(const ProcessRecord& record)
 
     const std::vector<std::pair<QString, QString>> rows = {
         {tr("Cycles"), QStringLiteral("%1 / %2").arg(cyclesDone).arg(cyclesTotal)},
-        {tr("MD steps"), QString::number(mdSteps)},
+        {optimization ? tr("Optimizer steps") : tr("MD steps"),
+         QString::number(innerSteps)},
         {tr("Accepted"), QString::number(accepted)},
         {tr("Acceptance"),
          cyclesDone > 0 ? tr("%1%").arg(acceptancePercent, 0, 'f', 1)
@@ -10396,7 +10432,7 @@ void MainWindow::updateMcmdRunSummary(const ProcessRecord& record)
 void MainWindow::setUpGoMcmdLiveFiles(
     const QString& jobDir, int processId,
     const std::shared_ptr<core::Structure>& seed, bool castPerFrame,
-    const QString& taskLabel)
+    const QString& taskLabel, const GoMcmdLiveTabSelection& selection)
 {
     if (jobDir.isEmpty() || !seed || !tabBar_)
         return;
@@ -10407,7 +10443,12 @@ void MainWindow::setUpGoMcmdLiveFiles(
     // Titled after the module that produced the run — GO/MCMD and GO/MC-Opt
     // write the same file names into their own directories, and the tab is the
     // one place a user can see which of the two they are watching.
-    const std::vector<GoMcmdLiveView> followed = goMcmdLiveViews(taskLabel);
+    // Filtered by the wizard's own "Live viewport tabs" choice. Exactly the
+    // checked tabs open and nothing else — the guarantee the tab audit
+    // established, now with the set under the user's control. The files are
+    // written regardless.
+    const std::vector<GoMcmdLiveView> followed =
+        goMcmdLiveViews(taskLabel, selection);
 
     // addDocument() selects each tab as it creates it, which would move the
     // user off whatever they were looking at when the run started. Restored
@@ -10847,6 +10888,8 @@ void MainWindow::runScript(const QString& script, const QString& pythonExe,
     // setting, and the next job of any kind starts from the default again.
     job.mcmdCastPerFrame = pendingMcmdCastPerFrame_;
     pendingMcmdCastPerFrame_ = true;
+    job.mcmdLiveTabs = pendingMcmdLiveTabs_;
+    pendingMcmdLiveTabs_ = GoMcmdLiveTabSelection{};
     // Snapshot the geometry the live tab would be seeded from. Deferring the
     // lookup to launch time would seed it from whatever tab happens to be
     // current then, which for a queued job is routinely a different structure
@@ -10930,7 +10973,8 @@ void MainWindow::launchJob(const QueuedJob& job)
     // at which its own directory is known.
     if (goMcmd)
         setUpGoMcmdLiveFiles(job.jobDir, job.processId, job.liveSeed,
-                             job.mcmdCastPerFrame, job.label);
+                             job.mcmdCastPerFrame, job.label,
+                             job.mcmdLiveTabs);
 
     jobDock_->show();
     jobDock_->raise();

@@ -97,8 +97,7 @@ std::string bornDfptScript(const BornChargesConfig& cfg)
             "import subprocess\n"
             "from ase.calculators.vasp import Vasp\n"
             "\n";
-        out += AseScriptGenerator::vaspPotcarResolutionSnippet(
-            cfg.calculator.vaspPotcarPath);
+        out += AseScriptGenerator::vaspPotcarResolutionSnippet(cfg.calculator);
         out +=
             "calc = Vasp(\n"
             "    directory='.',\n"

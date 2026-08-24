@@ -52,6 +52,11 @@ GrapheneOxideMcmdScriptGenerator::generate(const GrapheneOxideMcmdConfig& c)
            "\n"
            "import json\n"
            "import math\n"
+           // `os`, not just the logger's aliased `os as _os`: the
+           // grand-canonical reference cache reads and writes a file by
+           // path, and a module-scope name the script never bound is a
+           // NameError the byte-compile lint cannot see.
+           "import os\n"
            "import random\n"
            "import time\n"
            "from collections import deque\n"
@@ -97,6 +102,7 @@ GrapheneOxideMcmdScriptGenerator::generate(const GrapheneOxideMcmdConfig& c)
         // now has exactly one meaning: the file of accepted structures.
         << "all_structures_path = r\"mcmd_all_structures.extxyz\"\n"
         << "accepted_structures_path = r\"" << c.trajectory << "\"\n"
+        << "candidates_structures_path = r\"candidates_structures.extxyz\"\n"
         << "temperature_K = " << c.temperatureK << "\n"
         << "mc_cycles = " << c.cycles << "\n"
         << "md_steps = " << c.mdStepsPerCycle << "\n"
@@ -135,6 +141,22 @@ GrapheneOxideMcmdScriptGenerator::generate(const GrapheneOxideMcmdConfig& c)
         << ", " << (c.cellMask[2] ? "1" : "0") << ", "
         << (c.cellMask[3] ? "1" : "0") << ", " << (c.cellMask[4] ? "1" : "0")
         << ", " << (c.cellMask[5] ? "1" : "0") << "]\n"
+        // GO Grand Canonical MC. `grand_canonical` is this module's own one
+        // switch: it adds insertion and deletion to the move set, so the
+        // group inventory stops being conserved and the COMPOSITION becomes
+        // something the walk samples rather than something it is handed.
+        << "grand_canonical = "
+        << (c.grandCanonical ? "True" : "False") << "\n"
+        << "delta_mu_H = " << c.deltaMuHEv << "\n"
+        << "delta_mu_O = " << c.deltaMuOEv << "\n"
+        << "move_weights = {\"swap\": " << c.swapWeight
+        << ", \"insert\": " << c.insertWeight
+        << ", \"delete\": " << c.deleteWeight << "}\n"
+        << "reference_cache_path = r\"" << c.referenceCache << "\"\n"
+        // Names the engine in the reference cache key, so two runs on
+        // different calculators can never share reference energies.
+        << "CALCULATOR_LABEL = \"" << toString(c.calculator.calculator)
+        << "\"\n"
         << "\n"
            // Elapsed wall time for the live Results panel. A MONOTONIC clock,
            // never a subtraction of two wall-clock readings: the system clock
@@ -666,7 +688,17 @@ CLEARANCE_HYDROGEN = 1.6
 CH_EDGE = 1.09
 
 
-def clearance_ok(system, members, new_positions, hosts, ignore=()):
+def clearance_ok(system, members, new_positions, hosts, ignore=(),
+                 new_symbols=None):
+    """Would atoms placed at `new_positions` sit too close to anything?
+
+    `new_symbols` exists for INSERTION: a relocated group's species can be
+    read off its existing member indices, but atoms that do not exist yet
+    have no indices to read. Passing an empty `members` without it left the
+    per-atom hydrogen mask empty (and float-typed), which is a TypeError in
+    the mask combination below rather than a wrong answer -- but only on
+    the insertion path, which is why it survived until one ran.
+    """
     symbols = system.get_chemical_symbols()
     excluded = set(members) | set(hosts) | set(ignore) | framework_set
     others = [i for i in range(len(system)) if i not in excluded]
@@ -675,8 +707,10 @@ def clearance_ok(system, members, new_positions, hosts, ignore=()):
     _, distances = get_distances(np.array(new_positions),
                                  system.get_positions()[others],
                                  cell=system.cell, pbc=system.pbc)
-    new_is_h = np.array([symbols[i] == "H" for i in members])
-    other_is_h = np.array([symbols[i] == "H" for i in others])
+    if new_symbols is None:
+        new_symbols = [symbols[i] for i in members]
+    new_is_h = np.array([s == "H" for s in new_symbols], dtype=bool)
+    other_is_h = np.array([symbols[i] == "H" for i in others], dtype=bool)
     limit = np.where(new_is_h[:, None] | other_is_h[None, :],
                      CLEARANCE_HYDROGEN, CLEARANCE_HEAVY)
     return bool(np.all(distances >= limit))
@@ -733,6 +767,21 @@ def pair_hydroxyls(raw_groups, positions, framework, graph):
     leftovers = [g for g in hydroxyls if g[2][0] not in claimed]
     return others + pairs + leftovers, len(pairs), len(leftovers)
 
+
+# The integer encoding GrapheneOxideBuilder::Group uses for the persisted
+# "go_group" column (Epoxide=0, Hydroxyl=1, Carboxyl=2, Carbonyl=3). Written
+# out here because a grand-canonical run rewrites those columns wholesale
+# after an insertion or a deletion, and a rewrite that invented its own
+# numbering would rename every group for every downstream reader.
+GROUP_CODE = {
+    "epoxide": 0,
+    "hydroxyl": 1,
+    # A pair is two hydroxyls; the column labels the CHEMISTRY, and both
+    # halves of a pair are hydroxyls.
+    "hydroxyl_pair": 1,
+    "carboxyl": 2,
+    "carbonyl": 3,
+}
 
 GROUP_REGION = {
     "epoxide": "pair",
@@ -808,11 +857,20 @@ def topology_intact(kind, hosts, member_indices, system, graph):
 # =====================================================================
 
 groups = collect_groups(atoms, graph0)
-if not groups:
+if not groups and not grand_canonical:
     _calango_event("error",
                    "No functional groups found - there is nothing to move. "
                    "MCMD refines an EXISTING decoration; build one first.")
     raise SystemExit(1)
+if not groups:
+    # A GRAND-CANONICAL run legitimately starts here. Its move set can ADD
+    # groups, so an empty inventory is a starting point rather than a
+    # missing input -- and starting from pristine graphene is the module's
+    # own headline case: grow an oxide and see what composition the
+    # chemical potentials select.
+    _calango_event("info",
+                   "starting from a pristine framework (no functional "
+                   "groups): the grand-canonical move set will place them.")
 
 # Hydroxyls antiposition: recover each bonded, opposite-face pair from THIS
 # geometry -- the structure the builder just produced, which is the only
@@ -1015,6 +1073,7 @@ def frame_snapshot(system, phase, mc_cycle, md_step_in_cycle, total_energy,
 # and owes the record its one frame, and calling that frame a judged trial
 # would be a lie. Counted separately so it never inflates "MD steps done".
 frames_written = {"equilibration": 0, "md": 0, "mc_trial": 0, "accepted": 0,
+                  "candidates": 0,
                   "failed": 0}
 
 # Integrator steps actually taken, which is NOT the same as frames written any
@@ -1053,6 +1112,7 @@ def append_frames(path, frames):
     # "mc_trial" snapshot that also went into the all-structures file.
     for frame in frames:
         key = ("accepted" if path == accepted_structures_path
+               else "candidates" if path == candidates_structures_path
                else frame.info["phase"])
         # setdefault, not [key] += 1: a phase this dict has never heard of is
         # a new kind of frame, not a reason to abort a run at cycle 180.
@@ -1071,6 +1131,7 @@ def record_structure(path, system, **fields):
 # (steps per cycle, accepted structures) is the sum of two runs.
 open(all_structures_path, "w").close()
 open(accepted_structures_path, "w").close()
+open(candidates_structures_path, "w").close()
 
 
 # =====================================================================
@@ -1293,6 +1354,22 @@ def record_burst_final(system, cycle, phase, accepted, total_energy,
                                md_step_in_cycle=max(0, last),
                                total_energy=total_energy, accepted=accepted)
     append_frames(all_structures_path, [frame])
+    # THE CANDIDATES FILE: the state each cycle's inner phase ended on - the
+    # post-burst structure for GO/MCMD, the relaxed one for GO/MC-Opt - which
+    # is exactly the configuration the Metropolis test is handed. Written
+    # here and nowhere else, because this function is called exactly once per
+    # cycle on every branch of the loop; that is what makes
+    #
+    #     len(candidates_structures.extxyz) == mc_cycles
+    #
+    # true by construction rather than by counting. Cycles that never reached
+    # a Metropolis test (a broken topology, a saturated site pool) still
+    # contribute their frame, and carry the phase that says so - dropping
+    # them would make the file's length a number nobody can predict.
+    #
+    # A copy, not the same object: the accepted branch goes on to stamp
+    # `acceptance_ordinal` into its own frame, and info dicts are shared.
+    append_frames(candidates_structures_path, [frame.copy()])
     return frame
 
 
@@ -1347,6 +1424,62 @@ def restore_state(state):
     atoms.set_cell(cell, scale_atoms=False)
     atoms.set_positions(positions)
     atoms.set_momenta(momenta)
+
+
+def _gcmc_rewrite_host_fields():
+    """Rewrite the persisted classification columns from the CURRENT groups.
+
+    After an insertion or a deletion the atom indices have shifted and the
+    inventory has changed, so patching the columns per move (what
+    update_host_fields does for a swap) has nothing stable to patch. They
+    are written out wholesale instead, from the group list
+    gcmc_rebuild_state() just re-derived -- the same source the columns are
+    supposed to describe.
+    """
+    natoms = len(atoms)
+    for field in ("go_group", "go_group_id", "go_pair_id"):
+        if field in atoms.arrays:
+            del atoms.arrays[field]
+        atoms.new_array(field, np.full(natoms, -1, dtype=int))
+    group_column = atoms.arrays["go_group"]
+    id_column = atoms.arrays["go_group_id"]
+    for group_index, (kind, members, hosts) in enumerate(groups):
+        code = GROUP_CODE.get(kind, -1)
+        for atom_index in list(members) + list(hosts):
+            if 0 <= atom_index < natoms:
+                group_column[atom_index] = code
+                id_column[atom_index] = group_index
+
+
+def gcmc_checkpoint():
+    """A FULL snapshot — the atom count is not invariant under GCMC.
+
+    checkpoint_state() above restores positions, cell and momenta, which is
+    exact for a swap because the atoms are the same atoms. An insertion or a
+    deletion changes the inventory, so what has to be saved is the whole
+    structure.
+    """
+    return atoms.copy()
+
+
+def gcmc_restore(snapshot):
+    """Put `snapshot` back, IN PLACE.
+
+    In place rather than by rebinding `atoms`: the calculator is attached to
+    that object and half the script closes over it. Emptying and refilling
+    keeps the identity and the calculator; every index-based structure is
+    then re-derived, exactly as after a successful move.
+    """
+    if snapshot is None:
+        raise RuntimeError(
+            "gcmc_restore() was asked to restore nothing. Every "
+            "grand-canonical cycle takes its snapshot before it moves; a "
+            "None here means a revert reached a cycle that never did.")
+    del atoms[:]
+    atoms.extend(snapshot)
+    atoms.set_cell(snapshot.get_cell(), scale_atoms=False)
+    atoms.set_momenta(snapshot.get_momenta())
+    gcmc_rebuild_state(atoms)
 
 
 def site_state():
@@ -1433,6 +1566,277 @@ def relocate(index):
         sites.occupy(host, kind)
     groups[index] = (kind, members, new_hosts)
     return "ok", new_hosts
+
+
+)PY";
+
+    // Split here purely for the COMPILER: a single raw string literal of
+    // 92 kB exceeds the 64 kB every C++ implementation is required to
+    // support, and clang warns (-Woverlength-strings). Adjacent literals
+    // concatenate, so the emitted script is byte-for-byte unchanged; the
+    // seam is put at a section boundary so it reads as one.
+    out << R"PY(
+# =====================================================================
+# Grand canonical: stoichiometry, reservoir, insertion and deletion
+# =====================================================================
+#
+# READ OFF THE RECIPES, not written down beside them. collect_groups()
+# defines what each kind's `members` list contains, and build_group()
+# produces exactly those atoms:
+#
+#   epoxide       [O]                     -> 1 O
+#   hydroxyl      [O, H]                  -> 1 O, 1 H
+#   hydroxyl_pair two hydroxyls           -> 2 O, 2 H
+#   carbonyl      [O]                     -> 1 O
+#   carboxyl      [C, O, O] + [H]         -> 1 C, 2 O, 1 H
+#
+# The carboxyl entry is the one worth stating out loud: it brings a CARBON
+# of its own, which a table written from chemical intuition ("2 O + 1 H")
+# leaves out. A grand-canonical move that miscounts by one atom biases every
+# acceptance by one whole chemical potential.
+GCMC_STOICHIOMETRY = {
+    "epoxide": {"C": 0, "O": 1, "H": 0},
+    "hydroxyl": {"C": 0, "O": 1, "H": 1},
+    "hydroxyl_pair": {"C": 0, "O": 2, "H": 2},
+    "carbonyl": {"C": 0, "O": 1, "H": 0},
+    "carboxyl": {"C": 1, "O": 2, "H": 1},
+}
+
+# Which kinds this module may INSERT or DELETE.
+#
+# The basal ones only, and that is a stated limitation rather than an
+# oversight: an edge carbon carries either a group or a terminating
+# hydrogen and never both, so inserting a carbonyl or a carboxyl also has
+# to REMOVE that hydrogen (and deleting one has to put it back) -- a second
+# species entering and leaving the reservoir on the same move. relocate()
+# handles the edge case by MOVING the cap hydrogen between hosts, which
+# conserves it; insertion has no such partner to trade with. Shipping that
+# unverified would put a wrong Δn_H into the acceptance criterion for
+# exactly the moves whose stoichiometry is hardest to check.
+#
+# For the module's own headline case -- pristine PERIODIC graphene grown
+# into an oxide -- there are no edge carbons at all, so nothing is lost.
+GCMC_INSERTABLE = ("epoxide", "hydroxyl")
+
+
+def gcmc_delta_counts(kind, sign):
+    """Δn for each species when a group of `kind` is added (+1) or removed."""
+    counts = GCMC_STOICHIOMETRY[kind]
+    return {species: sign * n for species, n in counts.items()}
+
+
+def gcmc_composition(system):
+    """Atom counts by species, for the composition trace."""
+    tally = {"C": 0, "O": 0, "H": 0}
+    for symbol in system.get_chemical_symbols():
+        if symbol in tally:
+            tally[symbol] += 1
+    return tally
+
+
+def _reference_signature():
+    """What makes two runs' reference energies interchangeable.
+
+    The calculator and every setting that changes a total energy. Two runs
+    that agree on this may share references; two that do not must not, and
+    the cache is keyed so that they cannot.
+    """
+    # Every setting that moves a total energy, from the values this script
+    # was generated with. A run that differs in any of them gets a different
+    # key and recomputes.
+    return json.dumps({
+        "calculator": CALCULATOR_LABEL,
+        "temperature_K": temperature_K,
+        "relax_to_minimum": relax_to_minimum,
+    }, sort_keys=True)
+
+
+def _molecule_energy(symbols, positions, label):
+    """One small molecular total energy, with THIS run's calculator."""
+    molecule = Atoms(symbols, positions=positions)
+    # A generous box: the same calculator settings are used, and a
+    # plane-wave or periodic engine needs the molecule isolated in it.
+    molecule.set_cell([12.0, 12.0, 12.0])
+    molecule.set_pbc(True)
+    molecule.center()
+    attach_calculator(molecule)
+    energy = float(molecule.get_potential_energy())
+    _calango_event("info", "reference %s: %.6f eV" % (label, energy))
+    return energy
+
+
+def gcmc_reference_potentials():
+    """μ_H⁰ = ½ E(H₂) and μ_O⁰ = E(H₂O) − E(H₂), computed ONCE.
+
+    Cached by calculator signature next to the run directory, so a scan over
+    Δμ reuses them instead of paying for two molecular calculations per
+    point -- and so a run with DIFFERENT settings recomputes rather than
+    quietly inheriting numbers that no longer belong to it.
+    """
+    signature = _reference_signature()
+    cache = {}
+    if os.path.exists(reference_cache_path):
+        try:
+            cache = json.load(open(reference_cache_path))
+        except (OSError, ValueError):
+            cache = {}
+    hit = cache.get(signature)
+    if hit:
+        _calango_event("info",
+                       "reference potentials reused from %s"
+                       % reference_cache_path)
+        return hit["E_H2"], hit["E_H2O"]
+
+    # Equilibrium-ish geometries; the calculator relaxes nothing here, so
+    # these are the reference STATES and are part of the definition.
+    e_h2 = _molecule_energy(["H", "H"], [(0.0, 0.0, 0.0), (0.0, 0.0, 0.741)],
+                            "E(H2)")
+    e_h2o = _molecule_energy(
+        ["O", "H", "H"],
+        [(0.0, 0.0, 0.0), (0.0, 0.7575, 0.5871), (0.0, -0.7575, 0.5871)],
+        "E(H2O)")
+    cache[signature] = {"E_H2": e_h2, "E_H2O": e_h2o}
+    try:
+        with open(reference_cache_path, "w") as handle:
+            json.dump(cache, handle, indent=2)
+    except OSError as exc:
+        _calango_event("warning",
+                       "could not write the reference cache (%s); the next "
+                       "run will recompute them" % exc)
+    return e_h2, e_h2o
+
+
+def gcmc_rebuild_state(system):
+    """Re-derive every index-based structure after atoms were added/removed.
+
+    RE-DERIVED, never patched. `groups` stores atom INDICES, and an
+    insertion or a deletion shifts them; a patcher would have to fix the
+    group list, the site graph, the framework set and the bond graph in
+    lockstep, and one missed adjustment is a group that silently refers to
+    somebody else's atom. collect_groups() already answers the question
+    from the structure itself, so it is asked again.
+    """
+    global symbols, graph0, framework, framework_set, groups, sites, is_edge
+    symbols = system.get_chemical_symbols()
+    graph0 = bond_graph(system)
+    # The SAME two rules the script's own opening derivation uses: a
+    # framework carbon has two or more carbon neighbours, and it is an edge
+    # carbon if fewer than three of its neighbours are framework.
+    framework = [i for i, s in enumerate(symbols)
+                 if s == "C"
+                 and len([j for j in graph0[i] if symbols[j] == "C"]) >= 2]
+    framework_set = set(framework)
+    is_edge = {i: len([j for j in graph0[i] if j in framework_set]) < 3
+               for i in framework}
+    raw = collect_groups(system, graph0)
+    if hydroxyl_antiposition:
+        raw, _pairs, _lone = pair_hydroxyls(raw, system.get_positions(),
+                                            framework, graph0)
+    groups = raw
+    sites = SiteGraph(framework, is_edge, graph0)
+    for kind, _members, hosts in groups:
+        for host in hosts:
+            sites.occupy(host, kind)
+
+
+def gcmc_insert(kind):
+    """Add one group of `kind` at a freshly drawn free site.
+
+    Returns (status, delta_counts). "ok" leaves the group placed and every
+    derived structure rebuilt; anything else leaves the system untouched.
+    """
+    region = GROUP_REGION[kind]
+    if region == "pair":
+        target = sites.draw_pair(rng)
+        hosts = list(target) if target else None
+    else:
+        hosts = None
+        drawn = sites.draw_single(region == "edge", rng)
+        if drawn is not None:
+            hosts = [drawn]
+    if hosts is None:
+        return "no_site", None
+
+    positions = atoms.get_positions()
+    normal = sheet_normal(positions, framework)
+    face = 1.0
+    if region != "edge" and both_faces:
+        face = rng.choice([1.0, -1.0])
+    new_symbols, new_positions = build_group(
+        kind, hosts, positions, graph0, framework_set, normal, face, rng)
+    # No members to displace -- these atoms do not exist yet -- so the
+    # clearance test is run against an EMPTY member list: every existing
+    # atom is an obstacle.
+    if not clearance_ok(atoms, [], new_positions, hosts,
+                        new_symbols=new_symbols):
+        return "clash", None
+    atoms.extend(Atoms(new_symbols, positions=new_positions))
+    gcmc_rebuild_state(atoms)
+    return "ok", gcmc_delta_counts(kind, +1)
+
+
+def gcmc_delete(index):
+    """Remove group `index` entirely. Returns (status, delta_counts)."""
+    kind, members, _hosts = groups[index]
+    if kind not in GCMC_INSERTABLE:
+        return "not_deletable", None
+    doomed = sorted(members, reverse=True)
+    for atom_index in doomed:
+        del atoms[atom_index]
+    gcmc_rebuild_state(atoms)
+    return "ok", gcmc_delta_counts(kind, -1)
+
+
+def gcmc_mu_term(delta_counts):
+    """Σ_s Δn_s μ_s — the work the reservoir does on the move.
+
+    SUBTRACTED from ΔE in the acceptance criterion, so a strongly NEGATIVE
+    μ makes insertion (Δn > 0) expensive and deletion cheap. That sign is
+    the invariant the tests pin: at large negative Δμ essentially nothing is
+    inserted, at large positive Δμ essentially everything is.
+
+    Carbon has no reservoir here. Only the basal kinds are insertable and
+    neither of them carries a carbon, so Δn_C is always 0 -- and a non-zero
+    one would mean a term this function cannot price, which is a refusal
+    rather than a silent omission.
+    """
+    if delta_counts.get("C", 0) != 0:
+        raise RuntimeError(
+            "a grand-canonical move changed the carbon count by %d, and this "
+            "module defines no carbon reservoir. Only %s are insertable, and "
+            "neither carries a carbon -- see GCMC_INSERTABLE."
+            % (delta_counts["C"], " / ".join(GCMC_INSERTABLE)))
+    return (delta_counts.get("H", 0) * mu_H
+            + delta_counts.get("O", 0) * mu_O)
+
+
+def _gcmc_insertable_kinds():
+    """The kinds this run may insert, honouring the antiposition setting.
+
+    With antiposition ON a lone hydroxyl is not a thing the sampler places:
+    hydroxyls live as bonded opposite-face PAIRS, and the pair is the unit
+    every other part of the script moves and checks. Inserting a single one
+    would create an entry the pairing logic then has to reconcile.
+    """
+    kinds = ["epoxide"]
+    kinds.append("hydroxyl_pair" if hydroxyl_antiposition else "hydroxyl")
+    return kinds
+
+
+def _gcmc_draw_move_class():
+    """swap / insert / delete, by the configured weights."""
+    names = ["swap", "insert", "delete"]
+    weights = [max(0.0, float(move_weights.get(n, 0.0))) for n in names]
+    total = sum(weights)
+    if total <= 0.0:
+        return "swap"
+    draw = rng.random() * total
+    running = 0.0
+    for name, weight in zip(names, weights):
+        running += weight
+        if draw < running:
+            return name
+    return names[-1]
 
 
 # =====================================================================
@@ -1761,11 +2165,61 @@ def _run_fields(cycle):
         "mcmd_cycles_done": cycle + 1,
         "mcmd_cycles_total": mc_cycles,
         "mcmd_md_steps_done": steps_run["md"],
+        # The GO/MC-Opt counterpart: a relaxation runs optimizer steps, not
+        # integrator steps, and the Summary window reads whichever of the two
+        # its module actually produces. Emitted on BOTH paths (it is 0 for a
+        # pure-MD run) so the key's absence never has to be interpreted.
+        "mcmd_relax_steps_done": steps_run["relax"],
         "mcmd_equilibration_steps_done": frames_written["equilibration"],
         "mcmd_accepted": frames_written["accepted"],
         "mcmd_elapsed_s": _elapsed_seconds(),
     }
 
+
+def _gcmc_fields():
+    """The composition trace, for a grand-canonical run.
+
+    Emitted as METRIC SERIES rather than into a tab of its own: they share
+    the Results dock's energy axes with the energy trace, and the question a
+    reader actually has -- did the composition plateau while the energy
+    settled? -- is answered by two curves on one plot and not by two tabs.
+    Empty for a conserving run, where the counts never change and a flat
+    line would be noise.
+    """
+    if not grand_canonical:
+        return {}
+    tally = gcmc_composition(atoms)
+    return {
+        "gcmc_n_O": tally["O"],
+        "gcmc_n_H": tally["H"],
+        "gcmc_n_groups": len(groups),
+    }
+
+
+# =====================================================================
+# Grand canonical: the reservoir this run is in equilibrium with
+# =====================================================================
+#
+# Computed BEFORE anything else, with the same calculator every sheet
+# energy uses. That consistency is the whole point of computing them here
+# rather than taking them as numbers: the acceptance criterion subtracts a
+# reference from a sheet energy, and two engines' totals differ by an
+# arbitrary constant per species that would sit in every decision.
+mu_H = 0.0
+mu_O = 0.0
+if grand_canonical:
+    _e_h2, _e_h2o = gcmc_reference_potentials()
+    # mu_H0 = 1/2 E(H2); mu_O0 = E(H2O) - E(H2). Water in equilibrium with
+    # hydrogen -- the standard humid-environment reference.
+    _mu_H0 = 0.5 * _e_h2
+    _mu_O0 = _e_h2o - _e_h2
+    mu_H = _mu_H0 + delta_mu_H
+    mu_O = _mu_O0 + delta_mu_O
+    _calango_event(
+        "info",
+        "chemical potentials: mu_H0 = %.4f eV, mu_O0 = %.4f eV; "
+        "with dmu_H = %+.3f, dmu_O = %+.3f -> mu_H = %.4f, mu_O = %.4f eV"
+        % (_mu_H0, _mu_O0, delta_mu_H, delta_mu_O, mu_H, mu_O))
 
 kB = units.kB
 # Progress is counted in energy evaluations -- the cost the wizard quotes --
@@ -1854,40 +2308,106 @@ no_site = 0
 # `cycle + 1` explicitly.
 for cycle in range(mc_cycles):
     cycle_relax_base[0] = steps_run["relax"]
-    index = rng.randrange(len(groups))
-    kind, members, hosts = groups[index]
 
-    saved_atoms = checkpoint_state()
-    saved_hosts = list(hosts)
-    saved_sites = site_state()
+    # ---- 0. Which class of move is this cycle? ---------------------------
+    # Conserving runs have exactly one: relocate a group. A grand-canonical
+    # run draws from three, and the draw is what makes the COMPOSITION a
+    # sampled quantity. Swap is kept in the mix on purpose: a pure
+    # insert/delete walk finds the right number of groups long before it
+    # finds a sensible arrangement of them.
+    move_class = "swap"
+    gcmc_delta = None
+    gcmc_snapshot = None
+    if grand_canonical:
+        move_class = _gcmc_draw_move_class()
 
-    def revert():
-        restore_state(saved_atoms)
-        groups[index] = (kind, members, saved_hosts)
-        restore_sites(saved_sites)
+    if move_class in ("insert", "delete"):
+        # A full snapshot: this cycle may change the atom count, and the
+        # position-only checkpoint below cannot undo that.
+        gcmc_snapshot = gcmc_checkpoint()
+        index = -1
+        kind = None
+        members = []
 
-    # ---- 1-3. Lift the group, draw a new site of its kind, rebuild it ----
-    status, new_hosts = relocate(index)
-    move_generated = status == "ok"
-    if not move_generated:
-        # No trial configuration exists: relocate() left the group lifted
-        # and wrote no positions, so the state saved at the top of the cycle
-        # goes back. The cycle then goes on to run its burst anyway (see
-        # below) - which counter it increments depends only on WHY the move
-        # could not be made.
-        revert()
-        if status == "no_site":
-            # Saturated for this group kind: the move was never generated,
-            # so it must not enter the acceptance statistics as a rejection.
-            no_site += 1
-        elif status == "mismatch":
-            rejected_topology += 1
-        else:  # "clash"
-            # Judged and refused without an energy evaluation: the rebuilt
-            # group would sit on top of a neighbour, and the only way the
-            # dynamics resolves that is by breaking a bond.
-            rejected_clash += 1
-            _record_move(kind, False)
+        # Bound by DEFAULT ARGUMENT, not by closure. `revert` is a module-
+        # level name reassigned every cycle and read back later in the same
+        # one; capturing `gcmc_snapshot` by reference makes the restore
+        # depend on what that global happens to hold at call time rather
+        # than on what this cycle saved.
+        def revert(_snapshot=gcmc_snapshot):
+            gcmc_restore(_snapshot)
+
+        if move_class == "insert":
+            kind = rng.choice(_gcmc_insertable_kinds())
+            status, gcmc_delta = gcmc_insert(kind)
+        else:
+            deletable = [i for i, (k, _m, _h) in enumerate(groups)
+                         if k in GCMC_INSERTABLE]
+            if not deletable:
+                status, gcmc_delta = "no_group", None
+            else:
+                index = rng.choice(deletable)
+                kind = groups[index][0]
+                status, gcmc_delta = gcmc_delete(index)
+        move_generated = status == "ok"
+        if not move_generated:
+                revert()
+                # "no_site" (saturated) and "no_group" (nothing to delete) are
+                # moves that were never GENERATED, so they are not rejections
+                # and must not enter the acceptance statistics. A clash was
+                # judged and refused, and counts.
+                if status in ("no_site", "no_group", "not_deletable"):
+                    no_site += 1
+                else:
+                    rejected_clash += 1
+                    _record_move(kind or move_class, False)
+    elif not groups:
+        # A swap was drawn with nothing to swap -- only reachable in a
+        # grand-canonical run that has not placed its first group yet.
+        # Not a rejection: no move was generated.
+        index = -1
+        kind = None
+        members = []
+        move_generated = False
+        no_site += 1
+
+        def revert():
+            pass
+    else:
+        index = rng.randrange(len(groups))
+        kind, members, hosts = groups[index]
+
+        saved_atoms = checkpoint_state()
+        saved_hosts = list(hosts)
+        saved_sites = site_state()
+
+        def revert():
+            restore_state(saved_atoms)
+            groups[index] = (kind, members, saved_hosts)
+            restore_sites(saved_sites)
+
+        # ---- 1-3. Lift the group, draw a new site of its kind, rebuild it -
+        status, new_hosts = relocate(index)
+        move_generated = status == "ok"
+        if not move_generated:
+            # No trial configuration exists: relocate() left the group lifted
+            # and wrote no positions, so the state saved at the top of the cycle
+            # goes back. The cycle then goes on to run its burst anyway (see
+            # below) - which counter it increments depends only on WHY the move
+            # could not be made.
+            revert()
+            if status == "no_site":
+                # Saturated for this group kind: the move was never generated,
+                # so it must not enter the acceptance statistics as a rejection.
+                no_site += 1
+            elif status == "mismatch":
+                rejected_topology += 1
+            else:  # "clash"
+                # Judged and refused without an energy evaluation: the rebuilt
+                # group would sit on top of a neighbour, and the only way the
+                # dynamics resolves that is by breaking a bond.
+                rejected_clash += 1
+                _record_move(kind, False)
 
     # ---- 4. Relax, then check the chemistry survived ---------------------
     # UNCONDITIONAL: every cycle runs its burst, including a cycle whose
@@ -1922,7 +2442,7 @@ for cycle in range(mc_cycles):
         # fell over. `energy` is the pre-cycle reference energy, which
         # revert() has just made current again.
         _calango_metric(cycle, energy=energy, **_acceptance_fields(),
-                        **_run_fields(cycle))
+                        **_run_fields(cycle), **_gcmc_fields())
         _calango_progress(_progress_done(cycle), TOTAL_EVALUATIONS)
         continue
 
@@ -1952,7 +2472,7 @@ for cycle in range(mc_cycles):
                            f"with no move to blame - reverted")
         revert()
         _calango_metric(cycle, energy=energy, **_acceptance_fields(),
-                        **_run_fields(cycle))
+                        **_run_fields(cycle), **_gcmc_fields())
         _calango_progress(_progress_done(cycle), TOTAL_EVALUATIONS)
         continue
 
@@ -1978,15 +2498,25 @@ for cycle in range(mc_cycles):
             best_energy = energy
             best_atoms = atoms.copy()
         _calango_metric(cycle, energy=energy, **_acceptance_fields(),
-                        **_run_fields(cycle))
+                        **_run_fields(cycle), **_gcmc_fields())
         _calango_progress(_progress_done(cycle), TOTAL_EVALUATIONS)
         continue
 
     # ---- 5. Metropolis ---------------------------------------------------
     trial_energy = burst_energy
     delta = trial_energy - energy
-    move_accepted = delta <= 0.0 or rng.random() < math.exp(
-        -delta / (kB * temperature_K))
+    # GRAND CANONICAL: the reservoir does work on a move that changes the
+    # particle numbers, and the quantity the walk equilibrates is
+    #
+    #     dE - sum_s dn_s mu_s
+    #
+    # not dE. A swap has dn = 0 for every species, so this term vanishes and
+    # the criterion is exactly the conserving one -- which is why the same
+    # line serves all three move classes.
+    mu_work = gcmc_mu_term(gcmc_delta) if gcmc_delta else 0.0
+    delta_grand = delta - mu_work
+    move_accepted = delta_grand <= 0.0 or rng.random() < math.exp(
+        -delta_grand / (kB * temperature_K))
     if move_accepted:
         energy = trial_energy
         # 0-based and contiguous: the FIRST accepted structure is ordinal 0.
@@ -1995,7 +2525,16 @@ for cycle in range(mc_cycles):
         # first time through when someone gets it backwards.
         acceptance_ordinal = accepted
         accepted += 1
-        update_host_fields(kind, members, saved_hosts, new_hosts)
+        # A SWAP keeps the same atoms and only changes which carbons host
+        # them, so the persisted classification columns are patched in
+        # place. A grand-canonical insert or delete changed the inventory
+        # and gcmc_rebuild_state() already re-derived every group from the
+        # structure itself -- there are no old and new hosts to trade, and
+        # `new_hosts` does not even exist on that path.
+        if move_class == "swap":
+            update_host_fields(kind, members, saved_hosts, new_hosts)
+        else:
+            _gcmc_rewrite_host_fields()
         # Recorded after update_host_fields, so the frame carries the host
         # carbons' classification as it now is rather than as it was before
         # the group moved.
@@ -2034,7 +2573,7 @@ for cycle in range(mc_cycles):
     # strain, and a burst too short to dissipate it hands Metropolis a
     # trial energy biased upward by that much, so nothing is ever accepted.
     _calango_metric(cycle, energy=energy, trial_delta=delta,
-                    **_acceptance_fields(), **_run_fields(cycle))
+                    **_acceptance_fields(), **_run_fields(cycle), **_gcmc_fields())
     # cycle + 1, not cycle: this argument is a COUNT of completed cycles,
     # not an index. With the 0-based loop above, passing `cycle` would stop
     # the bar one burst short of TOTAL_EVALUATIONS and a finished run would
@@ -2141,7 +2680,11 @@ summary = {
     # when this was written. "relax" was added with GO/MC-Opt and was missing
     # from that list, so the summary reported 55 frames for a file holding 438.
     "all_structures_frames": sum(frames_written[key] for key in frames_written
-                                 if key != "accepted"),
+                                 if key not in ("accepted", "candidates")),
+    # One frame per MC cycle, exactly - see record_burst_final(). Reported
+    # alongside what it must equal so a reader checks rather than trusts.
+    "candidates_frames": frames_written["candidates"],
+    "candidates_frames_expected": mc_cycles,
     # For GO/MCMD: equilibration + one frame per burst step per cycle, which is
     # TOTAL_EVALUATIONS. For GO/MC-Opt a relaxation's length is not known up
     # front, so the invariant is stated the only way it can be - equilibration

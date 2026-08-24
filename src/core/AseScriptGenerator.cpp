@@ -649,7 +649,7 @@ void emitVasp(std::ostringstream& out, const CalculatorConfig& c)
     // ACTUALLY executing on. Neither set: ASE falls back to whatever
     // VASP_PP_PATH the environment already carries, exactly as before this
     // mechanism existed.
-    out << AseScriptGenerator::vaspPotcarResolutionSnippet(c.vaspPotcarPath);
+    out << AseScriptGenerator::vaspPotcarResolutionSnippet(c);
 
     // vasp_std / vasp_gam / vasp_ncl: three separate compiled executables
     // (SettingsManager.hpp's kVaspExecutable* comment), not a runtime flag,
@@ -3067,69 +3067,102 @@ std::string AseScriptGenerator::vaspPrecString(VaspPrecision prec)
 }
 
 std::string AseScriptGenerator::vaspPotcarResolutionSnippet(
-    const std::string& potcarPath)
+    const CalculatorConfig& c)
 {
     // See this method's own header doc comment for why it exists and what
     // it fixes (Task 3, 2026-08-22: proc_4, a NiO band structure, failed
     // here). Requires `atoms` already defined and `import os` already
     // done — every caller emits both first.
+    const std::string& potcarPath = c.vaspPotcarPath;
+    // The family ASE will ACTUALLY use, derived from the same xc this script
+    // sets on the calculator — see core::vaspPotcarFamilyDir(). Searching a
+    // fixed list instead is what let a PBE-only library pass the check while
+    // xc was LDA, and then fail inside ASE looking for `potpaw`.
+    const std::string family = vaspPotcarFamilyDir(c.vaspXc);
+    const std::string xcLabel = c.vaspXc.empty() ? std::string("(unset)")
+                                                 : c.vaspXc;
+
     std::ostringstream out;
-    out << "_cluster_override = os.environ.get('CALANGO_VASP_PP_PATH', '').strip()\n";
+    out << "_cluster_override = "
+           "os.environ.get('CALANGO_VASP_PP_PATH', '').strip()\n";
     if (!potcarPath.empty())
-        out << "_potcar_root = _cluster_override or r\"" << potcarPath << "\"\n";
+        out << "_potcar_root = _cluster_override or r\"" << potcarPath
+            << "\"\n";
     else
         out << "_potcar_root = _cluster_override\n";
-    out << "if _potcar_root:\n"
-           "    if _cluster_override:\n"
-           "        print(f'CALANGO_INFO POTCAR directory from the "
-           "per-cluster override: {_potcar_root}', flush=True)\n"
-           "    if not os.path.isdir(_potcar_root):\n"
-           "        raise RuntimeError(\n"
-           "            f'POTCAR directory not found: {_potcar_root}\\n'\n"
-           "            'Set it in the calculator settings (VASP -> POTCAR "
-           "directory),\\n'\n"
-           "            'or per-cluster in the HPC panel (Scheduler -> VASP "
-           "POTCAR directory).')\n"
-           // ASE looks for $VASP_PP_PATH/potpaw_PBE/<El>/POTCAR; an
-           // installation that keeps the element folders directly under the
-           // POTCAR directory gets a symlink shim so it resolves anyway.
-           "    _variant_dir = next(\n"
-           "        (_d for _d in ('potpaw_PBE', 'potpaw', 'potpaw_LDA')\n"
-           "         if os.path.isdir(os.path.join(_potcar_root, _d))), "
-           "None)\n"
-           "    if _variant_dir is None:\n"
-           "        _shim = os.path.abspath('_potcar_shim')\n"
-           "        os.makedirs(_shim, exist_ok=True)\n"
-           "        for _name in ('potpaw_PBE', 'potpaw_LDA', 'potpaw'):\n"
-           "            _link = os.path.join(_shim, _name)\n"
-           "            if not os.path.exists(_link):\n"
-           "                os.symlink(_potcar_root, _link)\n"
-           "        print(f'CALANGO_INFO flat POTCAR layout — shimmed via "
-           "{_shim}',\n"
-           "              flush=True)\n"
-           "        _potcar_root = _shim\n"
-           "        _variant_dir = 'potpaw_PBE'\n"
-           "    os.environ['VASP_PP_PATH'] = _potcar_root\n"
-           // Fail before VASP does, and name exactly which elements are
-           // missing, rather than a deep ASE traceback minutes into the
-           // queue — the directory existing is necessary but not sufficient,
-           // a library can easily be missing just one element's POTCAR.
-           "    _missing = [_el for _el in "
-           "dict.fromkeys(atoms.get_chemical_symbols())\n"
-           "                if not os.path.isfile(os.path.join(\n"
-           "                    _potcar_root, _variant_dir, _el, "
-           "'POTCAR'))]\n"
-           "    if _missing:\n"
-           "        raise RuntimeError(\n"
-           "            f'No POTCAR for {\", \".join(_missing)} under '\n"
-           "            f'{os.path.join(_potcar_root, _variant_dir)}\\n'\n"
-           "            'PAW variants (_sv/_pv/_d) and the LDA/PBE library "
-           "choice are not\\n'\n"
-           "            'auto-selected -- point the POTCAR directory at the "
-           "library that\\n'\n"
-           "            'already has the right variant for every "
-           "element.')\n"
-           "\n";
+    out << "_potcar_family = '" << family << "'  # ASE's family for xc='"
+        << xcLabel << "'\n"
+        << "_potcar_xc = '" << xcLabel << "'\n";
+
+    out << R"PY(if _potcar_root:
+    if _cluster_override:
+        print('CALANGO_INFO POTCAR directory from the per-cluster override: '
+              + _potcar_root, flush=True)
+    if not os.path.isdir(_potcar_root):
+        raise RuntimeError(
+            'POTCAR directory not found: ' + _potcar_root + '\n'
+            'Set it in the calculator settings (VASP -> POTCAR directory),\n'
+            'or per-cluster in the HPC panel (Scheduler -> VASP POTCAR '
+            'directory).')
+
+    # Two documented layouts, tried in order, and nothing else:
+    #
+    #   1. the configured directory is the PARENT of the family dirs, so ASE
+    #      finds <root>/<family>/<El>/POTCAR straight away;
+    #   2. the configured directory IS the family level (element folders
+    #      directly inside it), which is how most people unpack a single
+    #      library. ASE cannot read that layout, so a symlink shim pointing
+    #      every family name at the real directory is built and VASP_PP_PATH
+    #      aimed at the shim.
+    #
+    # The family is not guessed: it is the one ASE derives from this run's xc
+    # (potpaw_PBE for the PBE-based functionals, the unversioned potpaw for
+    # LDA). Validating a different one is how a correct directory gets
+    # reported as a missing POTCAR.
+    _elements = list(dict.fromkeys(atoms.get_chemical_symbols()))
+    _searched = []
+
+    def _has_all(_base):
+        _searched.append(_base)
+        return all(os.path.isfile(os.path.join(_base, _el, 'POTCAR'))
+                   for _el in _elements)
+
+    if _has_all(os.path.join(_potcar_root, _potcar_family)):
+        os.environ['VASP_PP_PATH'] = _potcar_root
+    elif _has_all(_potcar_root):
+        _shim = os.path.abspath('_potcar_shim')
+        os.makedirs(_shim, exist_ok=True)
+        # Every family name, not just this run's: the shim is reused by any
+        # later step in the same directory, which may use a different xc.
+        for _name in ('potpaw_PBE', 'potpaw_LDA', 'potpaw'):
+            _link = os.path.join(_shim, _name)
+            if not os.path.exists(_link):
+                os.symlink(_potcar_root, _link)
+        os.environ['VASP_PP_PATH'] = _shim
+        print('CALANGO_INFO POTCAR library is at the family level; shimmed as '
+              + os.path.join(_shim, _potcar_family), flush=True)
+    else:
+        # Name every path that was tried and the layout that is expected.
+        # "not found" with neither is the message this replaced.
+        _missing = [_el for _el in _elements
+                    if not any(os.path.isfile(
+                        os.path.join(_p, _el, 'POTCAR')) for _p in _searched)]
+        raise RuntimeError(
+            'No POTCAR for ' + ', '.join(_missing) + '.\n'
+            'Searched:\n'
+            + ''.join('  ' + _p + '/<element>/POTCAR\n' for _p in _searched)
+            + 'Expected one of two layouts under the configured directory:\n'
+              '  ' + os.path.join(_potcar_root, _potcar_family)
+            + '/<element>/POTCAR   (the library parent), or\n'
+              '  ' + os.path.join(_potcar_root)
+            + '/<element>/POTCAR   (the directory IS the library)\n'
+              'The family is ' + _potcar_family + ' because this run uses xc='
+            + _potcar_xc + ': the PBE-based functionals use potpaw_PBE, LDA '
+              'uses potpaw.\n'
+              'PAW variants (_sv/_pv/_d) are not auto-selected -- the library '
+              'must already carry the right variant for every element.')
+
+)PY";
     return out.str();
 }
 

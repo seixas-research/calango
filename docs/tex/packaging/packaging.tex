@@ -196,97 +196,26 @@ The supporting files are:
   \item \file{packaging/linux/audit\_elf\_deps.py},
         \file{packaging/macos/audit\_macho\_deps.py} --- fail the
         packaging step if a shipped binary needs a library the
-        installer does not declare (Section~\ref{sec:blas-backend}).
+        installer does not declare (Section~\ref{sec:dep-audit}).
 \end{itemize}
 
-\section{BLAS/LAPACK backend}
-\label{sec:blas-backend}
-
-\textbf{Status: there is no BLAS/LAPACK backend anymore.} The native DFT
-engine's generalised eigenproblem (\file{src/dft/LinearAlgebra.cpp}) and
-the native DFTB engine that shared it were LAPACK's only consumers in this
-codebase --- both were removed entirely (substantially implemented but
-narrowly exposed, with no downstream feature wiring; see git history). The
-packaged \file{calango} binary now links no BLAS/LAPACK implementation at
-all. This section is kept as history: it explains an incident that shaped
-the packaging pipeline's dependency audit (Section~\ref{sec:dep-audit}),
-which remains active and still matters for every OTHER shipped library.
-
-The fix at the time was a CMake option, \opt{CALANGO\_BLAS}, offering a
-choice of vendors (Accelerate, OpenBLAS, Generic, MKL, or the old
-unconstrained behaviour) and pinning \opt{BLA\_VENDOR} explicitly instead
-of letting \opt{find\_package(LAPACK)} guess. \textbf{That option no
-longer exists} --- removed along with its only two consumers.
-
-\subsection{The incident this exists to prevent}
-
-calango 26.8.36's shipped \file{.deb} needed
-\file{libmkl\_intel\_lp64.so.3}, \file{libmkl\_intel\_thread.so.3},
-\file{libmkl\_core.so.3} and \file{libiomp5.so} at runtime --- present on
-the build machine (an unconstrained \opt{find\_package(LAPACK)} picked up
-MKL there), completely absent from a clean
-\lstinline|apt install ./calango_*.deb|, and \textbf{not declared as a}
-\texttt{Depends:}: \file{dpkg-shlibdeps} could not attribute those
-\file{.so} files to any installed package, so it silently omitted them
-from the control file rather than failing the build. The package
-installed cleanly and crashed on first launch with a missing-library
-error, on any machine without that exact MKL install.
-
-The same build round's \file{.dmg} had the identical disease, through a
-different vendor. The DFTB helper binary linked directly against
-Homebrew's \file{libopenblas.0.dylib} under \file{/opt/homebrew},
-preferred over Apple's Accelerate framework simply because it was
-discoverable on that build machine's CMake search path. Nothing
-downstream rewrites its load commands the way \opt{macdeployqt} rewrites
-\file{calango} itself (Section~\ref{sec:install-step}), so it stayed
-absent on any Mac without \lstinline|brew install openblas|.
-
-Pinning \opt{BLA\_VENDOR} explicitly used to fix both: with a vendor set,
-\opt{find\_package(LAPACK)} only looks for that vendor's own library name
-patterns, so it could no longer silently substitute whatever else
-happened to sit on a build machine's search path. Removing the only two
-things that ever called \opt{find\_package(LAPACK)} is the more complete
-version of the same fix --- there is no vendor left to substitute.
-
-\subsection{The startup crash Accelerate alone didn't catch}
-
-A user's Mac never got past launch: a crash report (2026-08-21) showed a
-dyld ``Library not loaded'' error for \opt{@rpath/libgcc\_s.1.1.dylib},
-referenced from the bundled \file{libgfortran.5.dylib} --- same 26.8.36
-\file{.dmg}, a SECOND defect past what pinning \opt{BLA\_VENDOR} alone
-fixes.
-\file{calango}'s bundled \file{libopenblas.0.dylib} had its own
-dependencies correctly rewritten to be bundle-relative by
-\opt{macdeployqt}, but kept three of its original absolute Homebrew GCC
-rpaths on its LC\_RPATH list; on the build machine dyld's chained rpath
-search silently found \file{libgcc\_s.1.1.dylib} through one of them,
-while the file itself was never actually copied into
-\file{Contents/Frameworks}. A clean Mac without that exact Homebrew
-install misses every one of those paths and aborts before \opt{main()}
-runs. A bundle-relative load path is proof of \emph{form}, not of
-\emph{resolution} --- the first version of \file{audit\_macho\_deps.py}
-(path-form only) would have passed this bundle.
-
-Two fixes at the time: \opt{CALANGO\_BLAS} defaulting to
-\opt{Accelerate} removed the whole openblas/gfortran/gcc\_s chain outright
-(verified by rebuilding: a fresh \file{.dmg} linked \file{calango} and
-\file{calango-dftb-run} against \opt{Accelerate.framework} only) ---
-since superseded by removing the native DFT/DFTB engines entirely
-(Section~\ref{sec:blas-backend}), so there is now no BLAS chain to link
-on any platform; and \file{packaging/macos/strip\_leftover\_rpaths.sh},
-run after \opt{macdeployqt}'s two passes and before the final
-\opt{codesign}, deletes any non-relocatable LC\_RPATH entry from every
-bundled Mach-O --- the same \file{.dmg} carried this on three OTHER,
-unrelated libraries too (\file{libdbus-1.3.dylib}, \file{libjasper.7.dylib},
-\file{libjpeg.8.dylib}), so this one is \textbf{still active}: defense in
-depth for every future bundled library, not the BLAS vendor that is now
-gone. \file{audit\_macho\_deps.py} was extended to match: it now checks
-every LC\_RPATH entry for the same relocatability rule, and resolves
-every relative dependency against the bundle's own pooled rpath set
-rather than trusting the load-path string's shape alone.
-
-\subsection{Dependency audit}
+\section{Dependency audit}
 \label{sec:dep-audit}
+
+The packaged \file{calango} binary links no BLAS/LAPACK implementation at
+all: the native DFT and DFTB engines that were LAPACK's only consumers in
+this codebase have been removed, and nothing calls
+\opt{find\_package(LAPACK)} any more. Nothing here has a numerical-library
+vendor to choose, or to get wrong.
+
+The audit below is not about that, and does not go away with it. It guards
+a general class of defect --- \emph{a library from the build machine
+leaking into a shipped artifact without being declared} --- which applies
+to every library the package touches: Qt, HDF5, the Python framework's
+extension modules, the compiler runtime. That is why it runs on every
+build rather than on the ones somebody thought were risky.
+
+\subsection{What the scripts check}
 
 \file{packaging/linux/audit\_elf\_deps.py} and
 \file{packaging/macos/audit\_macho\_deps.py} run automatically at the end
@@ -312,26 +241,40 @@ for the real gate. The macOS script needs no such fallback: \opt{otool},
 always present, is enough to tell a relative/system load path from a
 build-machine one.
 
+\subsection{Load paths and rpaths on macOS}
+\label{sec:rpath-rule}
+
+The macOS audit checks \emph{two} things, and the second is the one that
+matters. Every \opt{LC\_RPATH} entry on a bundled Mach-O must be
+\file{@loader\_path}- or \file{@executable\_path}-relative; and every
+relative dependency must actually \emph{resolve} to a file present in the
+bundle. A bundle-relative load path is proof of \emph{form}, not of
+\emph{resolution}: a library can carry a correct-looking
+\file{@rpath/...} dependency and still be found only through a leftover
+absolute rpath pointing at the build machine, which no clean Mac has.
+
+\file{packaging/macos/strip\_leftover\_rpaths.sh} enforces the first half
+before the audit checks it. It is wired into \file{CMakeLists.txt}'s
+install step --- after \opt{macdeployqt}'s two passes, before the final
+\opt{codesign} --- and deletes any non-relocatable \opt{LC\_RPATH} entry
+from every bundled Mach-O.
+
 \medskip
 \noindent\textbf{Known gap, not silently swept under the audit.}
 \file{build\_dmg.sh} passes the audit script two \opt{--exclude} flags
 that skip the embedded Python framework and its payload directory
-entirely --- not because that tree is clean. Auditing the 26.8.36
-\file{.dmg} found it has the \emph{same} disease: six stdlib extension
-modules (\file{\_ssl}, \file{\_hashlib}, \file{\_decimal}, \file{\_lzma},
-\file{\_sqlite3}, \file{\_zstd}) plus the framework's own Python
-binaries loaded Homebrew's OpenSSL, sqlite, zstd, mpdecimal and xz
-directly, meaning that particular artifact was built against a
-Homebrew-linked interpreter rather than the relocatable
-\opt{python-build-standalone} tree this pipeline is documented to
-download by default (Section~\ref{sec:python-embed}). That is a
-separate, pre-existing bug in Python provisioning, not the BLAS/MKL
-issue this audit was built for, and fixing it is out of scope here ---
-the existing \opt{--probe-python} launch check catches ``ASE won't
-import'' but not ``every dylib is relocatable''. Rebuild via the
-documented default flow and re-run the audit script with no
-\opt{--exclude} flags to confirm a given build is actually clean there
-before treating this as closed.
+entirely, so \textbf{that tree is not audited}. The exclusion is a
+concession, not a statement that the tree is clean: an interpreter built
+against Homebrew's OpenSSL, sqlite, zstd, mpdecimal or xz carries exactly
+the same class of undeclared dependency in its stdlib extension modules,
+and the \opt{--probe-python} launch check catches ``ASE won't import'',
+not ``every dylib is relocatable''.
+
+Build the framework via the documented default flow --- the relocatable
+\opt{python-build-standalone} tree (Section~\ref{sec:python-embed}) ---
+and re-run the audit with no \opt{--exclude} flags to confirm a given
+build is actually clean there. Removing the two flags is what closes this
+gap for good.
 
 \section{macOS: building the \file{.dmg}}
 
@@ -609,7 +552,7 @@ To rebuild the package from a clean state, clear the staging area first
 with \lstinline|cmake -E rm -rf _CPack_Packages| --- stale staging can
 mask deployment bugs. \file{build\_dmg.sh} additionally runs
 \file{audit\_macho\_deps.py} over the finished image and fails the build
-on a build-machine load path (Section~\ref{sec:blas-backend}).
+on a build-machine load path (Section~\ref{sec:dep-audit}).
 
 \section{Linux: building the \file{.deb}}
 
@@ -738,9 +681,7 @@ libraries). Running it in CI on a clean Ubuntu 22.04/24.04 image remains
 worthwhile to catch host-specific assumptions. \file{build\_deb.sh}
 additionally runs \file{audit\_elf\_deps.py} over the finished
 \file{.deb} and fails the build if any shipped ELF needs a library the
-control file does not declare (Section~\ref{sec:blas-backend}) --- the
-check that would have caught calango 26.8.36's undeclared MKL link
-before it shipped.
+control file does not declare (Section~\ref{sec:dep-audit}).
 
 \section{The embedded Python environment}
 \label{sec:python-embed}

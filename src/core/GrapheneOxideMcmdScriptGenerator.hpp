@@ -322,6 +322,46 @@ struct GrapheneOxideMcmdConfig {
 
     /// Which module this configuration is for — see GoMcRelaxation.
     GoMcRelaxation relaxation = GoMcRelaxation::MolecularDynamics;
+
+    // ---- Grand canonical (GO Grand Canonical MC) ------------------------
+    //
+    // OFF for GO/MCMD and GO/MC-Opt, which conserve the group inventory and
+    // only relocate it. ON adds insertion and deletion moves governed by
+    // chemical potentials, so the COMPOSITION becomes a sampled quantity
+    // rather than an input.
+    bool grandCanonical = false;
+
+    /// Δμ_H and Δμ_O, in eV, relative to the reference potentials the run
+    /// computes for itself:
+    ///
+    ///     μ_H⁰ = ½ E_tot(H₂)
+    ///     μ_O⁰ = E_tot(H₂O) − E_tot(H₂)
+    ///
+    /// (hydrogen from the H₂ molecule; oxygen from water in equilibrium with
+    /// H₂ — the standard humid-environment reference). The absolute
+    /// potentials the acceptance criterion uses are μ_s = μ_s⁰ + Δμ_s.
+    ///
+    /// Both references MUST come from the same calculator and settings as
+    /// the sheet energies: the criterion subtracts one from the other, and a
+    /// reference computed at a different cutoff or functional leaves a
+    /// residue in every acceptance decision that has nothing to do with the
+    /// chemistry. The run computes them itself for exactly that reason.
+    double deltaMuHEv = 0.0;
+    double deltaMuOEv = 0.0;
+
+    /// Relative proposal weights for the three move classes. Normalized in
+    /// the script, so these are ratios rather than probabilities. Swap is
+    /// kept because a pure insert/delete walk equilibrates the composition
+    /// long before it equilibrates the arrangement at that composition.
+    double swapWeight = 1.0;
+    double insertWeight = 1.0;
+    double deleteWeight = 1.0;
+
+    /// Where the two reference molecules' energies are cached, relative to
+    /// the run directory's parent. Keyed inside by a calculator+settings
+    /// signature, so a second run with the same settings reuses them and a
+    /// run with different ones recomputes rather than silently inheriting.
+    std::string referenceCache = "go_gcmc_references.json";
     /// Optimization only: the local optimizer.
     GoMcOptimizer optimizer = GoMcOptimizer::Bfgs;
     /// Optimization only: the force convergence criterion, in eV/Å. The value

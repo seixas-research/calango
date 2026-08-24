@@ -173,11 +173,19 @@ public:
     ///
     /// MUST be emitted after `atoms` is already defined (the missing-
     /// element check reads `atoms.get_chemical_symbols()`) and after
-    /// `import os`. Empty `potcarPath` emits nothing (ASE falls back to
-    /// whatever VASP_PP_PATH the environment already carries — unchanged
-    /// from every caller's own prior behavior for that case).
-    static std::string vaspPotcarResolutionSnippet(
-        const std::string& potcarPath);
+    /// `import os`. An empty `c.vaspPotcarPath` emits nothing (ASE falls
+    /// back to whatever VASP_PP_PATH the environment already carries —
+    /// unchanged from every caller's own prior behavior for that case).
+    ///
+    /// Takes the whole CONFIG, not just the path, because the POTCAR family
+    /// ASE searches is derived from `xc` (core::vaspPotcarFamilyDir):
+    /// potpaw_PBE for the PBE-based functionals, the unversioned potpaw for
+    /// LDA. Passing the two separately is what let them drift — the
+    /// resolver used to try a fixed list and validate whichever family
+    /// existed first, so a PBE-only library passed the check under xc=LDA
+    /// and then failed inside ASE looking for `potpaw`: a correct directory
+    /// reported as a missing POTCAR (2026-08-24, the convergence sweeps).
+    static std::string vaspPotcarResolutionSnippet(const CalculatorConfig& c);
 
     /// "Normal"/"Single"/"Accurate" — the literal PREC= value for a
     /// VASP() call, from the wizard's VaspPrecision choice. Defaults to

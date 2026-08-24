@@ -1,5 +1,7 @@
 #include "gui/McmdSummaryDialog.hpp"
 
+#include "gui/GoMcmdLiveTabs.hpp"
+
 #include <QDialogButtonBox>
 #include <QFile>
 #include <QFileDialog>
@@ -17,7 +19,8 @@ namespace calango::gui {
 McmdSummaryDialog::McmdSummaryDialog(QWidget* parent)
     : QDialog(parent)
 {
-    setWindowTitle(tr("MCMD Summary"));
+    // A placeholder until bindProcess() names the module.
+    setWindowTitle(tr("Monte Carlo Summary"));
     // Modeless: the whole point is to keep the counters beside the viewport
     // while the run moves. Not WA_DeleteOnClose — MainWindow keeps the one
     // instance and re-shows it, so closing the window does not throw away
@@ -76,6 +79,14 @@ void McmdSummaryDialog::bindProcess(int id, const QString& label, bool running)
     processId_ = id;
     processLabel_ = label;
     running_ = running;
+    optimization_ = label == goMcOptTaskLabel();
+    // The window is named after the module that produced the run. A shared
+    // dialog parameterized here, not forked: everything else about it --
+    // the two tables, the CSV export, the single-instance rebinding -- is
+    // identical for both modules.
+    setWindowTitle(label.isEmpty()
+                       ? tr("Monte Carlo Summary")
+                       : tr("%1 Summary").arg(label));
     // Cleared rather than left showing the previous run's numbers: MainWindow
     // repaints immediately after binding, but a record with nothing to show
     // (a run that has not completed its first cycle) leaves the tables as it
@@ -115,13 +126,14 @@ void McmdSummaryDialog::refreshSubtitle()
 void McmdSummaryDialog::exportCsv()
 {
     const QString path = QFileDialog::getSaveFileName(
-        this, tr("Export MCMD Summary"), QStringLiteral("mcmd_summary.csv"),
+        this, tr("Export %1 Summary").arg(processLabel_),
+        QStringLiteral("mcmd_summary.csv"),
         tr("CSV (*.csv)"));
     if (path.isEmpty())
         return;
     QFile file(path);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QMessageBox::critical(this, tr("Export MCMD Summary"),
+        QMessageBox::critical(this, tr("Export %1 Summary").arg(processLabel_),
                               tr("Could not write %1").arg(path));
         return;
     }
