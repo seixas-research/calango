@@ -65,6 +65,17 @@ protected:
     /// Only DFT-capable electronic-structure engines (GPAW, SIESTA, VASP,
     /// Quantum ESPRESSO); the empirical/ML calculators can't produce bands.
     bool calculatorAllowed(core::CalculatorKind kind) const override;
+
+    /// The selected baseline's WAVECAR, staged as `baseline.WAVECAR` so a
+    /// REMOTE hybrid run finds the orbitals it restarts from. Empty on every
+    /// other route — only the hybrid KPOINTS_OPT branch reads one.
+    QString baselineWavecarPathToStage() const override;
+
+    /// This wizard already picks its parent run — the "Baseline density"
+    /// combo on the settings page — and derives the WAVECAR from it. A
+    /// second, independent picker in the calculator group could only
+    /// disagree with that choice, so it is not offered here.
+    bool showsVaspWavecarRow() const override { return false; }
     /// One merged setup stage: baseline selection + PDOS settings + k-path.
     QString calculatorSettingsHeader() const override
     {

@@ -119,12 +119,27 @@ exactly and a loop closes with no correction factor.
 
 The hybrid Wannier centre flow is the same object
 \menu{Wannier Functions}\menusep\menu{Topological Invariants\ldots} plots.
-That feature generates a Python script and runs it against a completed DFT
-baseline; this one evaluates the same quantity in process from
-$H(\mathbf{R})$. They answer the same question from different inputs, which
-makes them a cross-check rather than duplicates --- and this panel reports the
-Chern number twice, once from the curvature integral and once from the centre
-winding, so that a disagreement flags under-sampled $k$.
+That feature generates a Python script and runs it against a completed
+Wannierization; this one evaluates the same quantity in process from
+$H(\mathbf{R})$. The two now overlap more than they used to: on a
+\textbf{GPAW}-sourced run the generated script reopens the \file{.gpw} and
+transports the Bloch states with \texttt{gpaw.berryphase}, but on a
+\textbf{VASP}-sourced one it builds a Wilson loop from the same
+\file{wannier\_hr.dat} this panel reads --- so on that route they are the same
+algorithm reached two ways, and on the GPAW route they remain genuinely
+independent. Either way this panel reports the Chern number twice, once from
+the curvature integral and once from the centre winding, so that a
+disagreement flags under-sampled $k$.
+
+One thing the $H(\mathbf{R})$ route cannot do, on either side: a wannier90
+\file{\_hr.dat} is an $N_w \times N_w$ matrix with \emph{no spin labelling}.
+For a spinor (\texttt{LSORBIT}) run its Wannier functions are spinors and
+$N_w$ counts them, but the file records neither the up/down decomposition nor
+the convention used to order it. Neither invariant reads a spin expectation
+--- the Chern winding and the Soluyanov--Vanderbilt largest-gap $Z_2$
+are computed from the centres alone --- so this costs a plot series, not a
+result, and \file{topology.json} carries \texttt{spin: null} rather than an
+invented one.
 
 \section{Validation}
 

@@ -1,6 +1,6 @@
 # Installation
 
-Calango ships as native installers for macOS and Debian/Ubuntu, and as source. The prebuilt installers are the fastest route to a working setup; **building from source is a standard CMake flow** and takes a few minutes on a laptop. Every installer artifact is accompanied by a `.sha256` checksum file, and the version in the file name — currently 26.8.42 — comes from a single source of truth, the `project(calango VERSION …)` line in `CMakeLists.txt`.
+Calango ships as native installers for macOS and Debian/Ubuntu, and as source. The prebuilt installers are the fastest route to a working setup; **building from source is a standard CMake flow** and takes a few minutes on a laptop. Every installer artifact is accompanied by a `.sha256` checksum file, and the version in the file name — currently 26.8.43 — comes from a single source of truth, the `project(calango VERSION …)` line in `CMakeLists.txt`.
 
 ---
 
@@ -11,7 +11,7 @@ Calango ships as native installers for macOS and Debian/Ubuntu, and as source. T
 ::::{tab-item} macOS
 A drag-and-drop disk image for Apple Silicon:
 
-1. Download `calango_26.8.42_macOS.dmg` and open it.
+1. Download `calango_26.8.43_macOS.dmg` and open it.
 2. Drag `calango.app` onto the *Applications* shortcut shown next to it.
 
 The image mounts without a license click-through, and the bundle embeds the `Python.framework` it links against, so the app launches on machines without Homebrew. The bundle is signed *ad hoc* — distribution builds are not notarized, so on first launch macOS may require right-click ▸ {guilabel}`Open` to bypass Gatekeeper.
@@ -21,7 +21,7 @@ The image mounts without a license click-through, and the bundle embeds the `Pyt
 A Debian package. Install it with `apt` — *not* `dpkg -i` — so the dependencies resolve automatically:
 
 ```bash
-sudo apt install ./calango_26.8.42_amd64.deb
+sudo apt install ./calango_26.8.43_amd64.deb
 ```
 
 The package installs `/usr/bin/calango`, a desktop launcher, the application icon, and a MIME type (`application/x-calango-project`) for `.calproj` files — double-clicking a saved project in your file manager opens the whole workspace. It declares `Depends: python3 (>= 3.9)` and `Recommends: python3-ase`; without ASE the GUI starts but structure I/O and job submission are disabled (see {doc}`/python_environment`).

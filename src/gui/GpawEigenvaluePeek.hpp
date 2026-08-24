@@ -44,4 +44,21 @@ GpawEigenvalueSpectrum peekGpawEigenvalues(const QString& pythonExecutable,
                                           const QString& baselineDir,
                                           int timeoutMs = 60000);
 
+/// The VASP counterpart, filling the SAME struct so the widgets that consume
+/// it (EnergyWindowWidget above all) need no engine branch.
+///
+/// Nothing is executed: VASP has already written everything this needs as
+/// plain text. `EIGENVAL` carries the eigenvalues, occupations and k-point
+/// weights (its sixth line gives NELECT / NKPTS / NBANDS, then one
+/// `kx ky kz weight` line per k-point followed by NBANDS rows — two energy
+/// and two occupation columns when ISPIN = 2), and the Fermi level comes
+/// from `DOSCAR`'s sixth line, falling back to `OUTCAR`'s `E-fermi :`.
+///
+/// Being pure file parsing rather than a subprocess, this is instant and
+/// carries no environment dependency at all — there is no VASP-side
+/// equivalent of restarting a `.gpw`, and inventing one (a throwaway VASP
+/// invocation) would cost minutes to learn what a 40-line parse already
+/// knows.
+GpawEigenvalueSpectrum peekVaspEigenvalues(const QString& baselineDir);
+
 } // namespace calango::gui

@@ -13,6 +13,7 @@
 class QCheckBox;
 class QComboBox;
 class QDoubleSpinBox;
+class QGroupBox;
 class QLabel;
 
 namespace calango::core {
@@ -45,10 +46,17 @@ public:
     LdosWizard(std::shared_ptr<core::Structure> structure,
               QWidget* parent = nullptr);
 
-    /// Completed GPAW single-points that saved their wavefunctions, as
-    /// (display label, absolute job-directory path) pairs — the same shape
+    /// Completed single-points this LDOS can post-process, as (display
+    /// label, absolute job-directory path) pairs — the same shape
     /// MainWindow::gpawBaselines() already produces for Wannier. Call after
     /// construction, before exec().
+    ///
+    /// Both engines go in the same list. Which one a given entry IS is read
+    /// back from its own `calculator.json` when it is selected, not encoded
+    /// here: the wizard's whole shape (which spectrum reader runs, which
+    /// script is generated, which controls are shown) follows from the
+    /// PARENT's engine, and asking the user to restate it would be one more
+    /// thing to get wrong.
     void setDensityBaselines(const QList<QPair<QString, QString>>& baselines);
 
     QString pythonExecutable() const override;
@@ -64,13 +72,19 @@ protected:
     }
     bool calculatorAllowed(core::CalculatorKind kind) const override
     {
-        // The wavefunction-access layer (AseScriptGenerator's
-        // gpawRestartFromBaselineScript / gpawWaveFunctionHelperScript) is
-        // GPAW-only, and setDensityBaselines() is only ever fed GPAW
-        // baselines (MainWindow::gpawBaselines()), so there is no
-        // non-GPAW entry to refuse in-wizard the way WannierWizard does.
-        return kind == core::CalculatorKind::Gpaw;
+        // Two routes, and only two. GPAW sums the stored pseudo-
+        // wavefunctions itself (gpawWaveFunctionHelperScript); VASP has
+        // LPARD, which does the same selection internally from a WAVECAR.
+        // No other engine Calango drives exposes a state-resolved density
+        // at all, so there is nothing else to allow.
+        return kind == core::CalculatorKind::Gpaw
+            || kind == core::CalculatorKind::Vasp;
     }
+    /// The parent's WAVECAR, staged as `baseline.WAVECAR` so a REMOTE LPARD
+    /// run finds the orbitals on the cluster. Empty on the GPAW route,
+    /// which restarts a `.gpw` instead.
+    QString baselineWavecarPathToStage() const override;
+
     bool hasTaskSettingsStage() const override { return true; }
     bool settingsStageFirst() const override { return true; }
     bool showsCalculatorStage() const override { return false; }
@@ -96,8 +110,21 @@ private:
     QDoubleSpinBox* maxSpin_ = nullptr;
     QCheckBox* relativeCheck_ = nullptr;
     QComboBox* spinCombo_ = nullptr;
+    QWidget* spinRowWidget_ = nullptr;
     QDoubleSpinBox* presetWidthSpin_ = nullptr;
     QLabel* peekErrorLabel_ = nullptr;
+
+    /// VASP-only controls, hidden entirely on a GPAW parent. LSEPB/LSEPK
+    /// have no GPAW counterpart at all — the GPAW path sums into one grid
+    /// and could not split it afterwards.
+    QGroupBox* vaspGroup_ = nullptr;
+    QCheckBox* separateBandsCheck_ = nullptr;
+    QCheckBox* separateKpointsCheck_ = nullptr;
+    QLabel* recomputeNoteLabel_ = nullptr;
+
+    /// The parent's engine, read back from its `calculator.json`. Drives
+    /// which spectrum reader runs and which script is generated.
+    core::CalculatorKind baselineEngine_ = core::CalculatorKind::Gpaw;
 
     std::optional<InheritedCalculator> inherited_;
     double fermiLevelEv_ = 0.0;

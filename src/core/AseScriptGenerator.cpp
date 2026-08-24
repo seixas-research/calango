@@ -560,15 +560,28 @@ void emitVasp(std::ostringstream& out, const CalculatorConfig& c)
 {
     const auto pyBool = [](bool value) { return value ? "True" : "False"; };
     const std::string prec = AseScriptGenerator::vaspPrecString(c.vaspPrec);
+    const VaspHybridTags hybrid = vaspHybridTagsFor(c.vaspFunctional);
     const auto algo = [&] {
         switch (c.vaspAlgo) {
         case VaspAlgo::Fast: return "Fast";
-        case VaspAlgo::VeryFast: return "VeryFast";
+        case VaspAlgo::VeryFast:
+            // https://vasp.at/wiki/ALGO: "ALGO = VeryFast is NOT supported for
+            // hybrid functionals." Corrected rather than passed through — VASP
+            // would refuse the INCAR, and a wizard that generates an input its
+            // own engine rejects is worse than one that quietly does the
+            // documented thing and says so in the script.
+            return hybrid.lhfcalc ? "All" : "VeryFast";
         case VaspAlgo::All: return "All";
         case VaspAlgo::Damped: return "Damped";
         case VaspAlgo::Normal: break;
         }
-        return "Normal";
+        // https://vasp.at/wiki/ALGO: for hybrids "the direct optimizers
+        // ALGO = All (or Conjugate) are more robust and recommended"; the
+        // density-mixing schemes Normal/Fast are not. The wizard already
+        // defaults a hybrid selection to All, so this is the backstop for a
+        // config assembled without it (an Orchestration node, a loaded
+        // document from before hybrids existed).
+        return hybrid.lhfcalc ? "All" : "Normal";
     }();
     // ISMEAR / SIGMA. A metal wants MP or Gaussian; an insulator wants the
     // tetrahedron method, which VASP will refuse for a Gamma-only mesh — so a
@@ -691,6 +704,57 @@ void emitVasp(std::ostringstream& out, const CalculatorConfig& c)
     // preferred over the absolute path baked in at generation time, which
     // only ever resolves on the machine the script was generated on.
     const bool vaspRestartsFromChgcar = !c.vaspChgcarBaselinePath.empty();
+    // ICHARG = 11 and a hybrid functional are mutually exclusive, and the
+    // VASP wiki says so in as many words: "For hybrid functionals, the
+    // Hamiltonian cannot be expressed in terms of the electronic charge
+    // density alone. […] The electronic charge density must not be fixed
+    // for any hybrid calculation, i.e., never set ICHARG=11!"
+    // (Band-structure calculation using hybrid functionals).
+    //
+    // A REFUSAL, not a warning and not a silent downgrade to the semilocal
+    // functional: emitting both tags produces a run that finishes and
+    // reports a band structure which is not the hybrid's, and nothing
+    // downstream could tell. Calango does not generate the documented
+    // alternative (a self-consistent hybrid run carrying the band path as
+    // ZERO-WEIGHT k-points beside the regular mesh, or a separate
+    // KPOINTS_OPT file with LKPOINTS_OPT), so the refusal names it rather
+    // than pretending the route does not exist.
+    //
+    // Emitted here, before the staging block, so it is a top-level
+    // statement — inside the Vasp(...) argument list below it would be a
+    // syntax error, which is how it was first written.
+    if (vaspRestartsFromChgcar && isHybrid(c.vaspFunctional)) {
+        out << "raise RuntimeError(\n"
+               "    'A fixed-density band pass (ICHARG = 11) is not valid for "
+               "a hybrid '\n"
+            << "    'functional (" << toString(c.vaspFunctional)
+            << "). The VASP wiki states it outright: '\n"
+               "    '\"the electronic charge density must not be fixed for "
+               "any hybrid '\n"
+               "    'calculation, i.e., never set ICHARG=11\". For a hybrid "
+               "the '\n"
+               "    'Hamiltonian cannot be expressed in terms of the density "
+               "alone, so '\n"
+               "    'the orbitals on a regular mesh are needed too.\\n'\n"
+               "    'The documented route is a SELF-CONSISTENT hybrid run "
+               "carrying the '\n"
+               "    'band path in a KPOINTS_OPT file, and Calango generates "
+               "exactly that '\n"
+               "    '— but only from the Electronic Structure module, which "
+               "is what owns '\n"
+               "    'a band path. THIS node has a charge-density baseline "
+               "instead.\\n'\n"
+               "    'Either run it with a semilocal functional, or — if what "
+               "you want is '\n"
+               "    'a hybrid band structure — use Electronic Structure with "
+               "a VASP hybrid '\n"
+               "    'selected. A hybrid CAN inherit a prior run here, just "
+               "not its '\n"
+               "    'density: pick a WAVECAR baseline (the orbitals) rather "
+               "than a CHGCAR '\n"
+               "    'one.')\n"
+               "\n";
+    }
     if (vaspRestartsFromChgcar) {
         out << "# Non-self-consistent restart on a converged density.\n"
                "#\n"
@@ -710,6 +774,37 @@ void emitVasp(std::ostringstream& out, const CalculatorConfig& c)
                "    shutil.copyfile(_baseline, 'CHGCAR')\n"
                "print(f'CALANGO_INFO reusing the charge density from "
                "{_baseline}', flush=True)\n"
+               "\n";
+    }
+
+    // The WAVECAR counterpart of the CHGCAR block above, and staged the same
+    // way (job-directory "baseline.WAVECAR" preferred over the absolute path
+    // baked in at generation time). https://vasp.at/wiki/NiO_HSE06: a hybrid
+    // is started from a converged semilocal run's orbitals with ISTART = 1,
+    // because it converges poorly from scratch.
+    if (!c.vaspWavecarBaselinePath.empty()) {
+        out << "# Hybrid restart on a converged semilocal run's orbitals.\n"
+               "#\n"
+               "# https://vasp.at/wiki/NiO_HSE06 — 'It is strongly recommended\n"
+               "# to start from a converged PBE calculation (ISTART = 1)\n"
+               "# before beginning with a DFT+HF method.' VASP opens\n"
+               "# 'WAVECAR' in the working directory and takes no path for\n"
+               "# it, hence the copy.\n"
+            << "_wavecar = (\"baseline.WAVECAR\" if os.path.exists("
+               "\"baseline.WAVECAR\")\n"
+            << "            else r\"" << c.vaspWavecarBaselinePath << "\")\n"
+               "if not os.path.exists(_wavecar):\n"
+               "    raise RuntimeError(\n"
+               "        f'The baseline WAVECAR is gone: {_wavecar}\\n'\n"
+               "        'A hybrid run started from scratch converges poorly "
+               "and may '\n"
+               "        'not converge at all — re-run the semilocal "
+               "Single-point '\n"
+               "        'that produced it, with LWAVE = .TRUE.')\n"
+               "if os.path.abspath(_wavecar) != os.path.abspath('WAVECAR'):\n"
+               "    shutil.copyfile(_wavecar, 'WAVECAR')\n"
+               "print(f'CALANGO_INFO restarting the hybrid from {_wavecar}', "
+               "flush=True)\n"
                "\n";
     }
 
@@ -791,6 +886,21 @@ void emitVasp(std::ostringstream& out, const CalculatorConfig& c)
     // 0.0, 'J': 0.0} (no correction) — every entry is still written
     // explicitly below, one per species, so the generated script is
     // self-documenting about what every element in the cell is getting.
+    // -- Hybrid functional -------------------------------------------------
+    //
+    // Tag values from https://vasp.at/wiki/List_of_hybrid_functionals; the
+    // table itself is core::vaspHybridTagsFor(), so the UI, this emitter and
+    // the pre-flight all read one transcription of the wiki rather than three.
+    if (hybrid.lhfcalc) {
+        out << AseScriptGenerator::vaspHybridKeywords(c, "    ");
+        // https://vasp.at/wiki/NiO_HSE06 and /wiki/ISTART: "It is strongly
+        // recommended to start from a converged PBE calculation (ISTART = 1)
+        // before beginning with a DFT+HF method." When this run IS the second
+        // stage of that chain, the staged WAVECAR is what it restarts from.
+        if (!c.vaspWavecarBaselinePath.empty())
+            out << "    istart=1,  # restart from the staged WAVECAR\n";
+    }
+
     out << AseScriptGenerator::vaspHubbardKeywords(c, "    ",
                                                    /*withLmaxmix=*/false);
 
@@ -2853,6 +2963,40 @@ std::string AseScriptGenerator::gpawWaveFunctionHelperScript()
         "        return None if _ae is None else _ae.data\n"
         "    return calc.get_pseudo_wave_function(band=band, kpt=kpt, spin=spin,\n"
         "                                         periodic=True)\n";
+}
+
+std::string AseScriptGenerator::vaspHybridKeywords(const CalculatorConfig& c,
+                                                  const std::string& indent)
+{
+    const VaspHybridTags hybrid = vaspHybridTagsFor(c.vaspFunctional);
+    if (!hybrid.lhfcalc)
+        return {};
+
+    std::ostringstream out;
+    out << indent << "# " << toString(c.vaspFunctional)
+        << " — https://vasp.at/wiki/List_of_hybrid_functionals\n"
+        << indent << "lhfcalc=True,\n";
+    // GGA selects the semilocal part the hybrid mixes exact exchange INTO,
+    // and it is not the same question as `xc`: PBE0 and HSE06 both sit on
+    // GGA = PE whatever xc was set to, and B3LYP needs GGA = B3
+    // specifically. `xc` still has to be set, but for the POTCAR library it
+    // selects, not for this.
+    if (hybrid.gga[0] != '\0')
+        out << indent << "gga=\"" << hybrid.gga << "\",\n";
+    out << indent << "aexx=" << effectiveAexx(c.vaspFunctional, c.vaspAexx)
+        << ",\n"
+        << indent << "aggax=" << hybrid.aggax << ",\n"
+        << indent << "aggac=" << hybrid.aggac << ",\n"
+        << indent << "aldac=" << hybrid.aldac << ",\n";
+    // HFSCREEN is the range-separation parameter and belongs ONLY to the
+    // screened hybrids. Writing it as 0 for PBE0 or Hartree-Fock would be
+    // asking for an unscreened calculation by a route the wiki does not
+    // document; leaving it out is what "unscreened" means.
+    const double screen = effectiveHfscreen(c.vaspFunctional, c.vaspHfscreen);
+    if (screen > 0.0)
+        out << indent << "hfscreen=" << screen
+            << ",  # range separation, 1/A\n";
+    return out.str();
 }
 
 std::string AseScriptGenerator::vaspHubbardKeywords(const CalculatorConfig& c,

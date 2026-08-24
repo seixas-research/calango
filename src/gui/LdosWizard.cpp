@@ -7,6 +7,7 @@
 
 #include <QApplication>
 #include <QCheckBox>
+#include <QFileInfo>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
@@ -58,9 +59,11 @@ QWidget* LdosWizard::buildSettingsPage()
     auto* layout = new QVBoxLayout(page);
 
     auto* intro = new QLabel(
-        tr("Sum |psi(r)|^2 over every stored Kohn-Sham state in an energy "
-           "window, weighted by k-point, on top of a completed GPAW "
-           "single-point that saved its wavefunctions."),
+        tr("Resolve the density in an energy window, on top of a completed "
+           "single-point. GPAW: Calango sums |psi(r)|^2 over every stored "
+           "Kohn-Sham state in the window, weighted by k-point. VASP: the "
+           "run is handed to VASP's own LPARD post-process, which selects "
+           "the states from its WAVECAR and writes PARCHG."),
         page);
     intro->setWordWrap(true);
     layout->addWidget(intro);
@@ -71,9 +74,10 @@ QWidget* LdosWizard::buildSettingsPage()
 
     baselineCombo_ = new QComboBox(sourceGroup);
     baselineCombo_->setToolTip(
-        tr("Completed GPAW Single-Point calculations that saved their "
-           "wavefunctions (.gpw, mode='all'). LDOS is a post-process on an "
-           "existing calculation — there is no fresh-SCF fallback."));
+        tr("Completed Single-Point calculations that saved their "
+           "wavefunctions: GPAW's .gpw (mode='all'), or VASP's WAVECAR "
+           "(LWAVE = .TRUE.). LDOS is a post-process on an existing "
+           "calculation — there is no fresh-SCF fallback on either engine."));
     sourceForm->addRow(tr("Process:"), baselineCombo_);
 
     inheritedLabel_ = new QLabel(sourceGroup);
@@ -153,7 +157,12 @@ QWidget* LdosWizard::buildSettingsPage()
     connect(unoccupiedButton, &QPushButton::clicked, this,
             [this] { applyPreset(false); });
 
-    auto* spinChannelRow = new QHBoxLayout();
+    // Wrapped in a widget of its own so the whole row can be hidden on the
+    // VASP route: LPARD has no spin selector, and hiding just the combo
+    // would leave its label behind.
+    spinRowWidget_ = new QWidget(windowGroup);
+    auto* spinChannelRow = new QHBoxLayout(spinRowWidget_);
+    spinChannelRow->setContentsMargins(0, 0, 0, 0);
     spinCombo_ = new QComboBox(windowGroup);
     spinCombo_->addItem(tr("Sum (both channels, or the only one)"),
                         static_cast<int>(core::LdosSpinChannel::Sum));
@@ -164,9 +173,48 @@ QWidget* LdosWizard::buildSettingsPage()
     spinChannelRow->addWidget(new QLabel(tr("Spin channel:"), windowGroup));
     spinChannelRow->addWidget(spinCombo_);
     spinChannelRow->addStretch(1);
-    windowLayout->addLayout(spinChannelRow);
+    windowLayout->addWidget(spinRowWidget_);
 
     layout->addWidget(windowGroup);
+
+    // --- VASP / LPARD ----------------------------------------------------
+    vaspGroup_ = new QGroupBox(tr("VASP (LPARD)"), page);
+    auto* vaspForm = new QFormLayout(vaspGroup_);
+
+    recomputeNoteLabel_ = new QLabel(
+        tr("<b>This window is not adjustable afterwards.</b> On the GPAW "
+           "route every selected state's |psi(r)|² is kept, so the viewer "
+           "re-sums a new window for free. VASP recomputes from the WAVECAR "
+           "for each window, so changing it means running the module again "
+           "— one job per window."),
+        vaspGroup_);
+    recomputeNoteLabel_->setWordWrap(true);
+    recomputeNoteLabel_->setTextFormat(Qt::RichText);
+    vaspForm->addRow(recomputeNoteLabel_);
+
+    separateBandsCheck_ = new QCheckBox(tr("One file per band (LSEPB)"),
+                                        vaspGroup_);
+    separateBandsCheck_->setToolTip(
+        tr("Off: one summed PARCHG for the whole window.\n"
+           "On: PARCHG.<band>.<kpt>, one per selected band — every one of "
+           "them registers separately in the Volumetric Data dock, so a "
+           "wide window produces a lot of grids."));
+    vaspForm->addRow(separateBandsCheck_);
+
+    separateKpointsCheck_ = new QCheckBox(tr("One file per k-point (LSEPK)"),
+                                          vaspGroup_);
+    separateKpointsCheck_->setToolTip(
+        tr("Off: the selected k-points are summed.\n"
+           "On: one file per k-point. Combined with LSEPB this is a full "
+           "band × k-point matrix of grids."));
+    vaspForm->addRow(separateKpointsCheck_);
+
+    layout->addWidget(vaspGroup_);
+    vaspGroup_->setVisible(false);
+    connect(separateBandsCheck_, &QCheckBox::toggled, this,
+            [this] { refreshPreview(); });
+    connect(separateKpointsCheck_, &QCheckBox::toggled, this,
+            [this] { refreshPreview(); });
 
     connect(minSpin_, &QDoubleSpinBox::valueChanged, this,
             [this] { syncWidgetFromSpinBoxes(); });
@@ -197,6 +245,26 @@ void LdosWizard::onBaselineChanged()
         baselineCombo_ ? baselineCombo_->currentData().toString() : QString();
     inherited_ = dir.isEmpty() ? std::nullopt : readCalculatorProvenance(dir);
     spectrumLoaded_ = false;
+
+    // The parent's engine decides everything below: which spectrum reader
+    // runs, which script is generated, and which controls exist. A parent
+    // with no readable provenance is treated as GPAW, which is what every
+    // baseline predating the VASP route actually is.
+    baselineEngine_ = core::CalculatorKind::Gpaw;
+    if (inherited_ && inherited_->engineKind >= 0)
+        baselineEngine_ =
+            static_cast<core::CalculatorKind>(inherited_->engineKind);
+    const bool vasp = baselineEngine_ == core::CalculatorKind::Vasp;
+    selectCalculator(baselineEngine_);
+    if (vaspGroup_)
+        vaspGroup_->setVisible(vasp);
+    if (spinRowWidget_) {
+        // LPARD has no spin selector of its own: with ISPIN = 2 it writes
+        // the total and the magnetization the way CHGCAR does, and there is
+        // no INCAR tag that says "channel 1 only". Offering the control and
+        // ignoring it would be worse than not offering it.
+        spinRowWidget_->setVisible(!vasp);
+    }
 
     if (inheritedLabel_) {
         if (dir.isEmpty()) {
@@ -232,8 +300,11 @@ void LdosWizard::onBaselineChanged()
         peekErrorLabel_->setVisible(false);
     QApplication::setOverrideCursor(Qt::WaitCursor);
 
+    // VASP's spectrum is already on disk as plain text (EIGENVAL + DOSCAR),
+    // so it is parsed directly; GPAW's needs a real restart.
     const GpawEigenvalueSpectrum spectrum =
-        peekGpawEigenvalues(pythonExecutable(), dir);
+        vasp ? peekVaspEigenvalues(dir)
+             : peekGpawEigenvalues(pythonExecutable(), dir);
 
     QApplication::restoreOverrideCursor();
 
@@ -267,6 +338,24 @@ void LdosWizard::onBaselineChanged()
 
     if (spinCombo_)
         spinCombo_->setEnabled(spectrum.nspins > 1);
+
+    // A WAVECAR is the ONE thing an LPARD run cannot do without, and
+    // LWAVE = .TRUE. is not every VASP workflow's default — so the absence
+    // is reported here, at selection time, rather than after a job has been
+    // queued and has failed inside VASP.
+    if (vasp && peekErrorLabel_) {
+        const QFileInfo wavecar(dir + QStringLiteral("/WAVECAR"));
+        if (!wavecar.exists() || wavecar.size() < 4096) {
+            peekErrorLabel_->setText(
+                tr("This run left no usable WAVECAR (%1). LPARD reads the "
+                   "converged orbitals from it and nothing else — re-run "
+                   "the parent with LWAVE = .TRUE.")
+                    .arg(wavecar.exists()
+                             ? tr("%1 bytes").arg(wavecar.size())
+                             : tr("no such file")));
+            peekErrorLabel_->setVisible(true);
+        }
+    }
 
     if (baselineSummaryLabel_)
         baselineSummaryLabel_->setText(
@@ -321,6 +410,17 @@ void LdosWizard::syncWidgetFromSpinBoxes()
     refreshPreview();
 }
 
+QString LdosWizard::baselineWavecarPathToStage() const
+{
+    if (baselineEngine_ != core::CalculatorKind::Vasp || !baselineCombo_)
+        return {};
+    const QString dir = baselineCombo_->currentData().toString();
+    if (dir.isEmpty())
+        return {};
+    const QString wavecar = dir + QStringLiteral("/WAVECAR");
+    return QFileInfo::exists(wavecar) ? wavecar : QString();
+}
+
 QString LdosWizard::pythonExecutable() const
 {
     if (inherited_ && !inherited_->pythonExecutable.isEmpty())
@@ -348,6 +448,26 @@ QString LdosWizard::generateScript() const
     cfg.spin = spinCombo_
         ? static_cast<core::LdosSpinChannel>(spinCombo_->currentData().toInt())
         : core::LdosSpinChannel::Sum;
+
+    // The engine, and — on the VASP route — the parent's basis, taken from
+    // its own provenance rather than re-asked. VASP's ISTART = 1 "redefines
+    // and re-pads the set of plane waves" from this INCAR's ENCUT, so a
+    // number invented here would silently reinterpret the parent's orbitals.
+    cfg.calculator = baseCalculatorConfig();
+    cfg.calculator.calculator = baselineEngine_;
+    if (baselineEngine_ == core::CalculatorKind::Vasp && inherited_) {
+        if (inherited_->cutoffEv > 0.0)
+            cfg.calculator.planeWaveCutoffEv = inherited_->cutoffEv;
+        for (int i = 0; i < 3; ++i)
+            if (inherited_->kpts[i] > 0)
+                cfg.calculator.kpts[i] = inherited_->kpts[i];
+        if (!inherited_->xc.isEmpty())
+            cfg.calculator.vaspXc = inherited_->xc.toStdString();
+    }
+    cfg.separateBands =
+        separateBandsCheck_ && separateBandsCheck_->isChecked();
+    cfg.separateKpoints =
+        separateKpointsCheck_ && separateKpointsCheck_->isChecked();
 
     return QString::fromStdString(core::generateLdosScript(cfg));
 }

@@ -32,6 +32,71 @@ open and says so.
 | {guilabel}`DOS integration` | How the Brillouin-zone integral is evaluated — see below | Sampling |
 | {guilabel}`Energy points (N)` | Energy grid for the PDOS | 401 |
 
+(hybrid-bands)=
+### Hybrid functionals: a different route entirely
+
+Selecting a hybrid (HSE06, HSE03, HSEsol, PBE0, B3LYP, Hartree–Fock) on the
+VASP backend does **not** run the fixed-density band pass every other
+combination here uses. It cannot: the VASP wiki is unambiguous that *"the
+electronic charge density must not be fixed for any hybrid calculation, i.e.,
+never set `ICHARG=11`!"* — for a hybrid the Hamiltonian is not a functional
+of the density alone, so there is no converged density to diagonalize
+against. Calango takes the documented alternative instead.
+
+**One self-consistent hybrid run**, on a uniform mesh, carrying the band path
+in a separate `KPOINTS_OPT` file — *"an optional input file to perform an
+additional one-shot calculation after self-consistency is reached"*, read
+automatically when it is present. `KPOINTS` holds the mesh (the wiki requires
+a uniform one when `KPOINTS_OPT` is used); the path never enters the SCF.
+
+| Tag | Value | Why |
+|---|---|---|
+| `LHFCALC`, `GGA`, `AEXX`, `AGGAX`, `AGGAC`, `ALDAC`, `HFSCREEN` | per functional | the same transcription of [List of hybrid functionals](https://vasp.at/wiki/List_of_hybrid_functionals) the calculator page uses — one table, so the SCF and the bands can never disagree about which functional ran |
+| `ALGO` | `All` | the direct optimizers are the ones the wiki supports for a hybrid |
+| `HFRCUT` | `-1` | Coulomb truncation instead of VASP's default auxiliary functions, which *"lead to discontinuities in band-structure calculations"*. Note it converges best for **gapped** systems; `HFRCUT = 0` is faster for a metal |
+| `ICHARG` | *not set* | see above |
+
+:::{important}
+**Requires VASP 6.3.0 or newer.** `KPOINTS_OPT` is available as of 6.3.0, and
+an older binary ignores the file **silently** — it would converge the hybrid
+and write no band path at all. The generated script checks for the result
+block by name and says so if it is missing, rather than failing later with an
+empty plot.
+:::
+
+**Start from a converged semilocal run.** Selecting a baseline on this route
+stages that run's `WAVECAR` — the *orbitals*, not the density — which is what
+VASP recommends for a hybrid. Without one the hybrid still runs, from
+scratch, more slowly and with a greater chance of landing in a different
+local minimum; the script says so rather than refusing. The baseline must
+therefore have been run with `LWAVE = .TRUE.`
+
+**The band path travels as an explicit k-point list**, not line mode. VASP
+returns an explicit list exactly as given — same count, same order, no
+symmetry folding — so the linear axis and the special-point ticks come from
+the same `BandPath` object the viewer reads, with nothing re-derived from
+VASP's own interpolation. The script compares what came back against what it
+asked for and raises if they differ, because a silent mismatch would draw
+energies against the wrong k-axis.
+
+**The PDOS mesh is the SCF mesh.** The semilocal route runs a second
+fixed-density pass for the projected DOS; a hybrid cannot, and a second
+hybrid SCF would cost as much as the first — so `LORBIT = 11` rides on the
+run that is already happening. {guilabel}`PDOS k-mesh` therefore has no
+effect on this route; the DOS is integrated over the SCF grid.
+
+**Where the answer lives.** The eigenvalues land in `vasprun.xml` under
+`<eigenvalues_kpoints_opt>` and nowhere else — VASP 6.6.1 writes no
+`EIGENVAL_OPT` or `DOSCAR_OPT` text file, and ASE has no reader for that
+element, so the generated script parses it directly. That is not documented
+on the wiki; it was established by running VASP.
+
+`vasp_hybrid_bands` in the test suite runs the whole thing against a real
+VASP binary (self-skipping without one) and checks the physics rather than
+the plumbing: HSE06 must open Si's direct gap at Γ well past PBE's, toward
+the experimental ~3.4 eV. It comes out at **2.45 eV (PBE) → 3.56 eV
+(HSE06)** on an identical path, cell and cutoff.
+
 ### DOS integration — sampling or tetrahedra
 
 Not the same question as the SCF's occupation smearing. That one fills the

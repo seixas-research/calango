@@ -632,6 +632,17 @@ private Q_SLOTS:
     /// with ICHARG = 11 reads a converged density rather than computing one,
     /// and this is where that density comes from.
     QList<QPair<QString, QString>> vaspChargeDensityFiles() const;
+
+    /// Completed VASP runs that left a usable WAVECAR, as (label, job
+    /// DIRECTORY) — the VASP counterpart of gpawBaselines(), and shaped like
+    /// it rather than like vaspChargeDensityFiles() above (which returns a
+    /// CHGCAR path) because the modules that consume this stage several of
+    /// the parent's files, not one.
+    ///
+    /// Filtered on size, not just existence: VASP creates WAVECAR at startup
+    /// and only fills it at the end, so a crashed run leaves a small one
+    /// behind that an existence check would happily offer.
+    QList<QPair<QString, QString>> vaspWavefunctionBaselines() const;
     void showDatasetManager();
     /// MLIP → Trainer…: MACE training-config (YAML) builder + launcher.
     void openMaceTrainer();
@@ -1342,6 +1353,13 @@ private:
     /// path baked into the generated script by AseScriptGenerator.cpp at
     /// generation time is only ever valid on THIS machine.
     QString pendingBaselineDensityPath_;
+    /// The WAVECAR counterpart, staged as `baseline.WAVECAR` by the same
+    /// mechanism and for the same reason. Two modules need the parent's
+    /// ORBITALS rather than its density: a VASP hybrid chain restarting from
+    /// a semilocal WAVECAR, and LDOS via LPARD, which the VASP wiki calls
+    /// "a postprocessing step that requires a pre-converged calculation" and
+    /// which reads nothing else.
+    QString pendingBaselineWavecarPath_;
     /// Non-modal NEB builder window (owned via WA_DeleteOnClose; nulled on close).
     NebDialog* nebDialog_ = nullptr;
     jobs::JobRunner* jobRunner_ = nullptr;

@@ -112,6 +112,16 @@ struct ElectronicConfig {
     /// (calc.fixed_density) instead of re-running the SCF cycle inline. Empty
     /// keeps the legacy self-contained SCF+NSCF script.
     std::string baselineDensityPath;
+    /// A baseline VASP `WAVECAR` — the ORBITALS, not the density.
+    ///
+    /// Only the hybrid band-structure route reads this, and it is a
+    /// different question from `baselineDensityPath` above: a hybrid has no
+    /// fixed-density band pass to run (ICHARG = 11 is invalid for one), so
+    /// what a baseline can contribute is a converged set of semilocal
+    /// orbitals to start the hybrid SCF from — VASP's own recommendation
+    /// (https://vasp.at/wiki/NiO_HSE06). Empty means "converge the hybrid
+    /// from scratch", which works and is slower.
+    std::string baselineWavecarPath;
     /// The configured VASP POTCAR directory (`base.vaspPotcarPath`, from the
     /// same Stage-3 calculator config `ecutEv`/`scfKpts` above come from).
     /// Only read by the Vasp backend — see

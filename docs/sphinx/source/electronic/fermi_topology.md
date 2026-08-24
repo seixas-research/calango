@@ -87,8 +87,10 @@ Both invariants are read off one object: the **hybrid Wannier centre flow** —
 the Berry phases of the occupied manifold accumulated along one reciprocal
 direction, resolved against the perpendicular k. They differ only in what is
 counted: the net winding for the Chern number, the parity of largest-gap
-crossings for ℤ₂. The computation uses `gpaw.berryphase.parallel_transport`
-on the occupied Bloch states.
+crossings for ℤ₂. On a GPAW-sourced run the flow comes from
+`gpaw.berryphase.parallel_transport` on the occupied Bloch states; on a
+VASP-sourced one it is a Wilson loop built directly from $H(\mathbf{R})$ —
+see [Where $H(\mathbf{k})$ comes from](#where-hk-comes-from) below.
 
 | Setting | Meaning | Default |
 |---|---|---|
@@ -96,6 +98,13 @@ on the occupied Bloch states.
 | {guilabel}`Wilson loop` | The reciprocal direction the Berry phase is accumulated along (b₁/b₂/b₃); for a 2D sheet in the xy-plane pick an in-plane direction | b₃ |
 | {guilabel}`Occupied bands` | Bands in the transported manifold | from the electron count |
 | {guilabel}`Loop samples` | Samples along the flow coordinate, 5–2001 | 51 |
+
+```{note}
+{guilabel}`Loop samples` applies to the **VASP/$H(\mathbf{R})$ route only**.
+On the GPAW route `parallel_transport` takes its loop from the `.gpw`'s own
+k-mesh, and the setting has no effect there — it had none at all before the
+$H(\mathbf{R})$ route existed.
+```
 | {guilabel}`Spin-orbit coupling` | Spinor treatment | on |
 
 The invariant belongs to a **gapped** manifold, so the filling is checked
@@ -136,7 +145,8 @@ first place.
 Results land in `topology.json`: the WCC flow itself (`wcc[k][m]` in
 $[0, 1)$), the per-loop-point spin expectations, the Chern value with winding
 and residual, and the ℤ₂ value with its crossing count and gap-midpoint
-trace.
+trace. On the $H(\mathbf{R})$ route `spin` is `null` rather than a plot: see
+[the spinor note](#spinors-and-the-spin-field) below.
 
 ### The viewer
 
@@ -159,3 +169,88 @@ The hybrid Wannier centre flow: the centres drift and switch partners across
 the half-zone, and the gap-midpoint trace counts the crossings ℤ₂ is the
 parity of.
 ```
+
+---
+
+(where-hk-comes-from)=
+## Where $H(\mathbf{k})$ comes from
+
+Wannier Interpolation ({doc}`/electronic/wannier`), the Fermi surface and the
+topological invariants all need exactly one thing from a completed
+localization: $H(\mathbf{k})$ at an arbitrary $\mathbf{k}$. There are two
+ways to get it, and the module picks by **what the run actually left behind**,
+not by engine name.
+
+**A GPAW-sourced run** reopens its `.gpw` and rebuilds the
+`ase.dft.wannier` localization — the same manifold, from the same
+wavefunctions, with the same trial-orbital seed recorded in `wannier.json`.
+This is why those runs need the full Brillouin zone saved
+(*Symmetry: off*) and why the `.gpw` path is recorded rather than guessed.
+
+**A VASP-sourced run** has no restartable wavefunction at all: its
+localization ran inside VASP's own linked Wannier90 library, and
+`wannier.json` records `engine: "VASP"`, `gpw: null`. But that library
+already wrote the answer — `wannier90_hr.dat`, copied to `wannier_hr.dat`
+and recorded in `wannier.json`'s `hr` field — which is $H(\mathbf{R})$, and
+therefore $H(\mathbf{k})$ at any $\mathbf{k}$:
+
+$$H(\mathbf{k}) = \sum_{\mathbf{R}} \frac{e^{2\pi i\,
+\mathbf{k}\cdot\mathbf{R}}}{N_{\mathbf{R}}}\, H(\mathbf{R})$$
+
+with $N_\mathbf{R}$ the Wigner–Seitz degeneracy wannier90 writes alongside
+each block. All three modules read that file through one shared reader and
+one shared dispatch, so nothing below the dispatch is engine-aware. Until
+2026-08-24 all three **refused a VASP-sourced run outright** — the
+information was never missing, it simply had no reader.
+
+Two consequences worth knowing:
+
+- **A VASP-sourced run whose `hr` is missing is refused, and says why.**
+  `LWANNIER90` produces no Hamiltonian if the linked library never ran to
+  completion; the error names `OUTCAR` / `wannier90.wout` rather than
+  reporting a generic "no wavefunction found".
+- **The Fermi level travels in `wannier.json`.** $H(\mathbf{R})$ is a
+  hopping table with no zero of energy attached, so the MLWF run records
+  `efermi` (both engines do). A run that predates this records none, and
+  every module then says out loud that energies are referenced to 0 eV
+  rather than quietly defaulting.
+
+(spinors-and-the-spin-field)=
+### Spinors and the `spin` field
+
+A wannier90 `_hr.dat` is an $N_w \times N_w$ matrix with **no spin labelling
+at all**. For a spinor (`LSORBIT`) run its Wannier functions *are* spinors and
+$N_w$ counts them, but the file records neither the up/down decomposition nor
+which convention was used to order the blocks, so there is nothing in it to
+project a spin expectation onto.
+
+This costs a plot series and no result. Both invariants are computed from the
+centres alone — the Chern winding and the Soluyanov–Vanderbilt largest-gap
+ℤ₂ never read the spin expectation — so on the $H(\mathbf{R})$ route
+`topology.json` carries `spin: null` and the flow plot simply has no spin
+colouring. On the GPAW route `parallel_transport` returns $S_{km}$ along the
+easy axis and the field is populated as before.
+
+The occupied count is determined differently on this route too, and better:
+there is no electron count in a hopping table, so the filling is read off the
+spectrum as the number of states below $E_\text{F}$ — which can only be
+constant across the zone if the manifold is *actually* gapped, the very
+precondition the invariant needs. A varying count is a hard error naming both
+extremes, not a silently-averaged integer.
+
+### What this was validated against
+
+`cu_wannier_vasp_fixture` in the test suite runs the real generated scripts
+against closed forms and one independent algorithm — no VASP binary involved,
+since the fixture is the `_hr.dat` itself:
+
+| Check | Reference |
+|---|---|
+| One-band chain $H(\mathbf{k})$ | $\varepsilon_0 + 2t\cos 2\pi k$, exact |
+| Wigner–Seitz degeneracies divided out | the same chain with $N_\mathbf{R}=2$ must halve the bandwidth |
+| `_hr.dat` `m`/`n` column order | round-trip of an asymmetric $H[m,n]$ — eigenvalues alone cannot catch a transpose |
+| fcc Cu nearest-neighbour $s$ band, 12 neighbours | $\varepsilon_0 + 4t[\cos X\cos Y + \cos Y\cos Z + \cos Z\cos X]$ (Ashcroft & Mermin ch. 10) |
+| Wannier Interpolation, end to end | the same closed form over all 200 band-path k-points |
+| Fermi surface, end to end | the band's sampled range against the closed form's |
+| Chern number, end to end | the Qi–Wu–Zhang model at $u = \pm 1, 3$, cross-checked against a Fukui–Hatsugai–Suzuki plaquette Berry flux that shares no code with the Wilson loop |
+

@@ -335,6 +335,19 @@ int main(int argc, char** argv)
             vaspBands.kpath = "GXWKG";
             vaspBands.baselineDensityPath = "/jobs/proc_1/CHGCAR";
             dumpText("bands_vasp_pdos.py", generateElectronicScript(vaspBands));
+
+            // The hybrid route is a completely different branch — its own
+            // subprocess call, its own vasprun.xml parser, its own
+            // KPOINTS_OPT writer — so byte-compiling the branch above says
+            // nothing about it.
+            ElectronicConfig hybridBands;
+            hybridBands.backend = ElectronicBackend::Vasp;
+            hybridBands.kpath = "GXWKG";
+            hybridBands.gpaw.calculator = CalculatorKind::Vasp;
+            hybridBands.gpaw.vaspFunctional = VaspFunctional::Hse06;
+            hybridBands.baselineWavecarPath = "/jobs/proc_1/WAVECAR";
+            dumpText("bands_vasp_hse06.py",
+                     generateElectronicScript(hybridBands));
         }
 
         // Cluster expansion WITH a design matrix — the path the ECI fitter
@@ -420,6 +433,17 @@ int main(int argc, char** argv)
             ldos.energyMax = 0.5;
             ldos.relativeToFermi = true;
             dumpText("ldos_gpaw.py", generateLdosScript(ldos));
+            LdosConfig lpard = ldos;
+            lpard.calculator.calculator = CalculatorKind::Vasp;
+            lpard.calculator.planeWaveCutoffEv = 400.0;
+            dumpText("ldos_vasp_lpard.py", generateLdosScript(lpard));
+            LdosConfig lpardBands = lpard;
+            lpardBands.bands = {9, 10, 11};
+            lpardBands.separateBands = true;
+            lpardBands.separateKpoints = true;
+            lpardBands.kpoints = {1, 34};
+            dumpText("ldos_vasp_lpard_bands.py",
+                     generateLdosScript(lpardBands));
         }
 
         // Energy Diagrams: a placeholder baseline DIRECTORY, same shape.
@@ -1150,6 +1174,40 @@ int main(int argc, char** argv)
             bounded.useOuterWindow = true;
             bounded.outerWindowEv = 8.0;
             dumpInterp("wannier_interp_windows.py", bounded);
+
+            // The other two consumers of the same H(k). They were never
+            // dumped, so generated_script_lint had never byte-compiled
+            // either of them — and both now carry a two-arm engine
+            // dispatch, which is exactly the shape a lint pass catches and
+            // a golden-text assertion does not.
+            {
+                FermiSurfaceConfig fs;
+                fs.mlwfDir = "/jobs/mlwf";
+                std::ofstream out(dir + "/fermi_surface.py");
+                out << generateFermiSurfaceScript(fs);
+            }
+            {
+                TopologyConfig topo;
+                topo.mlwfDir = "/jobs/mlwf";
+                std::ofstream out(dir + "/topology.py");
+                out << generateTopologyScript(topo);
+            }
+            {
+                // The shape cu_wannier_vasp_fixture actually RUNS, against
+                // the Qi-Wu-Zhang model whose Chern number is known in
+                // closed form: a two-band 2D model, so the transport runs
+                // along an in-plane direction and the flow is resolved
+                // against the other one.
+                TopologyConfig chern;
+                chern.mlwfDir = "/jobs/mlwf";
+                chern.invariant = TopologicalInvariant::Chern;
+                chern.direction = 1;
+                chern.occupiedBands = 1;
+                chern.spinOrbit = false;
+                chern.loopSamples = 41;
+                std::ofstream out(dir + "/topology_chern.py");
+                out << generateTopologyScript(chern);
+            }
         }
 
         // The CALPHAD equilibrium script. Dumped in both of its shapes: the
@@ -2587,6 +2645,296 @@ int main(int argc, char** argv)
                       "automatic");
     }
 
+    std::printf("VASP hybrid functionals (Task 1):\n");
+    {
+    // ---- VASP hybrid functionals -----------------------------------
+    //
+    // The tag table is transcribed from
+    // https://vasp.at/wiki/List_of_hybrid_functionals; these assertions
+    // are that transcription, checked against the emitted INCAR keywords
+    // one functional at a time. A mapping that silently drifts is a run
+    // that names one functional in the UI and computes another.
+    {
+        const auto hybridScript = [](VaspFunctional functional) {
+            CalculatorConfig c;
+            c.calculator = CalculatorKind::Vasp;
+            c.task = TaskKind::SinglePoint;
+            c.vaspFunctional = functional;
+            return AseScriptGenerator::generate(c, "structure.extxyz");
+        };
+
+        struct Expected {
+            VaspFunctional functional;
+            const char* name;
+            const char* gga;      ///< "" = no gga= line at all
+            double aexx;
+            double aggax;
+            double aggac;
+            double aldac;
+            double hfscreen;      ///< <= 0 = no hfscreen= line at all
+        };
+        const Expected table[] = {
+            {VaspFunctional::Hse06, "HSE06", "PE", 0.25, 0.75, 1.0, 1.0, 0.2},
+            {VaspFunctional::Hse03, "HSE03", "PE", 0.25, 0.75, 1.0, 1.0, 0.3},
+            {VaspFunctional::HseSol, "HSEsol", "PS", 0.25, 0.75, 1.0, 1.0, 0.2},
+            // Unscreened: HFSCREEN must be ABSENT, not zero.
+            {VaspFunctional::Pbe0, "PBE0", "PE", 0.25, 0.75, 1.0, 1.0, -1.0},
+            {VaspFunctional::B3lyp, "B3LYP", "B3", 0.2, 0.72, 0.81, 0.19, -1.0},
+            // AEXX = 1: the wiki's own note is that ALDAC/AGGAC default to
+            // 0 there, and this writes them rather than relying on it.
+            {VaspFunctional::HartreeFock, "Hartree-Fock", "", 1.0, 0.0,
+             0.0, 0.0, -1.0},
+        };
+        for (const Expected& row : table) {
+            const std::string script = hybridScript(row.functional);
+            const std::string what = std::string(row.name) + ": ";
+            checkContains(script, "    lhfcalc=True,", what + "LHFCALC");
+            checkContains(script, std::string("    # ") + row.name,
+                          what + "named in the script");
+            const auto number = [](double value) {
+                std::ostringstream out;
+                out << value;
+                return out.str();
+            };
+            if (row.gga[0] != '\0')
+                checkContains(script,
+                              std::string("    gga=\"") + row.gga + "\",",
+                              what + "GGA");
+            else
+                checkNotContains(script, "    gga=",
+                                 what + "no GGA line — it keeps xc");
+            checkContains(script, "    aexx=" + number(row.aexx) + ",",
+                          what + "AEXX");
+            checkContains(script, "    aggax=" + number(row.aggax) + ",",
+                          what + "AGGAX");
+            checkContains(script, "    aggac=" + number(row.aggac) + ",",
+                          what + "AGGAC");
+            checkContains(script, "    aldac=" + number(row.aldac) + ",",
+                          what + "ALDAC");
+            if (row.hfscreen > 0.0)
+                checkContains(script,
+                              "    hfscreen=" + number(row.hfscreen) + ",",
+                              what + "HFSCREEN");
+            else
+                checkNotContains(script, "    hfscreen=",
+                                 what + "NO HFSCREEN — an unscreened "
+                                        "hybrid must not carry 0");
+            // https://vasp.at/wiki/ALGO: the density-mixing schemes are
+            // not for hybrids.
+            checkContains(script, "    algo=\"All\",",
+                          what + "ALGO defaults to All for a hybrid");
+        }
+
+        // A semilocal run must carry NONE of it.
+        CalculatorConfig plain;
+        plain.calculator = CalculatorKind::Vasp;
+        plain.task = TaskKind::SinglePoint;
+        const std::string plainScript =
+            AseScriptGenerator::generate(plain, "structure.extxyz");
+        for (const char* tag : {"lhfcalc", "aexx=", "hfscreen=", "aggax="})
+            checkNotContains(plainScript, tag,
+                             std::string("a semilocal run writes no ")
+                                 + tag);
+        checkContains(plainScript, "    algo=\"Normal\",",
+                      "and keeps its own ALGO");
+
+        // ALGO = VeryFast is refused for hybrids by VASP itself, so it is
+        // corrected here rather than passed through to be rejected.
+        CalculatorConfig veryFast;
+        veryFast.calculator = CalculatorKind::Vasp;
+        veryFast.task = TaskKind::SinglePoint;
+        veryFast.vaspFunctional = VaspFunctional::Hse06;
+        veryFast.vaspAlgo = VaspAlgo::VeryFast;
+        checkContains(AseScriptGenerator::generate(veryFast,
+                                                 "structure.extxyz"),
+                      "    algo=\"All\",",
+                      "ALGO = VeryFast is corrected for a hybrid — the "
+                      "wiki says it is not supported");
+
+        // The user's own mixing overrides win over the table.
+        CalculatorConfig tuned;
+        tuned.calculator = CalculatorKind::Vasp;
+        tuned.task = TaskKind::SinglePoint;
+        tuned.vaspFunctional = VaspFunctional::Hse06;
+        tuned.vaspAexx = 0.32;
+        tuned.vaspHfscreen = 0.11;
+        const std::string tunedScript =
+            AseScriptGenerator::generate(tuned, "structure.extxyz");
+        checkContains(tunedScript, "    aexx=0.32,",
+                      "an AEXX override reaches the INCAR");
+        checkContains(tunedScript, "    hfscreen=0.11,",
+                      "and an HFSCREEN override");
+
+        // Stage 2 of the wiki's two-step flow: ISTART = 1 on the staged
+        // WAVECAR.
+        CalculatorConfig chained = tuned;
+        chained.vaspWavecarBaselinePath = "/jobs/proc_1/WAVECAR";
+        const std::string chainedScript =
+            AseScriptGenerator::generate(chained, "structure.extxyz");
+        checkContains(chainedScript, "    istart=1,",
+                      "the chained hybrid restarts with ISTART = 1");
+        checkContains(chainedScript, "baseline.WAVECAR",
+                      "from the staged WAVECAR, preferred over the "
+                      "generation-time absolute path");
+        checkContains(chainedScript, "shutil.copyfile(_wavecar, 'WAVECAR')",
+                      "copied into place, because VASP takes no path for "
+                      "it");
+        checkNotContains(plainScript, "istart=1",
+                         "and a run with no baseline does not claim one");
+    }
+    }
+
+    // The hybrid band-structure route: KPOINTS_OPT instead of ICHARG = 11.
+    std::printf("VASP hybrid band structure via KPOINTS_OPT:\n");
+    {
+        ElectronicConfig cfg;
+        cfg.backend = ElectronicBackend::Vasp;
+        cfg.kpath = "GXWK";
+        cfg.npoints = 60;
+        cfg.ecutEv = 400.0;
+        cfg.scfKpts = 4;
+        cfg.gpaw.calculator = CalculatorKind::Vasp;
+        cfg.gpaw.vaspFunctional = VaspFunctional::Hse06;
+        cfg.baselineWavecarPath = "/jobs/proc_3/WAVECAR";
+        // ElectronicConfig::pdos defaults to true; the band-only assertions
+        // below are about the band route, so turn it off for those.
+        cfg.pdos = false;
+        const std::string script = generateElectronicScript(cfg);
+
+        checkNotContains(script, "icharg=11",
+                          "no fixed-density pass anywhere: the wiki forbids "
+                          "ICHARG = 11 for a hybrid outright");
+        checkContains(script, "lhfcalc=True",
+                      "the hybrid tags come from the shared "
+                      "vaspHybridKeywords transcription");
+        checkContains(script, "hfscreen=0.2", "HSE06's range separation");
+        checkContains(script, "hfrcut=-1",
+                      "Coulomb truncation rather than the auxiliary "
+                      "functions that \"lead to discontinuities in "
+                      "band-structure calculations\"");
+        checkContains(script, "algo=\"All\"",
+                      "the direct optimizers are the ALGO the wiki supports "
+                      "for a hybrid");
+        checkContains(script, "kpts=(kgrid, kgrid, kgrid)",
+                      "KPOINTS carries the UNIFORM mesh — the wiki requires "
+                      "one when KPOINTS_OPT is used");
+        checkContains(script, "with open('KPOINTS_OPT', 'w')",
+                      "and the band path travels in KPOINTS_OPT");
+        checkContains(script, "_fh.write('Reciprocal\\n')",
+                      "as an EXPLICIT list, not line mode — so the path "
+                      "comes back exactly as given and the x-axis is not "
+                      "re-derived");
+        checkContains(script, "eigenvalues_kpoints_opt",
+                      "the results are read from vasprun.xml, the only "
+                      "place VASP 6.6.1 writes them");
+        checkContains(script, "np.allclose(_got, _want",
+                      "and the returned k-points are checked against the "
+                      "requested path before the two are plotted together");
+        checkContains(script, "BandStructure(path=bandpath",
+                      "the same BandStructure object every other backend "
+                      "produces, so the tail is unchanged");
+        checkContains(script, "baseline.WAVECAR",
+                      "the staged ORBITALS are what a hybrid restarts from "
+                      "— not the CHGCAR every other branch stages");
+        checkContains(script, "available as of VASP 6.3.0",
+                      "an older binary ignores KPOINTS_OPT silently, and "
+                      "the refusal says so");
+
+        // PDOS: the semilocal route runs a SECOND fixed-density pass for
+        // it. A hybrid cannot, so LORBIT goes on the SCF run itself and the
+        // same parser reads the same file.
+        ElectronicConfig withPdos = cfg;
+        withPdos.pdos = true;
+        const std::string pdosScript = generateElectronicScript(withPdos);
+        checkContains(pdosScript, "lorbit=11",
+                      "LORBIT rides on the hybrid SCF run itself");
+        checkNotContains(pdosScript, "dos_calc = Vasp(",
+                          "and NOT on a second ICHARG = 11 pass, which is "
+                          "invalid for a hybrid and would cost a whole "
+                          "second hybrid SCF");
+        checkContains(pdosScript, "\".//dos/partial/array\"",
+                      "the same vasprun.xml parser the semilocal route uses");
+        // VASP writes d(x2-y2) as bare "x2-y2", so keying the shell off the
+        // first letter files a fifth of the d weight under a channel called
+        // "x" and leaves "d" short by exactly that much. Verified against a
+        // real vasprun.xml: the fields are s, py, pz, px, dxy, dyz, dz2,
+        // dxz, x2-y2.
+        checkContains(pdosScript, "_calango_shell(_field)",
+                      "the PDOS shell is classified by name, not by first "
+                      "letter");
+        checkContains(pdosScript, "_field.startswith((\"x2\", \"dx2\"))",
+                      "so VASP's bare \"x2-y2\" lands in d, not in a "
+                      "channel called \"x\"");
+        checkNotContains(pdosScript, "{_symbol} {_field[0]}",
+                          "and the first-letter shortcut is gone");
+        ElectronicConfig noPdos = cfg;
+        noPdos.pdos = false;
+        checkNotContains(generateElectronicScript(noPdos), "lorbit=11",
+                          "and no PDOS machinery at all when none was asked "
+                          "for");
+
+        // No baseline: allowed, but VASP's own recommendation is stated.
+        ElectronicConfig scratch = cfg;
+        scratch.baselineWavecarPath.clear();
+        const std::string cold = generateElectronicScript(scratch);
+        checkContains(cold, "this hybrid starts from scratch",
+                      "a from-scratch hybrid warns rather than refusing");
+        checkNotContains(cold, "shutil.copyfile(_wavecar",
+                          "and stages nothing");
+
+        // Semilocal is untouched by any of it.
+        ElectronicConfig plain = cfg;
+        plain.gpaw.vaspFunctional = VaspFunctional::Semilocal;
+        const std::string semi = generateElectronicScript(plain);
+        checkNotContains(semi, "KPOINTS_OPT",
+                          "a semilocal band structure keeps the ordinary "
+                          "route");
+        checkContains(semi, "icharg=11",
+                      "including its fixed-density band pass");
+    }
+
+    // ICHARG = 11 + a hybrid is not a bad idea, it is INVALID: the VASP
+    // wiki says "the electronic charge density must not be fixed for any
+    // hybrid calculation, i.e., never set ICHARG=11!" -- for a hybrid the
+    // Hamiltonian is not a functional of the density alone. Emitting both
+    // would produce a run that finishes and reports a band structure that
+    // is not the hybrid's, and nothing downstream could tell.
+    std::printf("VASP hybrid + fixed density is refused (Task 1):\n");
+    {
+        CalculatorConfig chain;
+        chain.calculator = CalculatorKind::Vasp;
+        chain.vaspChgcarBaselinePath = "/jobs/proc_2/CHGCAR";
+        chain.vaspFunctional = VaspFunctional::Hse06;
+        const std::string script =
+            AseScriptGenerator::calculatorSnippet(chain);
+        checkContains(script, "never set ICHARG=11",
+                      "a hybrid child of a CHGCAR baseline is REFUSED, in "
+                      "the wiki's own words");
+        checkContains(script, "KPOINTS_OPT",
+                      "and the documented alternative is named rather than "
+                      "left as a bare 'not supported'");
+        checkContains(script, "use Electronic Structure with a VASP hybrid",
+                      "pointing at the module that DOES generate it — this "
+                      "one has a density baseline, not a band path");
+        checkContains(script, "pick a WAVECAR baseline (the orbitals)",
+                      "and at the baseline kind a hybrid can actually "
+                      "inherit");
+        // A top-level statement, not a Vasp(...) argument -- which is how
+        // it was first written, and a SyntaxError.
+        checkContains(script, "raise RuntimeError(\n    'A fixed-density",
+                      "emitted before the Vasp(...) call, not inside its "
+                      "argument list");
+
+        CalculatorConfig semilocal = chain;
+        semilocal.vaspFunctional = VaspFunctional::Semilocal;
+        const std::string plain =
+            AseScriptGenerator::calculatorSnippet(semilocal);
+        checkNotContains(plain, "never set ICHARG=11",
+                         "a semilocal child of the same baseline is "
+                         "untouched");
+        checkContains(plain, "icharg=11",
+                      "and still gets its fixed-density restart");
+    }
     std::printf("VASP DFT+U (LDAU, Task 2):\n");
     {
         CalculatorConfig base;
@@ -3033,9 +3381,11 @@ int main(int argc, char** argv)
                       "and marked as an already-broadened curve (VASP's own "
                       "ISMEAR/SIGMA), not a raw histogram the viewer may "
                       "re-bin");
-        checkContains(reused, "_key = f\"{_symbol} {_field[0]}\"",
-                      "aggregated by element + shell letter, matching the "
-                      "GPAW branch's own per-element-per-shell channels");
+        checkContains(reused, "_key = f\"{_symbol} {_calango_shell(_field)}\"",
+                      "aggregated by element + shell, matching the GPAW "
+                      "branch's own per-element-per-shell channels — by "
+                      "field NAME, since VASP's bare \"x2-y2\" has no "
+                      "leading d for a first-letter rule to find");
 
         // PDOS off: no LORBIT, no vasprun.xml parsing at all.
         ElectronicConfig noPdos = nscf;
@@ -4114,6 +4464,104 @@ int main(int argc, char** argv)
         checkContains(script, "Local Density of States cannot be driven "
                               "from a ' + _engine",
                       "a non-GPAW baseline is refused by name");
+    }
+
+    // -- LDOS via VASP's LPARD (Task 3, 2026-08-24) -----------------------
+    // Every tag asserted here was read off the VASP wiki, not recalled:
+    // LPARD ("determines whether partial (band and/or k-point-decomposed)
+    // charge densities are evaluated"), NBMOD (-3 "add the Fermi energy to
+    // the passed values", -2 "an absolute energy interval"), EINT (the two
+    // bounds), LSEPB/LSEPK (one file, or PARCHG.<band>.<kpt>), ISTART = 1
+    // ("orbitals are read from the WAVECAR file").
+    //
+    // What the golden text CAN pin is that the right tags are written under
+    // the right conditions. What it cannot is whether VASP accepts them or
+    // whether the PARCHG conversion has the units right — that is
+    // vasp_lpard_ldos's job, and it runs VASP for real.
+    std::printf("LDOS via VASP LPARD (Task 3):\n");
+    {
+        LdosConfig cfg;
+        cfg.baselineDir = "/jobs/proc_7";
+        cfg.energyMin = -0.5;
+        cfg.energyMax = 0.5;
+        cfg.relativeToFermi = true;
+        cfg.calculator.calculator = CalculatorKind::Vasp;
+        cfg.calculator.planeWaveCutoffEv = 400.0;
+        const std::string script = generateLdosScript(cfg);
+
+        checkContains(script, "lpard=True", "LPARD switches the pass on");
+        checkContains(script, "nbmod=-3",
+                      "a Fermi-relative window is NBMOD = -3, which makes "
+                      "VASP add E_F to the EINT values itself");
+        checkContains(script, "eint=[-0.5, 0.5]",
+                      "the window travels in EINT, in eV");
+        checkContains(script, "istart=1",
+                      "ISTART = 1 reads the orbitals from WAVECAR");
+        checkContains(script, "lwave=False, lcharg=False",
+                      "an LPARD pass writes neither back — it updates "
+                      "neither");
+        checkContains(script, "lsepb=False, lsepk=False",
+                      "one summed PARCHG by default");
+        checkNotContains(script, "icharg=11",
+                          "LPARD is not a fixed-density band pass: the wiki's "
+                          "own recipe copies POSCAR, KPOINTS and WAVECAR, and "
+                          "sets no ICHARG at all");
+        // Not a bare "gpaw": every generated script carries the shared JSON
+        // logger, whose MPI-rank detection imports gpaw.mpi opportunistically.
+        // What must NOT be here is a GPAW RESTART.
+        checkNotContains(script, "from gpaw import GPAW",
+                          "no GPAW restart leaks into the VASP route");
+        checkNotContains(script, "*.gpw",
+                          "and it never looks for a .gpw");
+        checkNotContains(script, "_calango_wave_function",
+                          "and Calango sums nothing here — VASP does the "
+                          "selection internally");
+
+        // The three failure modes the wiki names, each caught with a reason.
+        checkContains(script, "re-run the parent with LWAVE = .TRUE.",
+                      "a parent with no WAVECAR is refused by cause, not by "
+                      "a missing-file message");
+        checkContains(script, "if _wave_bytes < 4096:",
+                      "an EMPTY WAVECAR is caught too — VASP creates the "
+                      "file at startup and fills it at the end, so a crashed "
+                      "parent leaves one that exists and holds nothing");
+        checkContains(script, "LPARD is not supported for ",
+                      "a noncollinear parent is refused, per the wiki");
+        checkContains(script, "shutil.copyfile(_parent_kpoints, 'KPOINTS')",
+                      "the parent's KPOINTS is reused verbatim — a (n1,n2,n3) "
+                      "triple cannot express an explicit list, and for an "
+                      "even grid MP and Gamma-centred differ");
+        checkContains(script, "baseline.WAVECAR",
+                      "the staged copy wins over the generation-time path, "
+                      "so a REMOTE run finds the orbitals");
+        checkContains(script, "'nstates': None",
+                      "VASP reports no per-state list; null distinguishes "
+                      "that from 'none selected'");
+        checkContains(script, "_grid = np.asarray(_chg.chg[-1], dtype=float)",
+                      "ASE's VaspChargeDensity already divides by the cell "
+                      "volume — dividing again is off by that factor, which "
+                      "is what vasp_lpard_ldos's electron-count check caught");
+
+        LdosConfig absolute = cfg;
+        absolute.relativeToFermi = false;
+        checkContains(generateLdosScript(absolute), "nbmod=-2",
+                      "an absolute window is NBMOD = -2");
+
+        LdosConfig split = cfg;
+        split.bands = {9, 10, 11};
+        split.kpoints = {1, 34};
+        split.separateBands = true;
+        split.separateKpoints = true;
+        const std::string perBand = generateLdosScript(split);
+        checkContains(perBand, "iband=[9, 10, 11]",
+                      "an explicit band list is IBAND");
+        checkNotContains(perBand, "eint=",
+                          "IBAND overrides the window: the wiki says NBMOD is "
+                          "set from IBAND's length and EINT is not consulted, "
+                          "so writing both would be a lie about what ran");
+        checkContains(perBand, "kpuse=[1, 34]", "KPUSE selects k-points");
+        checkContains(perBand, "lsepb=True, lsepk=True",
+                      "LSEPB/LSEPK split the output per band and k-point");
     }
 
     // -- Energy Diagrams --------------------------------------------------
@@ -5265,11 +5713,23 @@ int main(int argc, char** argv)
         // originated runs identically, so pointing this at a VASP one used
         // to fall through to the generic ".gpw not found" message, true of
         // the field and not the actual reason.
+        //
+        // 2026-08-24: that guard is no longer a REFUSAL. All three H(k)
+        // consumers read the run's own wannier_hr.dat instead
+        // (wannierHrSetupBlock), so the VASP branch is now a working route
+        // and the engine check survives only to explain a VASP run whose
+        // H(R) is missing.
         checkContains(script, "_meta.get('engine') == 'VASP'",
                       "a VASP-sourced MLWF run is checked for explicitly");
-        checkContains(script, "is not implemented for",
-                      "and refused with a message naming the real reason, "
-                      "mirroring Wannier Interpolation's own existing guard");
+        checkContains(script, "wan = _HrHamiltonian(_hr)",
+                      "and served from H(R) rather than refused");
+        checkContains(script, "class _HrHamiltonian:",
+                      "the wannier90 _hr.dat reader travels with the script");
+        checkContains(script, "if _use_hr:",
+                      "the engine dispatch is on what the run LEFT BEHIND, "
+                      "not on its name");
+        checkNotContains(script, "is not implemented for",
+                          "nothing here says 'not implemented' any more");
 
         FermiSurfaceConfig tiny = cfg;
         tiny.gridSamples[0] = 1;
@@ -5307,10 +5767,24 @@ int main(int argc, char** argv)
         // (gpaw.berryphase.parallel_transport) with no VASP awareness, and
         // completedMlwfRuns() offers a VASP-sourced MLWF run just as
         // readily as a GPAW one.
+        //
+        // 2026-08-24: served rather than refused. parallel_transport has no
+        // H(R) equivalent, so this module gets an actual Wilson loop over
+        // H(k) — validated against the Qi-Wu-Zhang model in
+        // cu_wannier_vasp_fixture.
         checkContains(script, "_meta.get('engine') == 'VASP'",
                       "a VASP-sourced MLWF run is checked for explicitly");
-        checkContains(script, "not implemented for that route yet",
-                      "and refused with a message naming the real reason");
+        checkContains(script, "_W = _W @ (_u_prev.conj().T @ _u)",
+                      "and gets a Wilson loop over H(k) instead of a "
+                      "refusal");
+        checkContains(script, "S_km = None",
+                      "with no invented spin expectation: a wannier90 "
+                      "_hr.dat carries no spin labelling at all");
+        checkContains(script, "_counts.min() == _counts.max()",
+                      "the filling is read off the spectrum, which can only "
+                      "be constant if the manifold is actually gapped");
+        checkNotContains(script, "not implemented for that route yet",
+                          "nothing here says 'not implemented' any more");
 
         TopologyConfig chernOnly = cfg;
         chernOnly.invariant = TopologicalInvariant::Chern;

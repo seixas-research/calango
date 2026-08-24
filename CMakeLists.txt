@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.8.42
+    VERSION 26.8.43
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -3756,9 +3756,31 @@ if(CALANGO_BUILD_TESTS)
     # fixture carrying cu_wannier_spread_benchmark.py's own real, previously
     # -measured spreads. Self-skips (exit 0) without ase. Seconds, not an
     # hour: no DFT of any kind runs here.
+    # Hybrid band structure via KPOINTS_OPT, end to end against a real VASP
+    # binary: HSE06 must open Si's direct gap at Gamma well past PBE's,
+    # toward the experimental ~3.4 eV. Self-skips without VASP.
+    add_test(NAME vasp_hybrid_bands
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/vasp_hybrid_bands_test.py
+                $<TARGET_FILE:calango_script_test>)
+
+    # LDOS via VASP's LPARD, end to end against a real VASP binary: the
+    # partial charge density of every occupied band must integrate to the
+    # valence electron count. Self-skips without VASP, its POTCARs or ase,
+    # which is every unlicensed environment.
+    add_test(NAME vasp_lpard_ldos
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/vasp_lpard_ldos_test.py
+                $<TARGET_FILE:calango_script_test>)
+
+    # The generated-script half of this test RUNS the real Wannier
+    # Interpolation / Fermi Surface / Topological Invariants scripts against
+    # an H(R) fixture, so it needs the generator binary to dump them. It
+    # self-skips that half (and only that half) when the path is not usable.
     add_test(NAME cu_wannier_vasp_fixture
         COMMAND ${Python3_EXECUTABLE}
-                ${CMAKE_CURRENT_SOURCE_DIR}/tests/cu_wannier_vasp_fixture_test.py)
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/cu_wannier_vasp_fixture_test.py
+                $<TARGET_FILE:calango_script_test>)
 
 # Optics validation on bulk Si: GPAW SCF → NSCF → DielectricFunction,
     # verifying ε₁/ε₂. Self-skips (exit 0) without the GPAW response stack.
@@ -3897,6 +3919,7 @@ if(CALANGO_BUILD_TESTS)
         cluster_expansion_fit cluster_presets cluster_variation convex_hull
         cpa_solver crpa_solver crpa_vasp_validation cu_wannier_spread
         cu_wannier_vasp_fixture
+        vasp_lpard_ldos vasp_hybrid_bands
         ternary_convex_hull
         dataset_split egqca
         defect_2d_correction defect_2d_monolayer

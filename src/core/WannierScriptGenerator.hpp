@@ -123,6 +123,48 @@ struct WannierInterpolationConfig {
 /// `cfg.kpath` into `bands.json`, and builds a Wannier-projected PDOS on the
 /// `cfg.kmesh` into `pdos.json` — both in the schema the standard band/PDOS
 /// viewer reads.
+/// Python that builds an H(k) interpolator from a wannier90 `_hr.dat`.
+///
+/// THE ENGINE-AGNOSTIC HALF OF THE WANNIER PIPELINE. Interpolation, the Fermi
+/// surface and the topological invariants all need exactly one thing from a
+/// completed localization: H(k) at an arbitrary k. All three used to get it by
+/// reopening the run's `.gpw` and rebuilding the localization with
+/// ase.dft.wannier — which works only for a GPAW-sourced run, and made all
+/// three refuse a VASP-sourced one outright even though VASP's own Wannier90
+/// library had already written the answer to `wannier90_hr.dat`.
+///
+/// This reads that file instead. The emitted object exposes
+/// `get_hamiltonian_kpoint(k)` with the same signature ase.dft.wannier's
+/// Wannier does, so every consumer downstream is unchanged.
+///
+/// The `_hr.dat` format (wannier90 user guide, and what VASP's linked library
+/// writes): a comment line, then `num_wann`, then `nrpts`, then `nrpts`
+/// degeneracy integers 15 per line, then `num_wann**2 * nrpts` rows of
+/// `Rx Ry Rz m n Re(H) Im(H)`. The degeneracies are divided out — they count
+/// how many Wigner-Seitz images a given R stands for, and forgetting them
+/// misweights every hopping that sits on a zone boundary.
+std::string wannierHrInterpolatorPreamble();
+
+/// The engine dispatch every consumer of H(k) shares, as Python.
+///
+/// Emits the `_hr` path resolution, the `_use_hr` decision, the refusal for a
+/// VASP run whose H(R) is missing, and the whole `if _use_hr:` arm — which
+/// binds exactly the four names the downstream half of each of these modules
+/// uses: `wan` (with get_hamiltonian_kpoint), `nwannier`, `atoms` (for its
+/// cell) and `efermi`. The returned text ENDS with a bare `else:` line, so the
+/// caller appends its own GPAW-restart arm indented one level and nothing
+/// below the dispatch has to know which engine ran.
+///
+/// `module` names this module in the refusal text ("band interpolation", "the
+/// Fermi surface", …); `progressStage`/`progressTotal` are the progress marker
+/// the GPAW arm reaches after its localization, emitted immediately on the
+/// H(R) arm because there is nothing to localize there.
+///
+/// Requires wannierHrInterpolatorPreamble() earlier in the same script, plus
+/// `numpy as np`, `os`, and `_meta` / `_base` already bound.
+std::string wannierHrSetupBlock(const std::string& module, int progressStage,
+                                int progressTotal);
+
 std::string generateWannierInterpolationScript(
     const std::string& mlwfDir, const WannierInterpolationConfig& cfg);
 

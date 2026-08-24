@@ -1,9 +1,15 @@
 #include "gui/GpawEigenvaluePeek.hpp"
 
+#include "core/LocaleSafeNumber.hpp"
+
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QFile>
+#include <QObject>
 #include <QProcess>
+#include <QRegularExpression>
+#include <QTextStream>
 
 namespace calango::gui {
 
@@ -108,6 +114,158 @@ GpawEigenvalueSpectrum peekGpawEigenvalues(const QString& pythonExecutable,
         state.kWeight = o.value(QStringLiteral("weight")).toDouble(1.0);
         result.states.push_back(state);
     }
+    result.ok = true;
+    return result;
+}
+
+
+namespace {
+
+/// The Fermi level, from DOSCAR's sixth line (emax emin nedos efermi 1.0)
+/// or, failing that, OUTCAR's last `E-fermi :` line. Both are written by
+/// every ordinary VASP run; DOSCAR is tried first because it is a fixed
+/// position rather than a scan of a file that can reach hundreds of MB.
+bool readVaspFermiLevel(const QString& baselineDir, double& out)
+{
+    QFile doscar(baselineDir + QStringLiteral("/DOSCAR"));
+    if (doscar.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        QTextStream in(&doscar);
+        for (int i = 0; i < 5 && !in.atEnd(); ++i)
+            in.readLine();
+        const QStringList f = in.readLine().split(QRegularExpression(
+            QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+        if (f.size() >= 4) {
+            double value = 0.0;
+            if (core::localeSafeParse(f.at(3).toStdString(), &value)) {
+                out = value;
+                return true;
+            }
+        }
+    }
+
+    QFile outcar(baselineDir + QStringLiteral("/OUTCAR"));
+    if (!outcar.open(QIODevice::ReadOnly | QIODevice::Text))
+        return false;
+    QTextStream in(&outcar);
+    bool found = false;
+    while (!in.atEnd()) {
+        const QString line = in.readLine();
+        if (!line.contains(QStringLiteral("E-fermi")))
+            continue;
+        const QStringList f = line.split(QRegularExpression(
+            QStringLiteral("[\\s:]+")), Qt::SkipEmptyParts);
+        // "E-fermi :   5.1234     XC(G=0): ..." — the token after "E-fermi".
+        for (int i = 0; i + 1 < f.size(); ++i) {
+            if (f.at(i) != QStringLiteral("E-fermi"))
+                continue;
+            double value = 0.0;
+            if (core::localeSafeParse(f.at(i + 1).toStdString(), &value)) {
+                out = value;   // keep scanning: the LAST one is the converged
+                found = true;  // value, an ionic relaxation writes several
+            }
+        }
+    }
+    return found;
+}
+
+} // namespace
+
+GpawEigenvalueSpectrum peekVaspEigenvalues(const QString& baselineDir)
+{
+    GpawEigenvalueSpectrum result;
+
+    QFile eigenval(baselineDir + QStringLiteral("/EIGENVAL"));
+    if (!eigenval.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        result.errorMessage = QObject::tr(
+            "No EIGENVAL in %1. LDOS reads the parent's eigenvalue spectrum "
+            "from it to draw the energy window — re-run the parent, or pick "
+            "one that completed.").arg(baselineDir);
+        return result;
+    }
+
+    QTextStream in(&eigenval);
+    const auto fields = [](const QString& line) {
+        return line.split(QRegularExpression(QStringLiteral("\\s+")),
+                          Qt::SkipEmptyParts);
+    };
+
+    // Line 1 field 4 is ISPIN; lines 2-5 are cell/temperature/CAR/system.
+    const QStringList header = fields(in.readLine());
+    result.nspins = header.size() >= 4 ? header.at(3).toInt() : 1;
+    if (result.nspins < 1 || result.nspins > 2)
+        result.nspins = 1;
+    for (int i = 0; i < 4 && !in.atEnd(); ++i)
+        in.readLine();
+
+    // Line 6: NELECT  NKPTS  NBANDS.
+    const QStringList counts = fields(in.readLine());
+    if (counts.size() < 3) {
+        result.errorMessage = QObject::tr(
+            "EIGENVAL in %1 is truncated: its sixth line should carry "
+            "NELECT / NKPTS / NBANDS.").arg(baselineDir);
+        return result;
+    }
+    const int nkpts = counts.at(1).toInt();
+    const int nbands = counts.at(2).toInt();
+    if (nkpts <= 0 || nbands <= 0) {
+        result.errorMessage = QObject::tr(
+            "EIGENVAL in %1 reports %2 k-points and %3 bands — the parent "
+            "run did not finish.").arg(baselineDir).arg(nkpts).arg(nbands);
+        return result;
+    }
+
+    result.states.reserve(static_cast<std::size_t>(nkpts) * nbands
+                          * result.nspins);
+    for (int k = 0; k < nkpts; ++k) {
+        // A blank line, then "kx ky kz weight".
+        QStringList kline;
+        while (!in.atEnd() && kline.size() < 4)
+            kline = fields(in.readLine());
+        if (kline.size() < 4)
+            break;
+        double weight = 1.0;
+        const bool ok =
+            core::localeSafeParse(kline.at(3).toStdString(), &weight);
+        for (int b = 0; b < nbands && !in.atEnd(); ++b) {
+            const QStringList row = fields(in.readLine());
+            // "band  E_up [E_down]  occ_up [occ_down]" — one energy and one
+            // occupation column per spin, band index first.
+            if (row.size() < 1 + result.nspins)
+                continue;
+            for (int s = 0; s < result.nspins; ++s) {
+                GpawState state;
+                state.spin = s;
+                state.kpt = k;
+                state.band = b;
+                if (!core::localeSafeParse(row.at(1 + s).toStdString(),
+                                           &state.energyEv))
+                    continue;
+                const int occCol = 1 + result.nspins + s;
+                state.occupation = occCol < row.size()
+                    ? core::localeSafeToDouble(row.at(occCol).toStdString(),
+                                               -1.0)
+                    : -1.0;
+                state.kWeight = ok ? weight : 1.0;
+                result.states.push_back(state);
+            }
+        }
+    }
+
+    if (result.states.empty()) {
+        result.errorMessage = QObject::tr(
+            "EIGENVAL in %1 holds no eigenvalues.").arg(baselineDir);
+        return result;
+    }
+
+    if (!readVaspFermiLevel(baselineDir, result.fermiLevelEv)) {
+        result.errorMessage = QObject::tr(
+            "Read %1 states from EIGENVAL in %2, but neither DOSCAR nor "
+            "OUTCAR reports a Fermi level — an energy window relative to "
+            "E_F cannot be placed.")
+            .arg(result.states.size()).arg(baselineDir);
+        return result;
+    }
+
     result.ok = true;
     return result;
 }

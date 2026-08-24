@@ -34,10 +34,14 @@ std::string cddExternalEngine(const CddRunConfig& c)
             "def _read_vasp_density(directory):\n"
             "    \"\"\"CHGCAR, or AECCAR0 + AECCAR2 for the all-electron form.\n"
             "\n"
-            "    VaspChargeDensity returns the density already multiplied by\n"
-            "    the cell volume (VASP's own file convention), so it is divided\n"
-            "    out here to give e/Ang^3 — the units every term downstream,\n"
-            "    and the cube writer, assume.\n"
+            "    Returned in e/Ang^3 — the units every term downstream, and\n"
+            "    the cube writer, assume. No conversion is needed and none is\n"
+            "    done: VASP's files hold the density MULTIPLIED by the cell\n"
+            "    volume, but ASE's VaspChargeDensity._read_chg already divides\n"
+            "    it out (`chg /= volume`) before returning. Dividing again\n"
+            "    would be off by the cell volume — which is exactly what a\n"
+            "    reader of the previous version of this comment went and did\n"
+            "    in the LDOS module, where an electron-count check caught it.\n"
             "    \"\"\"\n";
         if (c.allElectron)
             out +=

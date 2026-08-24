@@ -205,6 +205,24 @@ public:
     /// from a wizard that collected a U, with nothing anywhere saying so.
     ///
     /// `withLmaxmix` false where the caller writes its own LMAXMIX line.
+    /// The hybrid-functional INCAR tags as Python keyword arguments, one
+    /// per line, each prefixed with `indent` — LHFCALC, GGA, AEXX, AGGAX,
+    /// AGGAC, ALDAC and (screened hybrids only) HFSCREEN. Empty for a
+    /// semilocal functional, so a caller can emit it unconditionally.
+    ///
+    /// Factored out so the ordinary calculator block and the hybrid
+    /// band-structure route (ElectronicScriptGenerator's KPOINTS_OPT branch)
+    /// write the SAME tags from the SAME transcription of
+    /// https://vasp.at/wiki/List_of_hybrid_functionals — two emitters that
+    /// drift apart would give a band structure computed with a different
+    /// functional than the SCF that fed it, and nothing downstream could
+    /// tell.
+    ///
+    /// ISTART is deliberately NOT included: whether this run restarts from a
+    /// WAVECAR is the caller's question, not the functional's.
+    static std::string vaspHybridKeywords(const CalculatorConfig& c,
+                                          const std::string& indent);
+
     static std::string vaspHubbardKeywords(const CalculatorConfig& c,
                                            const std::string& indent,
                                            bool withLmaxmix = true);

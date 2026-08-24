@@ -185,14 +185,15 @@ void SimulationWizardBase::buildUi()
             &SimulationWizardBase::exportScript);
     connect(runLocalButton_, &QPushButton::clicked, this, [this] {
         if (!preflightVaspPotcar() || !preflightVaspNcl() || !preflightSecondary()
-            || !preflightGpawMpi() || !preflightVaspHubbardConsistency())
+            || !preflightGpawMpi() || !preflightVaspHubbardConsistency()
+            || !preflightVaspHybrid())
             return;
         action_ = Action::RunLocal;
         accept();
     });
     connect(runRemoteButton_, &QPushButton::clicked, this, [this] {
         if (!preflightVaspPotcar() || !preflightVaspNcl() || !preflightSecondary()
-            || !preflightVaspHubbardConsistency())
+            || !preflightVaspHubbardConsistency() || !preflightVaspHybrid())
             return;
         action_ = Action::RunRemote;
         accept();
@@ -851,8 +852,11 @@ QWidget* SimulationWizardBase::buildVaspGroup(QWidget* parent)
            "back costs far more than the file."));
     vaspLwaveCheck_ = new QCheckBox(tr("WAVECAR"), vaspGroup_);
     vaspLwaveCheck_->setToolTip(
-        tr("LWAVE — write the wavefunctions. Large, but required to restart "
-           "or to post-process bands."));
+        tr("LWAVE — write the wavefunctions. Large, but the ONLY thing that "
+           "carries the converged orbitals forward, and three modules read "
+           "nothing else: LDOS via LPARD, a hybrid-functional restart from "
+           "a semilocal run, and any band post-process. Turning it on costs "
+           "disk; leaving it off costs the whole parent SCF again."));
     vaspLaechgCheck_ = new QCheckBox(tr("AECCAR (Bader)"), vaspGroup_);
     vaspLaechgCheck_->setToolTip(
         tr("LAECHG — write the all-electron core and valence densities, which "
@@ -1017,6 +1021,154 @@ QWidget* SimulationWizardBase::buildVaspGroup(QWidget* parent)
     // Populated by the host (setVaspChgcarBaselines()); empty by default, so
     // every wizard with this group keeps its pre-existing "fresh SCF"
     // behaviour unless a baseline is actually chosen.
+    // -- Functional ---------------------------------------------------------
+    //
+    // A headline choice, so it sits at the top of the VASP group rather than
+    // among the convergence knobs: semilocal (what every VASP run in this
+    // application did until now) or one of the hybrids.
+    //
+    // The list and every tag value behind it come from
+    // https://vasp.at/wiki/List_of_hybrid_functionals — transcribed once, in
+    // core::vaspHybridTagsFor(), which this combo, the emitter and the
+    // pre-flight all read.
+    vaspFunctionalCombo_ = new QComboBox(vaspGroup_);
+    vaspFunctionalCombo_->setObjectName(QStringLiteral("vaspFunctionalCombo"));
+    // itemData is the enum, not the row: the menu is ordered for the user
+    // (the default first, then the screened hybrids people actually reach
+    // for) and must never have to mirror the enum's declaration order.
+    const auto addFunctional = [this](const QString& label,
+                                      core::VaspFunctional value) {
+        vaspFunctionalCombo_->addItem(label, static_cast<int>(value));
+    };
+    addFunctional(tr("Semilocal — the XC above (PBE, PBEsol, …)"),
+                  core::VaspFunctional::Semilocal);
+    addFunctional(tr("HSE06 — screened hybrid, μ = 0.2 Å⁻¹"),
+                  core::VaspFunctional::Hse06);
+    addFunctional(tr("HSE03 — screened hybrid, μ = 0.3 Å⁻¹"),
+                  core::VaspFunctional::Hse03);
+    addFunctional(tr("HSEsol — screened hybrid on PBEsol"),
+                  core::VaspFunctional::HseSol);
+    addFunctional(tr("PBE0 — unscreened, 25 % exact exchange"),
+                  core::VaspFunctional::Pbe0);
+    addFunctional(tr("B3LYP"), core::VaspFunctional::B3lyp);
+    addFunctional(tr("Hartree-Fock — 100 % exact exchange, no DFT XC"),
+                  core::VaspFunctional::HartreeFock);
+    vaspFunctionalCombo_->setToolTip(
+        tr("Semilocal, or DFT + a fraction of exact Hartree-Fock exchange.\n\n"
+           "Each hybrid writes its own documented tag set (LHFCALC, GGA, "
+           "AEXX, AGGAX, AGGAC, ALDAC and — for the screened ones — "
+           "HFSCREEN); the table is transcribed from the VASP wiki's "
+           "List_of_hybrid_functionals page.\n\n"
+           "Hybrids are EXPENSIVE — often one to two orders of magnitude "
+           "more than the semilocal run they sit on — and they converge "
+           "poorly from scratch, which is why selecting one turns on the "
+           "two-stage chain below by default."));
+    form->addRow(tr("Functional:"), vaspFunctionalCombo_);
+
+    vaspAexxSpin_ = new QDoubleSpinBox(vaspGroup_);
+    vaspAexxSpin_->setObjectName(QStringLiteral("vaspAexxSpin"));
+    vaspAexxSpin_->setRange(0.0, 1.0);
+    vaspAexxSpin_->setDecimals(3);
+    vaspAexxSpin_->setSingleStep(0.05);
+    vaspAexxSpin_->setValue(0.25);
+    vaspAexxSpin_->setToolTip(
+        tr("AEXX — the fraction of exact exchange mixed in.\n\n"
+           "Pre-filled with the selected functional's own documented value "
+           "(0.25 for HSE06/HSE03/HSEsol/PBE0, 0.2 for B3LYP, 1 for "
+           "Hartree-Fock). Tuning it is legitimate and common — a "
+           "system-specific AEXX is how a hybrid is fitted to a measured "
+           "gap — but the result is then no longer the named functional."));
+    form->addRow(tr("AEXX (exact exchange):"), vaspAexxSpin_);
+
+    vaspHfscreenSpin_ = new QDoubleSpinBox(vaspGroup_);
+    vaspHfscreenSpin_->setObjectName(QStringLiteral("vaspHfscreenSpin"));
+    vaspHfscreenSpin_->setRange(0.0, 2.0);
+    vaspHfscreenSpin_->setDecimals(3);
+    vaspHfscreenSpin_->setSingleStep(0.05);
+    vaspHfscreenSpin_->setValue(0.2);
+    vaspHfscreenSpin_->setSuffix(tr(" Å⁻¹"));
+    vaspHfscreenSpin_->setToolTip(
+        tr("HFSCREEN — the range-separation parameter μ of a screened "
+           "hybrid.\n\n"
+           "Shown only for the screened functionals. An UNSCREENED hybrid "
+           "(PBE0, B3LYP, Hartree-Fock) does not carry this tag at all — "
+           "writing HFSCREEN = 0 for one is not the same thing as leaving "
+           "it out, so the generated INCAR omits it entirely."));
+    form->addRow(tr("HFSCREEN (μ):"), vaspHfscreenSpin_);
+
+    // The wiki's NiO_HSE06 practice, as a default-on switch rather than a
+    // note nobody reads: https://vasp.at/wiki/NiO_HSE06 — "It is strongly
+    // recommended to start from a converged PBE calculation (ISTART = 1)
+    // before beginning with a DFT+HF method."
+    vaspHybridChainCheck_ = new QCheckBox(
+        tr("Converge a semilocal run first, then restart the hybrid from it"),
+        vaspGroup_);
+    vaspHybridChainCheck_->setObjectName(
+        QStringLiteral("vaspHybridChainCheck"));
+    vaspHybridChainCheck_->setChecked(true);
+    vaspHybridChainCheck_->setToolTip(
+        tr("The VASP wiki's own NiO HSE06 practice, run for you as two "
+           "staged jobs: a semilocal Single-point that writes its WAVECAR, "
+           "then the hybrid restarting from those orbitals with "
+           "ISTART = 1.\n\n"
+           "On by default because a hybrid started from random orbitals "
+           "converges slowly and often not at all. Turn it off if you "
+           "already have a converged WAVECAR to restart from — select it "
+           "in \"Restart from WAVECAR\" below — and the pre-flight will "
+           "warn once about the from-scratch case."));
+    form->addRow(vaspHybridChainCheck_);
+
+    vaspWavecarCombo_ = new QComboBox(vaspGroup_);
+    vaspWavecarCombo_->setObjectName(QStringLiteral("vaspWavecarCombo"));
+    vaspWavecarCombo_->addItem(tr("None — start from scratch"), QString());
+    vaspWavecarCombo_->setToolTip(
+        tr("Restart this run's orbitals (ISTART = 1) from a completed VASP "
+           "run's WAVECAR.\n\n"
+           "Lists the runs that wrote one — a WAVECAR only exists where "
+           "LWAVE = .TRUE. was set. The staged chain above fills this in "
+           "for you; this row is for the case where you already have the "
+           "converged semilocal run and do not want to repeat it."));
+    form->addRow(tr("Restart from WAVECAR:"), vaspWavecarCombo_);
+
+    connect(vaspFunctionalCombo_, &QComboBox::currentIndexChanged, this,
+            [this] {
+                const auto functional = static_cast<core::VaspFunctional>(
+                    vaspFunctionalCombo_->currentData().toInt());
+                const core::VaspHybridTags tags =
+                    core::vaspHybridTagsFor(functional);
+                // Pre-fill with the functional's OWN documented values, so
+                // selecting HSE06 gives HSE06's numbers rather than whatever
+                // the previous selection left behind. A user who then edits
+                // them is overriding a named functional, which is a thing
+                // they may legitimately want to do.
+                const QSignalBlocker blockAexx(vaspAexxSpin_);
+                const QSignalBlocker blockScreen(vaspHfscreenSpin_);
+                vaspAexxSpin_->setValue(tags.aexx);
+                if (tags.hfscreen > 0.0)
+                    vaspHfscreenSpin_->setValue(tags.hfscreen);
+                // https://vasp.at/wiki/ALGO — for hybrids "the direct
+                // optimizers ALGO = All (or Conjugate) are more robust and
+                // recommended", and VeryFast is not supported at all. Set as
+                // a RECOMMENDATION the user can override, not a lock: the
+                // combo stays live, and the emitter's own backstop only
+                // corrects the one value VASP would reject outright.
+                if (core::isHybrid(functional) && vaspAlgoCombo_) {
+                    const int all = vaspAlgoCombo_->findData(
+                        static_cast<int>(core::VaspAlgo::All));
+                    if (all >= 0)
+                        vaspAlgoCombo_->setCurrentIndex(all);
+                }
+                updateVaspRows();
+                refreshPreview();
+            });
+    for (QDoubleSpinBox* spin : {vaspAexxSpin_, vaspHfscreenSpin_})
+        connect(spin, &QDoubleSpinBox::valueChanged, this,
+                [this] { refreshPreview(); });
+    connect(vaspWavecarCombo_, &QComboBox::currentIndexChanged, this,
+            [this] { refreshPreview(); });
+    connect(vaspHybridChainCheck_, &QCheckBox::toggled, this,
+            [this] { refreshPreview(); });
+
     vaspBaselineCombo_ = new QComboBox(vaspGroup_);
     vaspBaselineCombo_->addItem(tr("None — converge here"), QString());
     vaspBaselineCombo_->setToolTip(
@@ -1211,6 +1363,23 @@ void SimulationWizardBase::updateVaspRows()
     // merely irrelevant — writing them is the bug.
     setRowVisible(vaspIonicRow_, vaspInternalRelaxationSelected());
 
+    // The Functional block. Hidden rather than disabled, for the reason the
+    // ionic rows are: a greyed-out AEXX reads as broken, not as "this
+    // functional has no such parameter".
+    if (vaspFunctionalCombo_) {
+        const auto functional = static_cast<core::VaspFunctional>(
+            vaspFunctionalCombo_->currentData().toInt());
+        const bool hybrid = core::isHybrid(functional);
+        const core::VaspHybridTags tags = core::vaspHybridTagsFor(functional);
+        setRowVisible(vaspAexxSpin_, hybrid);
+        // HFSCREEN belongs only to the SCREENED hybrids — PBE0, B3LYP and
+        // Hartree-Fock do not carry the tag at all, and a control for a tag
+        // the INCAR will not contain is a promise the run does not keep.
+        setRowVisible(vaspHfscreenSpin_, hybrid && tags.hfscreen > 0.0);
+        setRowVisible(vaspHybridChainCheck_, hybrid);
+        setRowVisible(vaspWavecarCombo_, hybrid && showsVaspWavecarRow());
+    }
+
     // Re-read the dataset path every time this group is shown rather than
     // caching it at construction: Preferences can be opened and changed while
     // the wizard is up, and a stale "not configured" here would send the user
@@ -1255,6 +1424,106 @@ QString SimulationWizardBase::baselineDensityPathToStage() const
 {
     return vaspBaselineCombo_ ? vaspBaselineCombo_->currentData().toString()
                               : QString();
+}
+
+void SimulationWizardBase::setVaspWavecarBaselines(
+    const QList<QPair<QString, QString>>& baselines)
+{
+    if (!vaspWavecarCombo_)
+        return;
+    // Idempotent: the combo keeps its "None" entry and is refilled, so a
+    // second call (a re-shown wizard) does not double the list.
+    const QString previous = vaspWavecarCombo_->currentData().toString();
+    const QSignalBlocker blocker(vaspWavecarCombo_);
+    while (vaspWavecarCombo_->count() > 1)
+        vaspWavecarCombo_->removeItem(1);
+    for (const auto& [label, dir] : baselines) {
+        // The DIRECTORY is what is offered; the WAVECAR inside it is what is
+        // staged, the same shape gpawBaselines() uses.
+        vaspWavecarCombo_->addItem(label, dir + QStringLiteral("/WAVECAR"));
+    }
+    const int restored = vaspWavecarCombo_->findData(previous);
+    vaspWavecarCombo_->setCurrentIndex(restored >= 0 ? restored : 0);
+}
+
+QString SimulationWizardBase::baselineWavecarPathToStage() const
+{
+    return vaspWavecarCombo_ ? vaspWavecarCombo_->currentData().toString()
+                             : QString();
+}
+
+bool SimulationWizardBase::preflightVaspHybrid()
+{
+    if (selectedCalculator() != core::CalculatorKind::Vasp)
+        return true;
+    const core::CalculatorConfig cfg = baseCalculatorConfig();
+    if (!core::isHybrid(cfg.vaspFunctional))
+        return true;
+
+    // A hybrid started from random orbitals is the case the VASP wiki warns
+    // about by name: https://vasp.at/wiki/NiO_HSE06 — "It is strongly
+    // recommended to start from a converged PBE calculation (ISTART = 1)
+    // before beginning with a DFT+HF method."
+    //
+    // A WARNING, not a refusal. A one-shot hybrid is a legitimate thing to
+    // run — the user may be restarting by their own means, or may simply
+    // want to watch it fail to converge — and this module has no business
+    // deciding otherwise. It says the cost once and gets out of the way.
+    const bool chained = vaspHybridChainCheck_
+        && vaspHybridChainCheck_->isChecked();
+    const bool hasWavecar = !cfg.vaspWavecarBaselinePath.empty();
+    if (!chained && !hasWavecar) {
+        const auto answer = QMessageBox::warning(
+            this, tr("Hybrid functional from scratch"),
+            tr("This %1 run starts from scratch: no converged semilocal "
+               "orbitals to restart from, and the two-stage chain is "
+               "switched off.\n\n"
+               "The VASP wiki recommends against it — a hybrid converges "
+               "poorly from random orbitals and often does not converge at "
+               "all, after spending the exact-exchange cost on every step "
+               "that fails.\n\n"
+               "Either tick \"Converge a semilocal run first\", or select "
+               "a completed run's WAVECAR in \"Restart from WAVECAR\".")
+                .arg(QString::fromLatin1(core::toString(cfg.vaspFunctional))),
+            QMessageBox::Ok | QMessageBox::Cancel, QMessageBox::Cancel);
+        if (answer != QMessageBox::Ok)
+            return false;
+    }
+
+    // A WAVECAR restart is only a restart if the two runs share the plane-wave
+    // basis. VASP itself says so — a mismatched restart prints "WAVECAR:
+    // different cutoff or change in lattice found" and silently falls back to
+    // re-projecting, which is not the converged start the chain exists to
+    // provide. Checked against the parent's own calculator.json, the same
+    // provenance record preflightVaspHubbardConsistency() reads.
+    if (hasWavecar) {
+        const QString parentDir = QFileInfo(
+            QString::fromStdString(cfg.vaspWavecarBaselinePath)).absolutePath();
+        if (const auto parent = readCalculatorProvenance(parentDir)) {
+            const double parentCutoff = parent->cutoffEv;
+            if (parentCutoff > 0.0
+                && std::abs(parentCutoff - cfg.planeWaveCutoffEv) > 1e-6) {
+                const auto answer = QMessageBox::warning(
+                    this, tr("WAVECAR cutoff mismatch"),
+                    tr("The run that wrote this WAVECAR used ENCUT = %1 eV; "
+                       "this run is set to %2 eV.\n\n"
+                       "VASP will read the file and re-project it onto the "
+                       "new basis — it reports \"WAVECAR: different cutoff "
+                       "or change in lattice found\" when it does — so the "
+                       "restart no longer starts from converged orbitals, "
+                       "which is the whole point of the chain.\n\n"
+                       "Set this run's cutoff to %1 eV, or pick a different "
+                       "WAVECAR.")
+                        .arg(parentCutoff)
+                        .arg(cfg.planeWaveCutoffEv),
+                    QMessageBox::Ok | QMessageBox::Cancel,
+                    QMessageBox::Cancel);
+                if (answer != QMessageBox::Ok)
+                    return false;
+            }
+        }
+    }
+    return true;
 }
 
 bool SimulationWizardBase::preflightVaspPotcar()
@@ -3324,6 +3593,29 @@ core::CalculatorConfig SimulationWizardBase::baseCalculatorConfig() const
                 entry.j = jSpin->value();
                 c.vaspHubbardU.push_back(entry);
             }
+        }
+        if (vaspFunctionalCombo_) {
+            c.vaspFunctional = static_cast<core::VaspFunctional>(
+                vaspFunctionalCombo_->currentData().toInt());
+            // The spin boxes always carry a number, so they are only read as
+            // an OVERRIDE when the functional is a hybrid — otherwise a
+            // semilocal run would record an AEXX it never uses, and a later
+            // switch to a hybrid would silently inherit it.
+            if (core::isHybrid(c.vaspFunctional)) {
+                c.vaspAexx = vaspAexxSpin_ ? vaspAexxSpin_->value() : -1.0;
+                const core::VaspHybridTags tags =
+                    core::vaspHybridTagsFor(c.vaspFunctional);
+                // HFSCREEN is only meaningful — and only written — for a
+                // SCREENED hybrid. Left at -1 for the unscreened ones so the
+                // emitter's own "> 0" test omits the tag.
+                c.vaspHfscreen = (tags.hfscreen > 0.0 && vaspHfscreenSpin_)
+                    ? vaspHfscreenSpin_->value()
+                    : -1.0;
+            }
+        }
+        if (vaspWavecarCombo_) {
+            c.vaspWavecarBaselinePath =
+                vaspWavecarCombo_->currentData().toString().toStdString();
         }
         if (vaspBaselineCombo_) {
             c.vaspChgcarBaselinePath =

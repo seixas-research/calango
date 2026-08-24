@@ -1,5 +1,7 @@
 #include "gui/ElectronicBandsWizard.hpp"
 
+#include <QFileInfo>
+
 #include "gui/GuiUtils.hpp"
 
 #include "core/ElectronicScriptGenerator.hpp"
@@ -660,8 +662,29 @@ void ElectronicBandsWizard::applyPdosKmeshDefault()
 
 QString ElectronicBandsWizard::baselineDensityPathToStage() const
 {
+    // Nothing to stage on the hybrid route: it reads the WAVECAR below, not
+    // a CHGCAR, and staging a density the script never opens would only make
+    // a remote job bigger.
+    if (selectedCalculator() == core::CalculatorKind::Vasp
+        && core::isHybrid(baseCalculatorConfig().vaspFunctional))
+        return {};
     return baselineCombo_ ? baselineCombo_->currentData().toString()
                           : QString();
+}
+
+QString ElectronicBandsWizard::baselineWavecarPathToStage() const
+{
+    if (!baselineCombo_
+        || selectedCalculator() != core::CalculatorKind::Vasp
+        || !core::isHybrid(baseCalculatorConfig().vaspFunctional))
+        return {};
+    const QString chgcar = baselineCombo_->currentData().toString();
+    if (chgcar.isEmpty())
+        return {};
+    const QString wavecar =
+        QFileInfo(chgcar).absolutePath() + QStringLiteral("/WAVECAR");
+    const QFileInfo info(wavecar);
+    return (info.exists() && info.size() >= 4096) ? wavecar : QString();
 }
 
 void ElectronicBandsWizard::calculatorKgridChanged()
@@ -791,6 +814,34 @@ QString ElectronicBandsWizard::generateScript() const
         const QString path = baselineCombo_->currentData().toString();
         if (!path.isEmpty())
             config.baselineDensityPath = path.toStdString();
+    }
+
+    // A HYBRID band structure takes a different route entirely — KPOINTS_OPT
+    // on one self-consistent run, because the VASP wiki forbids the
+    // fixed-density pass every other branch here uses ("never set
+    // ICHARG=11!"). What a baseline can contribute is therefore the ORBITALS,
+    // not the density: VASP recommends starting a hybrid from a converged
+    // semilocal WAVECAR (https://vasp.at/wiki/NiO_HSE06).
+    //
+    // Derived from the selected baseline rather than asked for separately.
+    // The combo already carries that run's CHGCAR path, and its WAVECAR is
+    // the sibling file — a second picker would only let the two disagree.
+    // `baselineDensityPath` is cleared alongside, because the hybrid branch
+    // never reads a CHGCAR and leaving it set would describe a restart that
+    // does not happen.
+    if (config.backend == core::ElectronicBackend::Vasp
+        && core::isHybrid(config.gpaw.vaspFunctional)) {
+        config.baselineWavecarPath.clear();
+        if (!config.baselineDensityPath.empty()) {
+            const QString wavecar =
+                QFileInfo(QString::fromStdString(config.baselineDensityPath))
+                    .absolutePath()
+                + QStringLiteral("/WAVECAR");
+            const QFileInfo info(wavecar);
+            if (info.exists() && info.size() >= 4096)
+                config.baselineWavecarPath = wavecar.toStdString();
+        }
+        config.baselineDensityPath.clear();
     }
 
     return QString::fromStdString(core::generateElectronicScript(config));

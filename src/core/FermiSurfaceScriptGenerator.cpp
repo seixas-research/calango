@@ -1,6 +1,7 @@
 #include "core/FermiSurfaceScriptGenerator.hpp"
 
 #include "core/AseScriptGenerator.hpp"
+#include "core/WannierScriptGenerator.hpp"
 
 #include <algorithm>
 #include <sstream>
@@ -32,6 +33,7 @@ std::string generateFermiSurfaceScript(const FermiSurfaceConfig& cfg)
            "import numpy as np\n"
            "\n"
         << AseScriptGenerator::jsonLoggerPreamble()
+        << wannierHrInterpolatorPreamble()
         << "_base = r\"" << cfg.mlwfDir << "\"\n"
         << "_nx = " << nx << "\n"
         << "_ny = " << ny << "\n"
@@ -51,24 +53,15 @@ if not os.path.exists(_mj):
         'from a completed MLWF localization — point this at one.')
 _meta = json.load(open(_mj))
 
-# A VASP-sourced wannier.json (engine='VASP', gpw=None -- see
-# WannierScriptGenerator.cpp's generateVaspWannier90Script) has no
-# restartable GPAW wavefunction at all: this script re-localizes via
-# ase.dft.wannier.Wannier from a live GPAW object, which a VASP MLWF run
-# never produced (its localization ran entirely inside VASP's own linked
-# Wannier90 library instead). Left unguarded this falls through to the
-# .gpw search below, finds nothing, and reports the generic "recorded no
-# path" message -- true of the field, not the actual reason, and not
-# actionable (Task 4, 2026-08-22; mirrors the identical guard
-# WannierScriptGenerator.cpp's Wannier Interpolation path already has).
-if _meta.get('engine') == 'VASP':
-    raise RuntimeError(
-        'The MLWF run in ' + _base + ' used VASP\'s own Wannier90 library, '
-        'not ase.dft.wannier -- the Fermi surface is not implemented for '
-        'that route yet (see FUTURE.md). Its wannier90_hr.dat / '
-        'wannier_hr.dat already holds H(R); interpolating a Fermi surface '
-        'from it would need a reader for that instead of a GPAW restart.')
+)PY";
 
+    // The engine dispatch, shared verbatim with the Wannier
+    // Interpolation and topological-invariant modules: all three need
+    // exactly H(k), and all three used to get it only from a .gpw.
+    out << wannierHrSetupBlock("the Fermi surface", 2, 4);
+
+    // The GPAW arm, unchanged, one level in under that `else:`.
+    AseScriptGenerator::emitIndented(out, R"PY(
 _gpw_path = _meta.get('gpw')
 if not (_gpw_path and os.path.exists(_gpw_path)):
     _found = sorted(glob.glob(os.path.join(_base, '*.gpw')))
@@ -118,6 +111,9 @@ for _it in range(_max_iter):
 print(f'CALANGO_INFO localization functional = {float(wan.get_functional_value()):.6f}',
       flush=True)
 _calango_progress(2, 4)
+)PY", "    ");
+
+    out << R"PY(
 
 # --- Interpolate onto a 3D k-grid ----------------------------------------
 # Fractional -1/2 .. 1/2, endpoint EXCLUDED: -1/2 and +1/2 are the same k by

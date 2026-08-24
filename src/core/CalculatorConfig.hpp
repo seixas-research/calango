@@ -533,6 +533,142 @@ constexpr const char* toString(SiestaBasisType type)
 /// order.
 enum class VaspAlgo { Normal, Fast, VeryFast, All, Damped };
 
+/// The exchange-correlation FAMILY a VASP run uses: the ordinary semilocal
+/// path, or one of the hybrids (DFT + a fraction of exact Hartree-Fock
+/// exchange).
+///
+/// Append-only — the value is persisted in `.calproj` and workflow documents.
+///
+/// Source for every tag value below: https://vasp.at/wiki/List_of_hybrid_functionals
+enum class VaspFunctional {
+    Semilocal,     ///< no LHFCALC; `vaspXc` alone decides (PBE, PBEsol, …)
+    Hse06,         ///< range-separated, HFSCREEN = 0.2, GGA = PE
+    Hse03,         ///< range-separated, HFSCREEN = 0.3, GGA = PE
+    HseSol,        ///< range-separated, HFSCREEN = 0.2, GGA = PS
+    Pbe0,          ///< unscreened, 25 % exact exchange, GGA = PE
+    B3lyp,         ///< unscreened, the Becke 3-parameter Lee-Yang-Parr form
+    HartreeFock,   ///< AEXX = 1, no DFT exchange or correlation at all
+};
+
+/// The INCAR tag set one VaspFunctional maps to.
+///
+/// TABLE SOURCE: https://vasp.at/wiki/List_of_hybrid_functionals (read
+/// 2026-08-24), cross-checked against the individual tag pages
+/// https://vasp.at/wiki/LHFCALC, /wiki/HFSCREEN, /wiki/AEXX and /wiki/ALGO.
+///
+/// `hfscreen <= 0` means the tag is NOT written — an unscreened hybrid must
+/// not carry HFSCREEN = 0, which is a different thing from its absence only
+/// by luck. `gga` empty means the run keeps whatever `vaspXc` selected.
+struct VaspHybridTags {
+    bool lhfcalc = false;
+    const char* gga = "";   ///< the GGA tag value, "" to leave `vaspXc` alone
+    double aexx = 0.25;
+    double aggax = 0.75;
+    double aggac = 1.0;
+    double aldac = 1.0;
+    double hfscreen = 0.0;  ///< <= 0: do not write HFSCREEN
+};
+
+/// The documented tag set for `functional`. Semilocal returns an all-default
+/// VaspHybridTags with `lhfcalc` false, which every caller reads as "write
+/// none of this".
+///
+/// THE TABLE, transcribed from https://vasp.at/wiki/List_of_hybrid_functionals
+/// row by row. A switch with no default arm: adding a functional to the enum
+/// has to stop compiling until this table names it too, because the failure
+/// mode of a silent fallthrough here is a run that says HSE06 in the UI and
+/// computes PBE0.
+inline VaspHybridTags vaspHybridTagsFor(VaspFunctional functional)
+{
+    VaspHybridTags tags;
+    switch (functional) {
+    case VaspFunctional::Semilocal:
+        return tags; // lhfcalc stays false; nothing below is written
+    case VaspFunctional::Hse06:
+        // LHFCALC = .TRUE. ; GGA = PE ; HFSCREEN = 0.2
+        // (AEXX 0.25, AGGAX 0.75, AGGAC 1, ALDAC 1 are the LHFCALC defaults)
+        tags.lhfcalc = true;
+        tags.gga = "PE";
+        tags.hfscreen = 0.2;
+        return tags;
+    case VaspFunctional::Hse03:
+        // As HSE06 but HFSCREEN = 0.3.
+        tags.lhfcalc = true;
+        tags.gga = "PE";
+        tags.hfscreen = 0.3;
+        return tags;
+    case VaspFunctional::HseSol:
+        // HSEsol: the PBEsol-based screened hybrid — GGA = PS, HFSCREEN = 0.2.
+        tags.lhfcalc = true;
+        tags.gga = "PS";
+        tags.hfscreen = 0.2;
+        return tags;
+    case VaspFunctional::Pbe0:
+        // Unscreened: same mixing as HSE06 with no range separation, so
+        // HFSCREEN is left OUT rather than set to 0.
+        tags.lhfcalc = true;
+        tags.gga = "PE";
+        return tags;
+    case VaspFunctional::B3lyp:
+        // GGA = B3 ; AEXX = 0.2 ; AGGAX = 0.72 ; AGGAC = 0.81 ; ALDAC = 0.19
+        tags.lhfcalc = true;
+        tags.gga = "B3";
+        tags.aexx = 0.2;
+        tags.aggax = 0.72;
+        tags.aggac = 0.81;
+        tags.aldac = 0.19;
+        return tags;
+    case VaspFunctional::HartreeFock:
+        // AEXX = 1, and the wiki's own note on this page: "the default values
+        // when LHFCALC=.TRUE.: ALDAC, AGGAC are set to 0 if AEXX=1". Written
+        // explicitly rather than relied on, so the INCAR says what it does.
+        tags.lhfcalc = true;
+        tags.aexx = 1.0;
+        tags.aggax = 0.0;
+        tags.aggac = 0.0;
+        tags.aldac = 0.0;
+        return tags;
+    }
+    return tags;
+}
+
+/// Human-readable name, for the UI and for a generated script's comment.
+inline const char* toString(VaspFunctional functional)
+{
+    switch (functional) {
+    case VaspFunctional::Semilocal:   return "semilocal";
+    case VaspFunctional::Hse06:       return "HSE06";
+    case VaspFunctional::Hse03:       return "HSE03";
+    case VaspFunctional::HseSol:      return "HSEsol";
+    case VaspFunctional::Pbe0:        return "PBE0";
+    case VaspFunctional::B3lyp:       return "B3LYP";
+    case VaspFunctional::HartreeFock: return "Hartree-Fock";
+    }
+    return "semilocal";
+}
+
+/// The effective AEXX / HFSCREEN for `config`: the user's override when they
+/// set one, the functional's documented default otherwise. One place decides
+/// this, so the UI, the emitter and the pre-flight cannot disagree about what
+/// a run is actually going to use.
+struct CalculatorConfig;
+inline double effectiveAexx(VaspFunctional functional, double override_)
+{
+    return override_ >= 0.0 ? override_ : vaspHybridTagsFor(functional).aexx;
+}
+inline double effectiveHfscreen(VaspFunctional functional, double override_)
+{
+    return override_ >= 0.0 ? override_
+                            : vaspHybridTagsFor(functional).hfscreen;
+}
+
+/// True for everything but VaspFunctional::Semilocal — the question almost
+/// every caller actually asks.
+constexpr bool isHybrid(VaspFunctional functional)
+{
+    return functional != VaspFunctional::Semilocal;
+}
+
 /// Spin treatment for the DFT SCF. Enum order is the "Spin Configurations"
 /// dropdown order in the Single-point wizard.
 enum class SpinMode {
@@ -1031,6 +1167,19 @@ struct CalculatorConfig {
     /// Exchange-correlation set (ASE's `xc`, which expands to GGA/METAGGA plus
     /// the matching defaults).
     std::string vaspXc = "PBE";
+    /// Semilocal, or one of the hybrids. When hybrid, `vaspHybridTagsFor()`
+    /// supplies the tag set and the four mixing parameters below start at its
+    /// values — see VaspFunctional.
+    VaspFunctional vaspFunctional = VaspFunctional::Semilocal;
+    /// AEXX and HFSCREEN as the user may have overridden them. Both start at
+    /// the selected functional's documented default and are only written when
+    /// the functional is a hybrid.
+    ///
+    /// A NEGATIVE value means "use the functional's own default", which is
+    /// what lets a saved document that predates these fields select HSE06 and
+    /// still get HSE06's numbers rather than a zero.
+    double vaspAexx = -1.0;
+    double vaspHfscreen = -1.0;
     VaspRelaxDriver vaspRelaxDriver = VaspRelaxDriver::Ase;
     VaspPrecision vaspPrec = VaspPrecision::Accurate;
     VaspAlgo vaspAlgo = VaspAlgo::Normal;
@@ -1086,6 +1235,18 @@ struct CalculatorConfig {
     /// VASP section for the two-stage collinear -> SOC chain this exists for.
     /// Empty means "converge a fresh SCF here", the pre-existing behaviour.
     std::string vaspChgcarBaselinePath;
+    /// A prior VASP run's WAVECAR, restarted from with ISTART = 1.
+    ///
+    /// The hybrid counterpart of vaspChgcarBaselinePath above, and staged the
+    /// same way (a fixed `baseline.WAVECAR` beside run.py, so a remote job
+    /// finds it). https://vasp.at/wiki/NiO_HSE06: "It is strongly recommended
+    /// to start from a converged PBE calculation (ISTART = 1) before beginning
+    /// with a DFT+HF method" — hybrids converge poorly from scratch, and the
+    /// wiki's own worked example is a two-step flow for exactly that reason.
+    ///
+    /// Empty means a one-shot hybrid run, which stays possible (the user may
+    /// have their own restart) and which the pre-flight warns about.
+    std::string vaspWavecarBaselinePath;
 
     // -- GPAW (DFT) ---------------------------------------------------------
     // planeWaveCutoffEv above is the PW() cutoff; gpawGridSpacing is the FD

@@ -161,6 +161,109 @@ std::string fatbandBlock(const ElectronicConfig& c)
     return out.str();
 }
 
+/// The vasprun.xml projected-DOS parser, as Python.
+///
+/// Shared by the two VASP routes that produce a PDOS, which reach it very
+/// differently: the semilocal one runs a SEPARATE fixed-density pass
+/// (ICHARG = 11) with LORBIT = 11 and parses what that writes, while the
+/// hybrid one cannot — ICHARG = 11 is invalid for a hybrid — and instead
+/// sets LORBIT = 11 on the single self-consistent run it already performs.
+/// Same file, same block, same schema either way; only the run that produced
+/// it differs, so the parser is written once rather than twice.
+std::string vaspPdosParserBlock()
+{
+    std::ostringstream out;
+    out <<
+        "def _calango_shell(_field):\n"
+        "    \"\"\"The angular-momentum shell a VASP partial-DOS field "
+        "belongs to.\n"
+        "\n"
+        "    Almost every lm field name starts with its shell letter (py/pz/"
+        "px,\n"
+        "    dxy/dyz/dz2/dxz, fy3x2/.../fx3), and the non-lm LORBIT = 10 "
+        "fields\n"
+        "    are the bare letters. The exception is d(x2-y2), which VASP "
+        "writes\n"
+        "    as \"x2-y2\" with no leading d.\n"
+        "    \"\"\"\n"
+        "    if _field.startswith((\"x2\", \"dx2\")):\n"
+        "        return \"d\"\n"
+        "    return _field[0]\n"
+        "\n"
+        "try:\n"
+        "    import xml.etree.ElementTree as _ET\n"
+        "\n"
+        "    _partial = _ET.parse(\"vasprun.xml\").getroot().find(\n"
+        "        \".//dos/partial/array\")\n"
+        "    if _partial is None:\n"
+        "        raise RuntimeError(\n"
+        "            \"vasprun.xml has no <dos><partial> block \"\n"
+        "            \"(LORBIT did not take effect?)\")\n"
+        "    _fields = [_f.text.strip()\n"
+        "               for _f in _partial.findall(\"field\")]\n"
+        "    _symbols = atoms.get_chemical_symbols()\n"
+        "    _pdos_energies = None\n"
+        "    _projections = {}\n"
+        "    for _ion, _ion_set in enumerate(\n"
+        "            _partial.find(\"set\").findall(\"set\")):\n"
+        "        _symbol = (_symbols[_ion] if _ion < len(_symbols)\n"
+        "                   else \"?\")\n"
+        "        for _spin_set in _ion_set.findall(\"set\"):\n"
+        "            _rows = [[float(_v) for _v in _r.text.split()]\n"
+        "                     for _r in _spin_set.findall(\"r\")]\n"
+        "            if _pdos_energies is None:\n"
+        "                _pdos_energies = [_row[0] for _row in _rows]\n"
+        "            for _col, _field in enumerate(_fields):\n"
+        "                if _field == \"energy\":\n"
+        "                    continue\n"
+        "                # Summed over m and spin, matching the\n"
+        "                # GPAW branch's per-element-per-shell\n"
+        "                # aggregation. NOT _field[0]: VASP writes\n"
+        "                # d(x2-y2) as bare \"x2-y2\", with no\n"
+        "                # leading d, so the first letter puts a\n"
+        "                # fifth of the d weight into a channel\n"
+        "                # called \"x\" and leaves \"d\" short by\n"
+        "                # exactly that much.\n"
+        "                _key = f\"{_symbol} {_calango_shell(_field)}\"\n"
+        "                _curve = _projections.setdefault(\n"
+        "                    _key, [0.0] * len(_rows))\n"
+        "                for _i, _row in enumerate(_rows):\n"
+        "                    _curve[_i] += _row[_col]\n"
+        "    if _pdos_energies and _projections:\n"
+        "        _n = len(_pdos_energies)\n"
+        "        _bin = ((_pdos_energies[-1] - _pdos_energies[0])\n"
+        "                / (_n - 1)) if _n > 1 else 0.0\n"
+        "        pdos = {\n"
+        "            \"energies\": [float(_v) for _v in _pdos_energies],\n"
+        "            \"efermi\": float(efermi),\n"
+        "            # Already a finished curve on VASP's own\n"
+        "            # ISMEAR/SIGMA-smeared grid, not a raw\n"
+        "            # histogram Calango can re-bin -- so no sigma\n"
+        "            # slider applies (BandPdosWindow.cpp reads\n"
+        "            # \"broadened\", not the literal string\n"
+        "            # \"vasp\", to decide that).\n"
+        "            \"broadened\": True,\n"
+        "            \"integration\": \"vasp\",\n"
+        "            \"bin_width\": float(_bin),\n"
+        "            \"projections\": {\n"
+        "                _k: [float(_v) for _v in _v]\n"
+        "                for _k, _v in _projections.items()},\n"
+        "        }\n"
+        "        print(f\"CALANGO_INFO pdos channels: \"\n"
+        "              f\"{sorted(_projections)} ({_n} points, \"\n"
+        "              f\"VASP's own DOSCAR/vasprun.xml grid)\",\n"
+        "              flush=True)\n"
+        "    else:\n"
+        "        print(\"CALANGO_INFO no PDOS projections were "
+        "produced\",\n"
+        "              flush=True)\n"
+        "except Exception as _e:\n"
+        "    print(f\"CALANGO_WARN could not parse the projected "
+        "DOS from \"\n"
+        "          f\"vasprun.xml ({_e!r})\", flush=True)\n";
+    return out.str();
+}
+
 } // namespace
 
 std::string generateElectronicScript(const ElectronicConfig& c)
@@ -607,6 +710,293 @@ std::string generateElectronicScript(const ElectronicConfig& c)
         // case block needs to agree with the ONE value the user configured.
         const std::string vaspPrec =
             AseScriptGenerator::vaspPrecString(c.gpaw.vaspPrec);
+        // -- Hybrid functionals: KPOINTS_OPT, not ICHARG = 11 ---------------
+        //
+        // ICHARG = 11 is INVALID for a hybrid, and the VASP wiki says so in
+        // as many words: "For hybrid functionals, the Hamiltonian cannot be
+        // expressed in terms of the electronic charge density alone. […] The
+        // electronic charge density must not be fixed for any hybrid
+        // calculation, i.e., never set ICHARG=11!" (Band-structure
+        // calculation using hybrid functionals). A hybrid needs the ORBITALS
+        // on a regular mesh, not just the density, so there is no
+        // fixed-density band pass to run.
+        //
+        // The documented route instead: ONE self-consistent hybrid run on a
+        // uniform mesh, carrying the band path in a KPOINTS_OPT file —
+        // "an optional input file to perform an additional one-shot
+        // calculation after self-consistency is reached", read automatically
+        // when present, available as of VASP 6.3.0 (wiki: KPOINTS_OPT).
+        //
+        // WHAT WAS VERIFIED BY RUNNING VASP 6.6.1, because the wiki does not
+        // say it: the results land in vasprun.xml ONLY, under
+        // <eigenvalues_kpoints_opt>. No EIGENVAL_OPT or DOSCAR_OPT text file
+        // is written, and ASE cannot read that element at all — hence the
+        // subprocess call and the parser below rather than
+        // calc.band_structure().
+        if (isHybrid(c.gpaw.vaspFunctional)) {
+            out << "import subprocess\n"
+                   "import xml.etree.ElementTree as _ET\n"
+                   "import numpy as np\n"
+                   "from ase.spectrum.band_structure import BandStructure\n"
+                   "\n";
+
+            // Wiki step 1: "Run a DFT SCF calculation to obtain a converged
+            // WAVECAR file", then "restart from DFT WAVECAR". Optional, and
+            // it is the ORBITALS that matter here, not the density.
+            if (!c.baselineWavecarPath.empty()) {
+                out << "# The wiki's step 1: restart from a converged "
+                       "semilocal WAVECAR.\n"
+                       "# A hybrid started from random orbitals converges "
+                       "poorly and can\n"
+                       "# land in a different local minimum; the ORBITALS "
+                       "are what carry\n"
+                       "# over, which is why this is a WAVECAR and not the "
+                       "CHGCAR every\n"
+                       "# other branch here stages.\n"
+                    << "_wavecar = (\"baseline.WAVECAR\"\n"
+                       "            if os.path.exists(\"baseline.WAVECAR\")\n"
+                    << "            else r\"" << c.baselineWavecarPath
+                    << "\")\n"
+                       "if not os.path.exists(_wavecar):\n"
+                       "    raise RuntimeError(\n"
+                       "        'The baseline wavefunctions are gone: ' + "
+                       "_wavecar + '\\n'\n"
+                       "        'Re-run the semilocal Single-point "
+                       "Calculation with '\n"
+                       "        'LWAVE = .TRUE., or clear the baseline to let "
+                       "this hybrid '\n"
+                       "        'converge from scratch.')\n"
+                       "if os.path.getsize(_wavecar) < 4096:\n"
+                       "    raise RuntimeError(\n"
+                       "        'The baseline WAVECAR is only %d bytes — it "
+                       "holds no '\n"
+                       "        'orbitals. VASP creates the file at startup "
+                       "and fills it at '\n"
+                       "        'the end, so a run that died leaves one "
+                       "behind that exists '\n"
+                       "        'and is empty.' % os.path.getsize(_wavecar))\n"
+                       "if os.path.abspath(_wavecar) != "
+                       "os.path.abspath('WAVECAR'):\n"
+                       "    shutil.copyfile(_wavecar, 'WAVECAR')\n"
+                       "print('CALANGO_INFO restarting the hybrid from ' + "
+                       "_wavecar, flush=True)\n"
+                       "\n";
+            } else {
+                out << "# No semilocal baseline was selected. The wiki "
+                       "recommends starting a\n"
+                       "# hybrid from a converged DFT WAVECAR "
+                       "(https://vasp.at/wiki/NiO_HSE06);\n"
+                       "# from scratch this converges more slowly and can "
+                       "land elsewhere.\n"
+                       "print('CALANGO_WARN this hybrid starts from scratch "
+                       "— VASP recommends '\n"
+                       "      'restarting from a converged semilocal WAVECAR "
+                       "(select a '\n"
+                       "      'Single-point baseline that ran with LWAVE = "
+                       ".TRUE.)', flush=True)\n"
+                       "\n";
+            }
+
+            out << "# ONE self-consistent hybrid run. KPOINTS holds the "
+                   "UNIFORM mesh —\n"
+                   "# the wiki is explicit that \"the KPOINTS file must "
+                   "contain a uniform\n"
+                   "# k mesh, when the KPOINTS_OPT file should be used "
+                   "afterward\" — and\n"
+                   "# the band path travels separately, below.\n"
+                << "hybrid = Vasp(xc=\"PBE\", encut=" << c.ecutEv << ",\n"
+                   "              kpts=(kgrid, kgrid, kgrid), gamma=True,\n"
+                   "              ismear=0, sigma=0.05,\n"
+                << "              prec=\"" << vaspPrec << "\",\n"
+                << AseScriptGenerator::vaspHybridKeywords(c.gpaw,
+                                                          "              ")
+                // https://vasp.at/wiki/ALGO: the direct optimizers are the
+                // supported ones for a hybrid; Normal/VeryFast are not.
+                << "              algo=\"All\", time=0.4, precfock=\"Fast\",\n"
+                   // https://vasp.at/wiki/HFRCUT, and the band-structure page
+                   // recommends it specifically: "By default VASP uses
+                   // auxiliary functions (HFALPHA) for the truncation of the
+                   // Coulomb singularity, but this method leads to
+                   // discontinuities in band-structure calculations. We
+                   // recommend using the Coulomb truncation (HFRCUT)
+                   // instead. In particular, HFRCUT=-1 converges best for
+                   // systems with a band gap."
+                   "              # HFRCUT = -1: Coulomb truncation rather "
+                   "than VASP's default\n"
+                   "              # auxiliary functions, which \"leads to "
+                   "discontinuities in\n"
+                   "              # band-structure calculations\" "
+                   "(https://vasp.at/wiki/HFRCUT and\n"
+                   "              # the hybrid band-structure page). Note it "
+                   "converges best for\n"
+                   "              # GAPPED systems; HFRCUT = 0 is the faster "
+                   "choice for a metal.\n"
+                   "              hfrcut=-1,\n"
+                << AseScriptGenerator::vaspHubbardKeywords(c.gpaw,
+                                                           "              ");
+            if (c.pdos) {
+                // LORBIT = 11 on the SCF run itself, not on a second pass.
+                // The semilocal route runs a separate fixed-density job for
+                // this; a hybrid cannot (ICHARG = 11 is invalid for one) and
+                // does not need to -- it is already converging on a uniform
+                // mesh, which is exactly what a DOS wants, and a hybrid SCF
+                // is far too expensive to run twice.
+                //
+                // The consequence is worth knowing and is documented: the
+                // PDOS mesh is the SCF mesh, so the wizard's own
+                // "PDOS k-points" setting does not apply on this route.
+                out << "              # LORBIT = 11: lm-decomposed PROCAR + "
+                       "DOSCAR, on the SCF\n"
+                       "              # mesh this run is already converging "
+                       "on. The semilocal route\n"
+                       "              # runs a second ICHARG = 11 pass for "
+                       "this; a hybrid cannot,\n"
+                       "              # and a second hybrid SCF would cost as "
+                       "much as the first.\n"
+                       "              lorbit=11,\n";
+            }
+            out << "              directory=\".\")\n"
+                   "hybrid.write_input(atoms)\n"
+                   "\n";
+
+            out << "# The band path, as an EXPLICIT k-point list rather than "
+                   "line mode.\n"
+                   "#\n"
+                   "# Line mode would make VASP interpolate its own points, "
+                   "and the linear\n"
+                   "# x-axis and special-point positions the viewer draws "
+                   "would then have\n"
+                   "# to be re-derived from whatever it chose. An explicit "
+                   "list comes back\n"
+                   "# EXACTLY as given — same count, same order, no symmetry "
+                   "folding\n"
+                   "# (verified against VASP 6.6.1) — so `bandpath` stays the "
+                   "single\n"
+                   "# source of truth for the geometry of the plot.\n"
+                   "#\n"
+                   "# The trailing weight is not load-bearing: KPOINTS_OPT "
+                   "points never\n"
+                   "# enter the SCF (the whole file is a one-shot AFTER "
+                   "self-consistency),\n"
+                   "# and VASP renormalizes them anyway.\n"
+                   "with open('KPOINTS_OPT', 'w') as _fh:\n"
+                   "    _fh.write('Calango band path (explicit list)\\n')\n"
+                   "    _fh.write('%d\\n' % len(bandpath.kpts))\n"
+                   "    _fh.write('Reciprocal\\n')\n"
+                   "    for _k in bandpath.kpts:\n"
+                   "        _fh.write('  %.10f  %.10f  %.10f  1\\n' % "
+                   "tuple(_k))\n"
+                   "print('CALANGO_INFO KPOINTS_OPT: %d band-path k-points' % "
+                   "len(bandpath.kpts),\n"
+                   "      flush=True)\n"
+                   "_calango_progress(2, 4)\n"
+                   "\n";
+
+            out << "# ASE's own run() would parse OUTCAR afterwards and knows "
+                   "nothing\n"
+                   "# about <eigenvalues_kpoints_opt>, so the binary is "
+                   "invoked directly\n"
+                   "# and the result read below.\n"
+                   "_command = (os.environ.get('ASE_VASP_COMMAND')\n"
+                   "            or os.environ.get('VASP_COMMAND')\n"
+                   "            or 'vasp_std')\n"
+                   "print('CALANGO_INFO running: ' + _command, flush=True)\n"
+                   "_proc = subprocess.run(_command, shell=True, "
+                   "capture_output=True,\n"
+                   "                       text=True)\n"
+                   "with open('vasp.out', 'w') as _fh:\n"
+                   "    _fh.write(_proc.stdout)\n"
+                   "if _proc.stderr:\n"
+                   "    with open('vasp.err', 'w') as _fh:\n"
+                   "        _fh.write(_proc.stderr)\n"
+                   "# VASP spells its warning banner with spaces between the "
+                   "letters, so a\n"
+                   "# plain grep for 'warning' finds nothing in a run that "
+                   "emitted several.\n"
+                   "for _line in _proc.stdout.splitlines():\n"
+                   "    if 'W A R N I N G' in _line or 'internal error' in "
+                   "_line.lower():\n"
+                   "        print('CALANGO_WARN VASP: ' + _line.strip(), "
+                   "flush=True)\n"
+                   "if _proc.returncode != 0:\n"
+                   "    raise RuntimeError(\n"
+                   "        'VASP exited %d during the hybrid run. The last "
+                   "lines of its '\n"
+                   "        'output:\\n%s' % (_proc.returncode,\n"
+                   "                          '\\n'.join("
+                   "_proc.stdout.splitlines()[-20:]) or '(none)'))\n"
+                   "_calango_progress(3, 4)\n"
+                   "\n";
+
+            out << R"PY(# --- Read the one-shot eigenvalues back ------------------------------
+# vasprun.xml is the ONLY place they land: VASP 6.6.1 writes no
+# EIGENVAL_OPT / DOSCAR_OPT text file (verified by running it), and ASE has
+# no reader for this element.
+_root = _ET.parse('vasprun.xml').getroot()
+_node = _root.find('.//eigenvalues_kpoints_opt')
+if _node is None:
+    raise RuntimeError(
+        'VASP finished but wrote no <eigenvalues_kpoints_opt> block to '
+        'vasprun.xml, so the band path was never evaluated. KPOINTS_OPT is '
+        'available as of VASP 6.3.0 - an older binary ignores the file '
+        'silently. Check the VASP version in OUTCAR\'s first line, and that '
+        'LKPOINTS_OPT was not set to .FALSE.')
+
+_got = np.array([[float(_v) for _v in _e.text.split()]
+                 for _e in _node.find("kpoints/varray[@name='kpointlist']")])
+_want = np.asarray(bandpath.kpts, dtype=float)
+# An explicit list comes back untouched. If it ever does not - a future VASP
+# folding the optional list by symmetry, say - the x-axis below would silently
+# describe different k-points than the energies beside it, so this is a hard
+# error rather than a warning.
+if _got.shape != _want.shape or not np.allclose(_got, _want, atol=1e-6):
+    raise RuntimeError(
+        'VASP returned %d k-points for the %d-point band path, or returned '
+        'them in a different order. The linear axis and the energies would '
+        'no longer describe the same path. Re-run with ISYM = 0.'
+        % (len(_got), len(_want)))
+
+# <set comment="spin N"> / <set comment="kpoint M"> / <r>eigenvalue</r>
+_energies = np.array(
+    [[[float(_r.text.split()[0]) for _r in _kset] for _kset in _sset]
+     for _sset in _node.find('eigenvalues/array/set')], dtype=float)
+
+# The Fermi level of the SELF-CONSISTENT run, which is the meaningful zero:
+# the <dos> element with no comment. VASP also stamps one onto the
+# kpoints_opt block and the two agreed exactly in every run checked, so
+# either is usable and the SCF one is preferred on principle.
+efermi = None
+for _dos in _root.iter('dos'):
+    _item = _dos.find("i[@name='efermi']")
+    if _item is None:
+        continue
+    if _dos.get('comment') is None:
+        efermi = float(_item.text)
+        break
+    if efermi is None:
+        efermi = float(_item.text)
+if efermi is None:
+    raise RuntimeError('vasprun.xml records no Fermi level.')
+efermi = float(efermi)
+
+bs = BandStructure(path=bandpath, energies=_energies, reference=efermi)
+print('CALANGO_INFO hybrid bands: %d spin(s) x %d k-points x %d bands'
+      % _energies.shape, flush=True)
+)PY";
+            if (c.pdos) {
+                out << "\n"
+                       "# The projected DOS from the SAME vasprun.xml — "
+                       "LORBIT = 11 was set\n"
+                       "# on the hybrid run above, so this is the hybrid's "
+                       "own projection on\n"
+                       "# its SCF mesh (the wizard's PDOS k-point setting "
+                       "does not apply\n"
+                       "# here; there is no second pass to give it to).\n"
+                    << vaspPdosParserBlock();
+            }
+            break;
+        }
+
         if (!c.baselineDensityPath.empty()) {
             // The whole point of the baseline: no SCF here at all. VASP reads
             // the converged density from the CHGCAR of a prior single point
@@ -756,75 +1146,7 @@ std::string generateElectronicScript(const ElectronicConfig& c)
                    "                directory=\".\")\n"
                    "atoms.calc = dos_calc\n"
                    "atoms.get_potential_energy()\n"
-                   "try:\n"
-                   "    import xml.etree.ElementTree as _ET\n"
-                   "\n"
-                   "    _partial = _ET.parse(\"vasprun.xml\").getroot().find(\n"
-                   "        \".//dos/partial/array\")\n"
-                   "    if _partial is None:\n"
-                   "        raise RuntimeError(\n"
-                   "            \"vasprun.xml has no <dos><partial> block \"\n"
-                   "            \"(LORBIT did not take effect?)\")\n"
-                   "    _fields = [_f.text.strip()\n"
-                   "               for _f in _partial.findall(\"field\")]\n"
-                   "    _symbols = atoms.get_chemical_symbols()\n"
-                   "    _pdos_energies = None\n"
-                   "    _projections = {}\n"
-                   "    for _ion, _ion_set in enumerate(\n"
-                   "            _partial.find(\"set\").findall(\"set\")):\n"
-                   "        _symbol = (_symbols[_ion] if _ion < len(_symbols)\n"
-                   "                   else \"?\")\n"
-                   "        for _spin_set in _ion_set.findall(\"set\"):\n"
-                   "            _rows = [[float(_v) for _v in _r.text.split()]\n"
-                   "                     for _r in _spin_set.findall(\"r\")]\n"
-                   "            if _pdos_energies is None:\n"
-                   "                _pdos_energies = [_row[0] for _row in _rows]\n"
-                   "            for _col, _field in enumerate(_fields):\n"
-                   "                if _field == \"energy\":\n"
-                   "                    continue\n"
-                   "                # Every VASP partial-DOS field name for\n"
-                   "                # p/d/f starts with its shell letter\n"
-                   "                # (py/pz/px, dxy/.../dx2, f-3/...); s is\n"
-                   "                # already just \"s\" -- summed over m and\n"
-                   "                # spin, matching the GPAW branch's own\n"
-                   "                # per-element-per-shell aggregation.\n"
-                   "                _key = f\"{_symbol} {_field[0]}\"\n"
-                   "                _curve = _projections.setdefault(\n"
-                   "                    _key, [0.0] * len(_rows))\n"
-                   "                for _i, _row in enumerate(_rows):\n"
-                   "                    _curve[_i] += _row[_col]\n"
-                   "    if _pdos_energies and _projections:\n"
-                   "        _n = len(_pdos_energies)\n"
-                   "        _bin = ((_pdos_energies[-1] - _pdos_energies[0])\n"
-                   "                / (_n - 1)) if _n > 1 else 0.0\n"
-                   "        pdos = {\n"
-                   "            \"energies\": [float(_v) for _v in _pdos_energies],\n"
-                   "            \"efermi\": float(efermi),\n"
-                   "            # Already a finished curve on VASP's own\n"
-                   "            # ISMEAR/SIGMA-smeared grid, not a raw\n"
-                   "            # histogram Calango can re-bin -- so no sigma\n"
-                   "            # slider applies (BandPdosWindow.cpp reads\n"
-                   "            # \"broadened\", not the literal string\n"
-                   "            # \"vasp\", to decide that).\n"
-                   "            \"broadened\": True,\n"
-                   "            \"integration\": \"vasp\",\n"
-                   "            \"bin_width\": float(_bin),\n"
-                   "            \"projections\": {\n"
-                   "                _k: [float(_v) for _v in _v]\n"
-                   "                for _k, _v in _projections.items()},\n"
-                   "        }\n"
-                   "        print(f\"CALANGO_INFO pdos channels: \"\n"
-                   "              f\"{sorted(_projections)} ({_n} points, \"\n"
-                   "              f\"VASP's own DOSCAR/vasprun.xml grid)\",\n"
-                   "              flush=True)\n"
-                   "    else:\n"
-                   "        print(\"CALANGO_INFO no PDOS projections were "
-                   "produced\",\n"
-                   "              flush=True)\n"
-                   "except Exception as _e:\n"
-                   "    print(f\"CALANGO_WARN could not parse the projected "
-                   "DOS from \"\n"
-                   "          f\"vasprun.xml ({_e!r})\", flush=True)\n";
+                << vaspPdosParserBlock();
         }
         break;
     }

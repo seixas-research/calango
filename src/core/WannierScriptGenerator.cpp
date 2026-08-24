@@ -286,7 +286,23 @@ std::string generateVaspWannier90Script(const WannierConfig& cfg)
            "                   'unavailable to Boltzmann Transport / Berry "
            "Phase / cRPA.')\n"
            "\n"
+           // The Fermi level travels with the run: every downstream consumer
+           // of H(R) (interpolation, Fermi surface, topology) needs a zero of
+           // energy, and once the .gpw is out of the picture there is nowhere
+           // else to get it from. VASP's own value, as ASE reads it out of
+           // OUTCAR/vasprun.xml.
+           "try:\n"
+           "    efermi = float(atoms.calc.get_fermi_level())\n"
+           "except Exception as _exc:  # no calculator state, or an older ASE\n"
+           "    efermi = None\n"
+           "    _calango_event('warning',\n"
+           "                   'Fermi level unavailable (%s) — downstream '\n"
+           "                   'interpolation will assume 0 eV.' % _exc)\n"
+           "else:\n"
+           "    _calango_event('info', 'Fermi level: %.4f eV' % efermi)\n"
+           "\n"
         << "result = {\n"
+           "    'efermi': efermi,\n"
            "    'total_spread': total_spread,\n"
            "    'functional_value': None,  # not computed on the VASP/\n"
            "                                # Wannier90 path; None -> JSON\n"
@@ -610,7 +626,18 @@ std::string generateWannierScript(const WannierConfig& cfg)
     // `projection` records the trial-orbital seed so the Wannier band
     // interpolation can rebuild the same localization from the saved .gpw.
     std::ostringstream tail;
-    tail << "result = {\n"
+    // Recorded for the same reason the VASP path records it: H(R) is a
+    // hopping table with no zero of energy attached, and every consumer of it
+    // needs one. GPAW consumers can also reopen the .gpw for it, so a failure
+    // here is a warning rather than an error.
+    tail << "try:\n"
+            "    efermi = float(calc.get_fermi_level())\n"
+            "except Exception as _exc:\n"
+            "    efermi = None\n"
+            "    _calango_event('warning',\n"
+            "                   'Fermi level unavailable (%s).' % _exc)\n"
+            "result = {\n"
+            "    'efermi': efermi,\n"
             "    'total_spread': total_spread,\n"
             "    'functional_value': functional_value,\n"
             // The interpolation re-runs the SAME localization from the SAME
@@ -644,6 +671,151 @@ std::string generateWannierScript(const WannierConfig& cfg)
         + tail.str();
 }
 
+std::string wannierHrInterpolatorPreamble()
+{
+    // Kept as a raw string: it is ordinary Python with no interpolated C++
+    // values, and the escaping tax of the "line"\n" style buys nothing here.
+    return R"PY(
+class _HrHamiltonian:
+    """H(k) from a wannier90 `_hr.dat`, with ase.dft.wannier's interface.
+
+    Exposes get_hamiltonian_kpoint(kpt) so a consumer written against
+    ase.dft.wannier.Wannier works unchanged on a VASP-sourced localization.
+    """
+
+    def __init__(self, path):
+        with open(path) as _fh:
+            _lines = [_l for _l in _fh.read().splitlines()]
+        # Line 0 is a free-form comment (wannier90 writes a timestamp).
+        self.comment = _lines[0].strip()
+        self.num_wann = int(_lines[1].split()[0])
+        self.nrpts = int(_lines[2].split()[0])
+        # Degeneracies: nrpts integers, 15 per line. They count the
+        # Wigner-Seitz images a given R stands for; dividing them out is
+        # not optional - skipping it misweights every zone-boundary hopping.
+        _deg = []
+        _i = 3
+        while len(_deg) < self.nrpts:
+            _deg.extend(int(_t) for _t in _lines[_i].split())
+            _i += 1
+        _deg = np.asarray(_deg[:self.nrpts], dtype=float)
+        _want = self.num_wann * self.num_wann * self.nrpts
+        _rows = np.asarray(
+            [[float(_t) for _t in _l.split()]
+             for _l in _lines[_i:_i + _want] if _l.strip()],
+            dtype=float)
+        if _rows.shape[0] != _want:
+            raise RuntimeError(
+                '%s is truncated: expected %d hopping rows for '
+                'num_wann=%d, nrpts=%d, found %d.'
+                % (path, _want, self.num_wann, self.nrpts, _rows.shape[0]))
+        # Row order in the file is R slowest, then n, then m fastest - so a
+        # (nrpts, n, m) reshape, transposed to the (m, n) convention
+        # ase.dft.wannier's get_hopping() returns.
+        _h = _rows.reshape(self.nrpts, self.num_wann, self.num_wann, 7)
+        self.r_vectors = _rows[::self.num_wann * self.num_wann, 0:3].astype(int)
+        _hop = _h[..., 5] + 1j * _h[..., 6]
+        self.hoppings = np.transpose(_hop, (0, 2, 1)) / _deg[:, None, None]
+
+    def get_hamiltonian_kpoint(self, kpt):
+        """H(k) = sum_R e^{2 pi i k.R} H(R) / deg(R), Hermitized."""
+        _phase = np.exp(2j * np.pi * (self.r_vectors @ np.asarray(kpt, float)))
+        _hk = np.tensordot(_phase, self.hoppings, axes=(0, 0))
+        # Numerically symmetric rather than merely nearly so: the eigenvalues
+        # feed a band structure, and eigh on a slightly non-Hermitian matrix
+        # silently reads only one triangle.
+        return 0.5 * (_hk + _hk.conj().T)
+
+
+def _hr_hermiticity_report(wan):
+    """Warn if H(R) and H(-R) are not conjugate transposes of one another."""
+    _index = {tuple(int(_v) for _v in _r): _i
+              for _i, _r in enumerate(wan.r_vectors)}
+    _worst = 0.0
+    for _r, _i in list(_index.items())[:64]:
+        _j = _index.get(tuple(-_v for _v in _r))
+        if _j is None:
+            continue
+        _worst = max(_worst, float(np.max(np.abs(
+            wan.hoppings[_i] - wan.hoppings[_j].conj().T))))
+    return _worst
+)PY";
+}
+std::string wannierHrSetupBlock(const std::string& module, int progressStage,
+                                int progressTotal)
+{
+    std::ostringstream out;
+    out << R"PY(
+# --- Where does H(k) come from? ------------------------------------------
+# Two sources, and the choice is made by what the run actually left behind
+# rather than by engine name. A GPAW-sourced run reopens its .gpw and
+# rebuilds the ase.dft.wannier localization. A VASP-sourced one has no
+# restartable wavefunction at all (engine='VASP', gpw=None -- see
+# WannierScriptGenerator.cpp's generateVaspWannier90Script), but VASP's own
+# linked Wannier90 library already wrote the real-space Hamiltonian to
+# wannier90_hr.dat, which carries exactly the same information: H(R), and
+# therefore H(k) at any k. Reading that file is what turned this module
+# from "not implemented for VASP" into an engine-agnostic one.
+_hr = _meta.get('hr')
+if _hr and not os.path.isabs(_hr):
+    _hr = os.path.join(_base, _hr)
+_use_hr = bool(_hr and os.path.exists(_hr)) and not _meta.get('gpw')
+if _meta.get('engine') == 'VASP' and not _use_hr:
+    raise RuntimeError(
+        'The MLWF run in ' + _base + ' used VASP\'s own Wannier90 library, so '
+)PY";
+    out << "        '" << module
+        << " reads its real-space Hamiltonian '\n";
+    out << R"PY(        '(wannier_hr.dat) rather than restarting a wavefunction file -- '
+        + ('but that file is not in the run directory. '
+           if _meta.get('hr') else
+           'but that run recorded none: VASP wrote no wannier90_hr.dat, which '
+           'means LWANNIER90 produced no Hamiltonian. ')
+        + 'Re-run the MLWF calculation and check OUTCAR / wannier90.wout.')
+
+if _use_hr:
+    from ase import Atoms
+    wan = _HrHamiltonian(_hr)
+    nwannier = wan.num_wann
+    _cell = np.asarray(_meta.get('cell'), dtype=float)
+    if _cell.shape != (3, 3):
+        raise RuntimeError(
+            'wannier.json in ' + _base + ' records no 3x3 cell. H(R) is a '
+            'table indexed by INTEGER lattice vectors and is meaningless '
+            'without the lattice they index -- re-run the MLWF calculation.')
+    # No positions: nothing downstream needs them, and inventing atoms to
+    # fill a cell would be a lie about what the run contained. The cell is
+    # what the band path and the reciprocal mesh are built from.
+    atoms = Atoms(cell=_cell, pbc=True)
+    # Without a zero of energy every band and every Fermi surface is offset
+    # by an unknown constant, so a missing E_F is said out loud rather than
+    # quietly defaulted -- 0 eV looks like a converged reference.
+    efermi = _meta.get('efermi')
+    if efermi is None:
+        efermi = 0.0
+        _calango_event('warning',
+                       'The MLWF run recorded no Fermi level; energies are '
+                       'referenced to 0 eV, not to E_F.')
+    else:
+        efermi = float(efermi)
+    # H(-R) must be H(R) conjugate-transposed. A failure means the file is
+    # wrong in a way no consumer downstream would notice on its own.
+    _worst = _hr_hermiticity_report(wan)
+    if _worst > 1e-6:
+        _calango_event('warning',
+                       'H(R) is not Hermitian to 1e-6 (worst %.2e) -- the '
+                       'interpolated result is suspect.' % _worst)
+    _calango_event('info',
+                   'H(R): %d Wannier functions, %d R-vectors, from %s'
+                   % (wan.num_wann, wan.nrpts, os.path.basename(_hr)))
+)PY";
+    // Nothing to localize on this route -- H(R) IS the converged answer --
+    // so the arm reaches the GPAW arm's post-localization stage at once.
+    out << "    _calango_progress(" << progressStage << ", " << progressTotal
+        << ")\n"
+           "else:\n";
+    return out.str();
+}
 std::string generateWannierInterpolationScript(
     const std::string& mlwfDir, const WannierInterpolationConfig& cfg)
 {
@@ -661,6 +833,7 @@ std::string generateWannierInterpolationScript(
            "import numpy as np\n"
            "\n"
         << AseScriptGenerator::jsonLoggerPreamble()
+        << wannierHrInterpolatorPreamble()
         << "_base = r\"" << mlwfDir << "\"\n"
            "\n"
            "# --- Locate the MLWF run's inputs ---------------------------------\n"
@@ -678,28 +851,19 @@ std::string generateWannierInterpolationScript(
            "run\\'s '\n"
            "        'summary — point this at a COMPLETED MLWF job.')\n"
            "_meta = json.load(open(_mj))\n"
-           "\n"
-           "# A VASP-sourced wannier.json (engine='VASP', gpw=None — see\n"
-           "# generateVaspWannier90Script) has no restartable wavefunction file\n"
-           "# at all: its H(k) came from VASP's own linked Wannier90 library, not\n"
-           "# from ase.dft.wannier, so there is nothing here to rebuild the\n"
-           "# localization from. Left unguarded this falls through to the .gpw\n"
-           "# search below, finds nothing, and reports 'that run predates\n"
-           "# Calango recording the path' — true of the field, false of the\n"
-           "# reason, and not actionable. Caught explicitly instead.\n"
-           "if _meta.get('engine') == 'VASP':\n"
-           "    raise RuntimeError(\n"
-           "        'The MLWF run in ' + _base + ' used VASP\\'s own Wannier90 "
-           "library, '\n"
-           "        'not ase.dft.wannier — band interpolation from that route is "
-           "not '\n"
-           "        'implemented yet (see FUTURE.md). Its wannier90_hr.dat / "
-           "wannier_hr.dat '\n"
-           "        'already holds H(R); interpolating H(k) from it would need a "
-           "reader '\n"
-           "        'for that instead of a GPAW restart.')\n"
-           "\n"
-           "# Resolution order: the path the MLWF run recorded, then any .gpw\n"
+           "\n";
+
+    // The engine dispatch, shared verbatim with the Fermi-surface and
+    // topological-invariant modules — all three need exactly H(k) and got it
+    // three identical ways.
+    out << wannierHrSetupBlock("band interpolation", 2, 4);
+
+    // The GPAW arm, unchanged, collected into its own stream so it can be
+    // re-emitted one level in under that `else:`. Indenting ~110 lines of
+    // Python by hand inside C++ string literals is exactly how a block like
+    // this gets silently broken.
+    std::ostringstream gpaw;
+    gpaw << "# Resolution order: the path the MLWF run recorded, then any .gpw\n"
            "# sitting in its directory (which is where a fresh-SCF MLWF puts\n"
            "# wannier.gpw).\n"
            "_gpw_path = _meta.get('gpw')\n"
@@ -773,19 +937,19 @@ std::string generateWannierInterpolationScript(
 
     // INNER (frozen) window → fixedenergy.
     if (cfg.useInnerWindow) {
-        out << "# NOTE: ASE measures fixedenergy from the CONDUCTION BAND "
+        gpaw << "# NOTE: ASE measures fixedenergy from the CONDUCTION BAND "
                "MINIMUM when\n"
                "# the system has a gap (> 0.01 eV) and the value is >= 0.01 "
                "eV; from the\n"
                "# Fermi level otherwise.\n"
             << "_fixedenergy = " << cfg.innerWindowEv << "\n";
     } else {
-        out << "_fixedenergy = None\n";
+        gpaw << "_fixedenergy = None\n";
     }
 
     // OUTER window → nbands, resolved from the eigenvalues at run time.
     if (cfg.useOuterWindow) {
-        out << "_outer = " << cfg.outerWindowEv << "  # eV above E_F\n"
+        gpaw << "_outer = " << cfg.outerWindowEv << "  # eV above E_F\n"
             << R"PY(# Count the bands that stay below the outer cutoff. The MAXIMUM over
 # k-points is taken, not the minimum: nbands is a single number for the
 # whole calculation, and truncating to the smallest k-point's count would
@@ -803,12 +967,12 @@ _calango_event('info',
                % (_outer, _nbands, _eps_kn.shape[1]))
 )PY";
     } else {
-        out << "_nbands = None  # every band the calculator holds\n";
+        gpaw << "_nbands = None  # every band the calculator holds\n";
     }
-    out << "wan = Wannier(nwannier=nwannier, calc=calc, "
+    gpaw << "wan = Wannier(nwannier=nwannier, calc=calc, "
            "initialwannier=projection,\n"
            "              fixedenergy=_fixedenergy, nbands=_nbands)\n";
-    out << "_prev = None\n"
+    gpaw << "_prev = None\n"
            "for _it in range(50):\n"
            "    wan.localize(step=0.25, tolerance=1e-6)\n"
            "    _val = float(wan.get_functional_value())\n"
@@ -816,6 +980,11 @@ _calango_event('info',
            "        break\n"
            "    _prev = _val\n"
            "_calango_progress(2, 4)\n";
+
+    // wannierHrSetupBlock() above ended on a bare `else:`; this is its arm.
+    // From here down nothing knows which engine ran.
+    AseScriptGenerator::emitIndented(out, gpaw.str(), "    ");
+
 
     // --- Band structure along the requested path --------------------------
     if (!cfg.kpath.empty()) {

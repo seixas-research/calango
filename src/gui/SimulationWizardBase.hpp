@@ -84,6 +84,30 @@ public:
     /// selection.
     virtual QString baselineDensityPathToStage() const;
 
+    /// The absolute path to a prior VASP run's WAVECAR this run restarts from
+    /// (ISTART = 1), or empty. The hybrid counterpart of
+    /// baselineDensityPathToStage() above, staged the same way by
+    /// MainWindow::stageJob() under the fixed name `baseline.WAVECAR`.
+    ///
+    /// A SEPARATE hook rather than a second use of the density one: a hybrid
+    /// second stage restarts from ORBITALS while a bands run restarts from a
+    /// DENSITY, the two files are different, and a run can legitimately want
+    /// both (a hybrid band structure on a converged density).
+    virtual QString baselineWavecarPathToStage() const;
+
+    /// Completed VASP runs that left a usable WAVECAR, for the calculator
+    /// group's "Restart from WAVECAR" combo — the hybrid chain VASP itself
+    /// recommends (https://vasp.at/wiki/NiO_HSE06). Fed generically by
+    /// MainWindow::runSimulationWizard(), so every wizard that shows a VASP
+    /// calculator stage gets it without its own plumbing.
+    void setVaspWavecarBaselines(
+        const QList<QPair<QString, QString>>& baselines);
+
+    /// Whether the calculator group offers that combo at all. False for a
+    /// wizard that already selects its parent run somewhere else — offering
+    /// two controls for one thing only lets them disagree.
+    virtual bool showsVaspWavecarRow() const { return true; }
+
     /// Populate the VASP group's "Restart from a converged CHGCAR" combo
     /// (completed VASP Single-point runs; label, absolute CHGCAR path) —
     /// the SOC workflow's second stage. A no-op before the VASP group is
@@ -141,6 +165,13 @@ public:
     /// selected (baselineDensityPathToStage() empty) or its provenance is
     /// unreadable — nothing to compare against either way.
     bool preflightVaspHubbardConsistency();
+    /// Warns (never refuses) about the two ways a hybrid run goes wrong
+    /// before it starts: no converged orbitals to restart from, and a WAVECAR
+    /// whose plane-wave cutoff differs from this run's. Both are judgment
+    /// calls a user may legitimately overrule; both are silent disasters if
+    /// nobody says them out loud. A no-op for every non-VASP engine and for a
+    /// semilocal VASP run.
+    bool preflightVaspHybrid();
 
     /// Shared body of a baseline picker's change handler: read the provenance
     /// sidecar next to the selected .gpw (the combo's currentData) and render
@@ -829,6 +860,15 @@ private:
     /// selection ("None — converge here") means the pre-existing behaviour:
     /// a fresh SCF.
     QComboBox* vaspBaselineCombo_ = nullptr;
+    /// The Functional block — see buildVaspGroup(). The mixing rows are
+    /// hidden for a semilocal selection and HFSCREEN additionally for an
+    /// unscreened hybrid, so the page never shows a control the generated
+    /// INCAR will not carry.
+    QComboBox* vaspFunctionalCombo_ = nullptr;
+    QDoubleSpinBox* vaspAexxSpin_ = nullptr;
+    QDoubleSpinBox* vaspHfscreenSpin_ = nullptr;
+    QCheckBox* vaspHybridChainCheck_ = nullptr;
+    QComboBox* vaspWavecarCombo_ = nullptr;
     /// SAXIS — only written when Spin Configurations above is set to
     /// Non-Collinear; shown whenever the VASP group itself is, with a
     /// tooltip saying so, rather than adding cross-widget visibility wiring

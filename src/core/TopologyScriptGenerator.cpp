@@ -1,6 +1,7 @@
 #include "core/TopologyScriptGenerator.hpp"
 
 #include "core/AseScriptGenerator.hpp"
+#include "core/WannierScriptGenerator.hpp"
 
 #include <algorithm>
 #include <sstream>
@@ -12,6 +13,7 @@ std::string generateTopologyScript(const TopologyConfig& cfg)
     const int direction = std::clamp(cfg.direction, 0, 2);
     const bool wantChern = cfg.invariant != TopologicalInvariant::Z2;
     const bool wantZ2 = cfg.invariant != TopologicalInvariant::Chern;
+    const int loopSamples = std::max(9, cfg.loopSamples);
 
     std::ostringstream out;
     out << "# Topological invariants from the hybrid Wannier centre flow —\n"
@@ -29,36 +31,31 @@ std::string generateTopologyScript(const TopologyConfig& cfg)
            "import numpy as np\n"
            "\n"
         << AseScriptGenerator::jsonLoggerPreamble()
+        << wannierHrInterpolatorPreamble()
         << "_base = r\"" << cfg.mlwfDir << "\"\n"
         << "_direction = " << direction << "\n"
         << "_occupied = " << cfg.occupiedBands << "\n"
         << "_soc = " << (cfg.spinOrbit ? "True" : "False") << "\n"
         << "_want_chern = " << (wantChern ? "True" : "False") << "\n"
         << "_want_z2 = " << (wantZ2 ? "True" : "False") << "\n"
+        // Only the H(R) route samples the flow itself; on the GPAW route
+        // gpaw.berryphase.parallel_transport takes its loop from the .gpw's
+        // own k-mesh, which is why this setting had no effect until now.
+        << "_loop_samples = " << loopSamples << "\n"
         << R"PY(
 # --- Wavefunctions --------------------------------------------------------
 _mj = os.path.join(_base, 'wannier.json')
-_gpw_path = None
-if os.path.exists(_mj):
-    _meta = json.load(open(_mj))
-    # A VASP-sourced wannier.json (engine='VASP', gpw=None -- see
-    # WannierScriptGenerator.cpp's generateVaspWannier90Script) has no
-    # restartable GPAW wavefunction: parallel_transport below is a GPAW-
-    # specific function operating on a live GPAW object, which a VASP MLWF
-    # run never produced. Left unguarded this falls through to the .gpw
-    # search below, finds nothing, and reports a generic "no .gpw found"
-    # message -- true of the field, not the actual reason, and not
-    # actionable (Task 4, 2026-08-22; mirrors the identical guard
-    # WannierScriptGenerator.cpp's Wannier Interpolation path already has).
-    if _meta.get('engine') == 'VASP':
-        raise RuntimeError(
-            'The MLWF run in ' + _base + ' used VASP\'s own Wannier90 '
-            'library, not ase.dft.wannier -- topological invariants are '
-            'not implemented for that route yet (see FUTURE.md). Its '
-            'wannier90_hr.dat / wannier_hr.dat already holds H(R); this '
-            'module would need a reader for that instead of a GPAW '
-            'restart and gpaw.berryphase.parallel_transport.')
-    _gpw_path = _meta.get('gpw')
+_meta = json.load(open(_mj)) if os.path.exists(_mj) else {}
+)PY";
+
+    // The engine dispatch, shared verbatim with the Wannier Interpolation
+    // and Fermi-surface modules.
+    out << wannierHrSetupBlock("topological invariants", 1, 3);
+
+    // The GPAW arm: open the wavefunctions and transport them, exactly as
+    // before, one level in under that `else:`.
+    AseScriptGenerator::emitIndented(out, R"PY(
+_gpw_path = _meta.get('gpw')
 if not (_gpw_path and os.path.exists(_gpw_path)):
     _found = sorted(glob.glob(os.path.join(_base, '*.gpw')))
     _gpw_path = _found[0] if _found else None
@@ -79,7 +76,7 @@ if len(calc.get_ibz_k_points()) < len(calc.get_bz_k_points()):
     raise RuntimeError(
         'The wavefunctions in ' + _gpw_path + ' were written by a '
         'symmetry-reduced run. The Wilson loop needs the full Brillouin zone '
-        '— re-run the baseline single-point with "Symmetry: off".')
+        '\u2014 re-run the baseline single-point with "Symmetry: off".')
 
 # --- Occupied manifold ----------------------------------------------------
 # The invariant belongs to a GAPPED manifold. Taking "the occupied bands" at a
@@ -100,7 +97,7 @@ try:
     if _gap is not None and _gap < 1e-3:
         print('CALANGO_WARN the band structure has no gap at this filling '
               f'(E_gap = {_gap:.4f} eV). A topological invariant is only '
-              'defined for a gapped manifold — the integers below describe a '
+              'defined for a gapped manifold \u2014 the integers below describe a '
               'partition that is not actually separated, and are not '
               'meaningful.', flush=True)
 except Exception:
@@ -116,22 +113,131 @@ phi_km, S_km = parallel_transport(calc, direction=_direction, scale=1.0,
                                   bands=list(range(_nocc)))
 phi_km = np.asarray(phi_km)
 S_km = np.asarray(S_km)
+_formula = atoms.get_chemical_formula()
+_calango_progress(2, 3)
+)PY", "    ");
+
+    // The H(R) arm's own follow-up: the shared block bound `wan`, `nwannier`
+    // and `efermi`, and everything below is the Wilson loop those three make
+    // possible. It is a separate `if` rather than a second arm of the
+    // dispatch above because it has to run AFTER the shared setup, not
+    // instead of it.
+    out << R"PY(
+if _use_hr:
+    # --- Occupied manifold, from the Fermi level ---------------------------
+    # There is no electron count on this route -- a hopping table records
+    # none -- so the filling is read off the spectrum instead: the number of
+    # states below E_F. That is a STRICTLY better determination than the
+    # nominal count when it works, because it can only be constant across the
+    # mesh if the manifold is actually gapped, which is the precondition the
+    # invariant needs and the GPAW arm has to check separately.
+    _mesh = np.stack(np.meshgrid(
+        np.linspace(0.0, 1.0, 9, endpoint=False),
+        np.linspace(0.0, 1.0, 9, endpoint=False),
+        np.linspace(0.0, 1.0, 9, endpoint=False), indexing='ij'),
+        axis=-1).reshape(-1, 3)
+    _eps_k = np.array([np.linalg.eigvalsh(wan.get_hamiltonian_kpoint(_k))
+                       for _k in _mesh])
+    _counts = np.sum(_eps_k < efermi, axis=1)
+    if _occupied > 0:
+        _nocc = int(_occupied)
+    elif _counts.min() == _counts.max() and 0 < _counts[0] < nwannier:
+        _nocc = int(_counts[0])
+    else:
+        raise RuntimeError(
+            'The Wannier bands are not gapped at the Fermi level: the number '
+            'of states below E_F varies from %d to %d across the zone. A '
+            'topological invariant is only defined for a gapped manifold -- '
+            'set the occupied-band count explicitly if you mean a different '
+            'partition.' % (int(_counts.min()), int(_counts.max())))
+    if 0 < _nocc < nwannier:
+        _gap = float(np.min(_eps_k[:, _nocc] - _eps_k[:, _nocc - 1]))
+        if _gap < 1e-3:
+            _calango_event('warning',
+                           'the Wannier bands have no gap at this filling '
+                           '(min direct gap %.4f eV). The integers below '
+                           'describe a partition that is not actually '
+                           'separated.' % _gap)
+        else:
+            _calango_event('info',
+                           'occupied manifold: %d of %d Wannier bands, '
+                           'minimum direct gap %.3f eV'
+                           % (_nocc, nwannier, _gap))
+
+    # --- Hybrid Wannier centre flow (Wilson loop) --------------------------
+    # The same object parallel_transport builds, computed directly from H(k).
+    # For each k across the perpendicular direction, the occupied eigenvectors
+    # are carried around a closed loop along `_direction`; the eigenvalues of
+    # the accumulated overlap product are exp(i*phi_m), and those phases are
+    # the hybrid Wannier centres times 2*pi.
+    #
+    # The loop closes with no gauge-fixing matrix on this route, which is a
+    # property of the convention and not a shortcut: _HrHamiltonian builds
+    # H(k) = sum_R exp(2 pi i k.R) H(R) with R integer and no orbital
+    # positions in the phase (wannier90's lattice gauge), so H(k + G) = H(k)
+    # exactly for every reciprocal lattice vector G and the last link is
+    # simply U_{N-1}^dag U_0. In the atomic gauge it would need the diagonal
+    # exp(-2 pi i G.tau) factor.
+    _perp = [_d for _d in range(3) if _d != _direction]
+    _n_transport = 41
+    phi_km = np.empty((_loop_samples, _nocc), dtype=float)
+    for _i in range(_loop_samples):
+        _u_prev = None
+        _u_first = None
+        _W = np.eye(_nocc, dtype=complex)
+        for _j in range(_n_transport):
+            _k = np.zeros(3)
+            # The flow is resolved against ONE perpendicular direction, the
+            # other held at 0 -- which is what the Z2 largest-gap analysis
+            # below consumes (it walks wcc_km as a 1D path over half the
+            # zone) and what the GPAW arm's own output is used as.
+            _k[_perp[0]] = _i / float(_loop_samples)
+            _k[_direction] = _j / float(_n_transport)
+            _w, _v = np.linalg.eigh(wan.get_hamiltonian_kpoint(_k))
+            _u = _v[:, :_nocc]
+            if _u_prev is None:
+                _u_first = _u
+            else:
+                _W = _W @ (_u_prev.conj().T @ _u)
+            _u_prev = _u
+        _W = _W @ (_u_prev.conj().T @ _u_first)
+        phi_km[_i] = np.sort(np.angle(np.linalg.eigvals(_W)))
+    # No spin expectation on this route, and it is not derivable: a
+    # wannier90 _hr.dat is a num_wann x num_wann matrix with NO spin
+    # labelling at all. For a spinor (LSORBIT) run its Wannier functions ARE
+    # spinors and num_wann counts them, but the file records neither the
+    # up/down decomposition nor which convention was used to order them, so
+    # there is nothing here to project onto. Neither invariant below reads
+    # it -- the Chern winding and the Soluyanov-Vanderbilt largest-gap Z2
+    # are both computed from the centres alone -- so this is a missing plot
+    # series, not a missing result.
+    S_km = None
+    _formula = ''
+    _calango_event('info',
+                   'Wilson loop: %d occupied bands transported over %d x %d '
+                   'k-points' % (_nocc, _loop_samples, _n_transport))
+    _calango_progress(2, 3)
+
 _nk, _nm = phi_km.shape
 print(f'CALANGO_INFO transported {_nm} centres over {_nk} loop points',
       flush=True)
-_calango_progress(2, 3)
 
 # Centres in units of the lattice constant, wrapped to [0, 1).
 wcc_km = (phi_km / (2.0 * np.pi)) % 1.0
 
+
 result = {
-    'formula': atoms.get_chemical_formula(),
+    'formula': _formula,
     'direction': int(_direction),
     'occupied_bands': int(_nocc),
     'spin_orbit': bool(_soc),
     'loop_points': int(_nk),
     'wcc': [[float(v) for v in row] for row in wcc_km],
-    'spin': [[float(v) for v in row] for row in S_km],
+    # None on the H(R) route: see the note beside `S_km = None` above --
+    # a wannier90 _hr.dat carries no spin labelling, and neither invariant
+    # reads this field.
+    'spin': ([[float(v) for v in row] for row in S_km]
+             if S_km is not None else None),
 }
 
 # --- Chern number ---------------------------------------------------------

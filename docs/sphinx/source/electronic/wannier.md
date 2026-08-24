@@ -189,14 +189,22 @@ parses the resulting `wannier90.wout` — via ASE's `ase.io.wannier90
 expose a running Ω the way ASE's iterative minimizer does; `cubes: []` —
 VASP's Wannier90 library does not write real-space Wannier functions the
 way `ase.dft.wannier`'s `write_cube()` does, so no orbital isosurface is
-available on this route). The Wannier Functions viewer, Wannier
-Interpolation, and `WannierRunLoader`'s downstream consumers (Boltzmann
-Transport, Berry Phase, cRPA) need no VASP-specific branch as a result —
-they key only on `wannier.json` + `wannier_hr.dat`, whichever engine wrote
-them.
+available on this route). The Wannier Functions viewer and
+`WannierRunLoader`'s downstream consumers (Boltzmann Transport, Berry Phase,
+cRPA) need no VASP-specific branch as a result — they key only on
+`wannier.json` + `wannier_hr.dat`, whichever engine wrote them.
 
-**Validated without a VASP license** (none is available in the environment
-this was built and tested in): `generated_script_lint` byte-compiles the
+The three modules that interpolate $H(\mathbf{k})$ — Wannier Interpolation,
+Fermi Surface and Topological Invariants — did need one, and did not have
+it: each rebuilt the localization from a `.gpw` and so refused a
+VASP-sourced run outright until 2026-08-24. They now read
+`wannier_hr.dat` instead, through one shared reader. See
+{ref}`where-hk-comes-from` for what that route can and cannot do (in
+particular, no spin expectation).
+
+**Validated without running VASP** (a VASP 6.6.1 build *is* reachable in
+the environment this was developed in, but the Wannier90-linked path has
+never been exercised against it): `generated_script_lint` byte-compiles the
 generated script and confirms every name it reads is assigned in the same
 file; a dedicated preflight test asserts the generated Python's actual
 content (no `ase.dft.wannier` import anywhere on this route, `isym=0`, the
@@ -210,9 +218,15 @@ them through to the same `wannier.json` construction the generated script
 itself uses (`cu_wannier_vasp_fixture` in the test suite). What this
 proves: the real parser (ASE's own) and the JSON schema construction are
 correct against a genuinely wannier90-shaped file. What it does **not**
-prove, and could not without a VASP binary: that `LWANNIER90_RUN` itself
-converges correctly end to end on a real system — a real VASP run has
-never executed against this code path.
+prove: that `LWANNIER90_RUN` itself converges correctly end to end on a
+real system — a real VASP run has never executed against this code path.
+
+The **consumers** of what it writes are separately validated, and end to
+end: `cu_wannier_vasp_fixture` runs the real generated Wannier
+Interpolation, Fermi Surface and Topological Invariants scripts against a
+VASP-shaped `wannier.json` + `wannier_hr.dat`, and checks their output
+against closed forms and an independent Chern algorithm (see
+{ref}`where-hk-comes-from`).
 
 **Not (yet) SOC-aware.** `generateVaspWannier90Script()` never sets
 `LSORBIT` — pointing this route at a CHGCAR from a noncollinear

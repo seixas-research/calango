@@ -5099,14 +5099,20 @@ void MainWindow::showLdos()
     // (job DIRECTORY, not a literal .gpw path) is the same helper Wannier
     // uses: LdosScriptGenerator globs the directory for *.gpw at run time,
     // the same restart shape.
-    const QList<QPair<QString, QString>> baselines = gpawBaselines();
+    // Both engines, in one list: LdosWizard reads each entry's own
+    // calculator.json to decide which route it is, so the menu does not ask
+    // the user to pick an engine before picking a parent.
+    QList<QPair<QString, QString>> baselines = gpawBaselines();
+    baselines += vaspWavefunctionBaselines();
     if (baselines.isEmpty()) {
         QMessageBox::critical(
             this, tr("Local Density of States (LDOS)"),
-            tr("Error: LDOS sums the wavefunctions a completed calculation "
-               "already saved — there is no baseline to sum. Run a GPAW "
-               "Single-Point Calculation first, with wavefunctions saved "
-               "(calc.write('single_point.gpw', mode='all'))."));
+            tr("Error: LDOS resolves the density of states a completed "
+               "calculation already saved — there is no baseline to work "
+               "from. Run a Single-Point Calculation first, with "
+               "wavefunctions saved: GPAW's "
+               "calc.write('single_point.gpw', mode='all'), or VASP's "
+               "LWAVE = .TRUE."));
         return;
     }
 
@@ -5127,31 +5133,70 @@ void MainWindow::openLdosResults(const QString& directory)
         QJsonDocument::fromJson(resultFile.readAll()).object();
     resultFile.close();
 
-    const QString cube = root.value(QStringLiteral("cube")).toString();
-    if (cube.isEmpty())
-        return;
-    const QString path = QDir(directory).filePath(cube);
-    if (!QFile::exists(path))
-        return;
-
     const double eMin = root.value(QStringLiteral("energy_min_eV")).toDouble();
     const double eMax = root.value(QStringLiteral("energy_max_eV")).toDouble();
+    const bool relative =
+        root.value(QStringLiteral("relative_to_fermi")).toBool();
     Document* doc = currentDocument();
     const QString structLabel = (doc && doc->structure)
         ? QString::fromStdString(doc->structure->chemicalFormula())
         : QString();
 
-    DatasetOrigin origin;
-    origin.startUnchecked = true; // per the Wannier precedent — the user picks
-    volumetricPanel_->registerResultFile(
-        path,
-        tr("LDOS [%1, %2] eV")
-            .arg(eMin, 0, 'f', 2)
-            .arg(eMax, 0, 'f', 2),
-        structLabel, /*workspaceId=*/-1, origin);
+    // One grid on the GPAW route and on a summed LPARD run; one PER BAND
+    // and/or per k-point when LSEPB/LSEPK split the output. `outputs` is the
+    // VASP route's own list and is absent on the GPAW one, so the single
+    // `cube` field remains the fallback rather than being replaced — an
+    // ldos.json written before this existed still resolves.
+    QList<QPair<QString, QString>> grids;  // (relative path, label suffix)
+    const QJsonArray outputs = root.value(QStringLiteral("outputs")).toArray();
+    for (const QJsonValue& v : outputs) {
+        const QJsonObject o = v.toObject();
+        const QString file = o.value(QStringLiteral("cube")).toString();
+        if (file.isEmpty())
+            continue;
+        // "PARCHG.0009.0001" -> " 0009.0001"; a summed run's plain "PARCHG"
+        // leaves the suffix empty and the label is the window alone.
+        QString suffix = o.value(QStringLiteral("parchg")).toString();
+        suffix.remove(0, qMin(suffix.size(), 6));  // strip "PARCHG"
+        grids.append({file, suffix.remove(QLatin1Char('.')).trimmed()});
+    }
+    if (grids.isEmpty()) {
+        const QString cube = root.value(QStringLiteral("cube")).toString();
+        if (cube.isEmpty())
+            return;
+        grids.append({cube, QString()});
+    }
+
+    int registered = 0;
+    for (const auto& [file, suffix] : grids) {
+        const QString path = QDir(directory).filePath(file);
+        if (!QFile::exists(path))
+            continue;
+        DatasetOrigin origin;
+        origin.startUnchecked = true; // per the Wannier precedent
+        const QString window = relative
+            ? tr("E_F%1%2 … E_F%3%4")
+                  .arg(eMin < 0 ? QStringLiteral("−") : QStringLiteral("+"))
+                  .arg(std::abs(eMin), 0, 'f', 2)
+                  .arg(eMax < 0 ? QStringLiteral("−") : QStringLiteral("+"))
+                  .arg(std::abs(eMax), 0, 'f', 2)
+            : tr("%1 … %2 eV").arg(eMin, 0, 'f', 2).arg(eMax, 0, 'f', 2);
+        volumetricPanel_->registerResultFile(
+            path,
+            suffix.isEmpty() ? tr("LDOS [%1]").arg(window)
+                             : tr("LDOS [%1] %2").arg(window, suffix),
+            structLabel, /*workspaceId=*/-1, origin);
+        ++registered;
+    }
+    if (registered == 0)
+        return;
 
     statusBar()->showMessage(
-        tr("LDOS added to the Volumetric Data dock — select it to render."),
+        registered == 1
+            ? tr("LDOS added to the Volumetric Data dock — select it to "
+                 "render.")
+            : tr("%1 LDOS grids added to the Volumetric Data dock — select "
+                 "one to render.").arg(registered),
         6000);
     // Registering the entry is not the same as the user SEEING it — the
     // dock may be hidden or buried behind another one, and the status-bar
@@ -7539,6 +7584,30 @@ QList<QPair<QString, QString>> MainWindow::vaspChargeDensityFiles() const
     return baselines;
 }
 
+QList<QPair<QString, QString>> MainWindow::vaspWavefunctionBaselines() const
+{
+    QList<QPair<QString, QString>> baselines;
+    for (const auto& [id, record] : processRecords_) {
+        if (record.directory.isEmpty())
+            continue;
+        if (processPanel_->taskStatus(id)
+            != ProcessManagerPanel::Status::Completed)
+            continue;
+        const QDir dir(record.directory);
+        // The 4 kB floor is the same one the generated LPARD script applies:
+        // VASP opens WAVECAR at startup and writes the orbitals at the end,
+        // so "exists" and "holds orbitals" are genuinely different questions
+        // and only the second one matters here.
+        const QFileInfo wavecar(
+            dir.absoluteFilePath(QStringLiteral("WAVECAR")));
+        if (!wavecar.exists() || wavecar.size() < 4096)
+            continue;
+        baselines.append({tr("#%1 — %2 [VASP]").arg(id).arg(record.label),
+                          record.directory});
+    }
+    return baselines;
+}
+
 void MainWindow::openXasResults(const QString& directory)
 {
     auto* window = new XasResultsWindow(this);
@@ -9513,6 +9582,14 @@ void MainWindow::runSimulationWizard(SimulationWizardBase& wizard,
                                     && (pbc[0] || pbc[1] || pbc[2]));
     }
 
+    // Completed VASP runs whose orbitals a hybrid can restart from. Fed to
+    // every wizard rather than to a chosen few: the combo only appears when
+    // the engine is VASP and the functional is a hybrid, so a wizard that
+    // cannot use it never shows it, and one that can no longer has to plumb
+    // this itself. Until now nothing populated the combo at all, so it
+    // offered only "None — start from scratch".
+    wizard.setVaspWavecarBaselines(vaspWavefunctionBaselines());
+
     if (wizard.exec() != QDialog::Accepted)
         return;
 
@@ -9525,6 +9602,7 @@ void MainWindow::runSimulationWizard(SimulationWizardBase& wizard,
     // copied into the job directory too, so a remote run can find it —
     // stageJob() writes it under a fixed name and clears the pending value.
     pendingBaselineDensityPath_ = wizard.baselineDensityPathToStage();
+    pendingBaselineWavecarPath_ = wizard.baselineWavecarPathToStage();
 
     if (wizard.action() == SimulationWizardBase::Action::RunRemote) {
         // Zone-11 HPC manager: stage the script and submit it.
@@ -10680,6 +10758,24 @@ QString MainWindow::stageJob(const QString& script, int procId)
             if (QFileInfo::exists(sidecar))
                 QFile::copy(sidecar,
                             jobDir + QStringLiteral("/single_point.json"));
+        }
+
+        // The parent's ORBITALS, staged the same way and for the same
+        // reason. Separate from the density above because the two are
+        // separate files with separate producers: a run can leave a CHGCAR
+        // and no WAVECAR (LWAVE = .FALSE. is common) or the reverse, and a
+        // module that needs one is not served by the other. Copied here
+        // rather than symlinked because a remote stage is a real transfer.
+        const QString wavecarPath = pendingBaselineWavecarPath_;
+        pendingBaselineWavecarPath_.clear();
+        if (!wavecarPath.isEmpty() && QFileInfo::exists(wavecarPath)) {
+            if (!QFile::copy(wavecarPath,
+                             jobDir + QStringLiteral("/baseline.WAVECAR"))) {
+                statusBar()->showMessage(
+                    tr("Warning: could not stage the baseline WAVECAR %1 — "
+                       "a remote run will not find it.").arg(wavecarPath),
+                    8000);
+            }
         }
     } catch (const std::exception& e) {
         QMessageBox::critical(this, tr("Run Calculation"), QString::fromUtf8(e.what()));

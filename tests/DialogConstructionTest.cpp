@@ -144,6 +144,8 @@
 #include <memory>
 #include <string>
 
+#include "gui/GpawEigenvaluePeek.hpp"
+
 using namespace calango::gui;
 
 namespace {
@@ -7143,6 +7145,145 @@ int main(int argc, char** argv)
 
         exerciseControls(&dialog);
         check(true, "survives every control being toggled");
+    }
+
+    // --- The hybrid band-structure route reaches the generator at all.
+    //     The wiring is easy to get wrong in a way no script-text test can
+    //     see: the wizard has to select VASP, expose the Functional combo,
+    //     and hand the generator a hybrid — and it has to NOT offer its own
+    //     "Restart from WAVECAR" row, since it already picks a parent run.
+    std::printf("Hybrid band structure wiring (KPOINTS_OPT):\n");
+    {
+        calango::pybridge::PythonEngine python;
+        auto structure = std::make_shared<calango::core::Structure>();
+        structure->addAtom({14, {0.0, 0.0, 0.0}});   // Si
+        ElectronicBandsWizard wizard(structure);
+        wizard.show();
+
+        auto* functional =
+            wizard.findChild<QComboBox*>(QStringLiteral("vaspFunctionalCombo"));
+        check(functional != nullptr,
+              "the Functional combo exists on the bands wizard");
+
+        auto* wavecar =
+            wizard.findChild<QComboBox*>(QStringLiteral("vaspWavecarCombo"));
+        if (wavecar) {
+            check(!wavecar->isVisibleTo(&wizard),
+                  "but its \"Restart from WAVECAR\" row is NOT offered — "
+                  "this wizard already picks its parent run, and two "
+                  "controls for one thing can only disagree");
+        }
+
+        // Switch the engine to VASP the way a user does — the combo that
+        // carries CalculatorKind as itemData, same handle the smearing test
+        // below uses.
+        const int vaspKind =
+            static_cast<int>(calango::core::CalculatorKind::Vasp);
+        for (QComboBox* combo : wizard.findChildren<QComboBox*>()) {
+            const int idx = combo->findData(vaspKind);
+            if (idx >= 0 && combo != functional) {
+                combo->setCurrentIndex(idx);
+                break;
+            }
+        }
+
+        if (functional) {
+            const int hse = functional->findData(
+                static_cast<int>(calango::core::VaspFunctional::Hse06));
+            check(hse >= 0, "HSE06 is among its entries");
+            if (hse >= 0) {
+                functional->setCurrentIndex(hse);
+                const QString script = wizard.script();
+                check(script.contains(QStringLiteral("KPOINTS_OPT")),
+                      "and selecting it routes the generated script through "
+                      "KPOINTS_OPT");
+                check(!script.contains(QStringLiteral("icharg=11")),
+                      "with no fixed-density pass, which the wiki forbids "
+                      "for a hybrid");
+                check(script.contains(QStringLiteral("hfrcut=-1")),
+                      "carrying the Coulomb truncation the wiki recommends "
+                      "for a hybrid band structure");
+            }
+        }
+    }
+
+    // --- The VASP eigenvalue peek the LDOS wizard reads a VASP parent
+    //     with (Task 3, 2026-08-24). Pure file parsing, so it is exercised
+    //     against a real EIGENVAL/DOSCAR pair written here rather than
+    //     against a VASP run: the format is the contract, and the two
+    //     columns-per-spin layout is exactly where it can go wrong.
+    std::printf("VASP eigenvalue peek (LDOS parent):\n");
+    {
+        const QString dir = QDir::tempPath()
+            + QStringLiteral("/calango-vasp-peek");
+        QDir().mkpath(dir);
+        const auto write = [&dir](const QString& name, const QString& text) {
+            QFile f(dir + QLatin1Char('/') + name);
+            if (f.open(QIODevice::WriteOnly | QIODevice::Text))
+                QTextStream(&f) << text;
+        };
+
+        // ISPIN = 2, 2 k-points, 3 bands. Header line 1's fourth field is
+        // ISPIN; line 6 is NELECT / NKPTS / NBANDS; then a blank line and
+        // "kx ky kz weight" before each band block, whose rows are
+        // "band E_up E_down occ_up occ_down".
+        write(QStringLiteral("EIGENVAL"),
+              QStringLiteral(
+                  "    4    4    1    2\n"
+                  "  0.1E+02  0.5E+01  0.5E+01  0.5E+01  0.1E-09\n"
+                  "  1.0E-04\n"
+                  "  CAR\n"
+                  " test\n"
+                  "     8     2     3\n"
+                  "\n"
+                  "  0.000000  0.000000  0.000000  0.5000000\n"
+                  "   1     -5.0000     -4.9000   1.000000   1.000000\n"
+                  "   2      1.0000      1.1000   1.000000   1.000000\n"
+                  "   3      7.5000      7.6000   0.000000   0.000000\n"
+                  "\n"
+                  "  0.500000  0.000000  0.000000  0.5000000\n"
+                  "   1     -4.5000     -4.4000   1.000000   1.000000\n"
+                  "   2      1.5000      1.6000   1.000000   1.000000\n"
+                  "   3      8.0000      8.1000   0.000000   0.000000\n"));
+        // DOSCAR line 6: emax emin nedos efermi 1.0.
+        write(QStringLiteral("DOSCAR"),
+              QStringLiteral("x\nx\nx\nx\nx\n"
+                             "  20.0  -20.0  301   3.2500   1.0\n"));
+
+        const GpawEigenvalueSpectrum spectrum = peekVaspEigenvalues(dir);
+        check(spectrum.ok, "a real-shaped EIGENVAL + DOSCAR pair parses");
+        check(spectrum.nspins == 2,
+              "ISPIN is read from the header's fourth field, not guessed");
+        check(spectrum.states.size() == 12,
+              "2 k-points x 3 bands x 2 spins = 12 states");
+        check(std::abs(spectrum.fermiLevelEv - 3.25) < 1e-9,
+              "E_F comes from DOSCAR's sixth line");
+        // The spin-down column is the one a single-column parser silently
+        // drops; asserting a DOWN eigenvalue is what catches that.
+        const auto downAt = [&spectrum](int k, int b) {
+            for (const GpawState& s : spectrum.states)
+                if (s.spin == 1 && s.kpt == k && s.band == b)
+                    return s.energyEv;
+            return 0.0;
+        };
+        check(std::abs(downAt(0, 1) - 1.1) < 1e-9,
+              "the spin-down energy column is read, not the up one twice");
+        check(std::abs(downAt(1, 2) - 8.1) < 1e-9,
+              "... at every k-point, not only the first");
+        const auto weight = [&spectrum] {
+            return spectrum.states.empty() ? 0.0 : spectrum.states[0].kWeight;
+        };
+        check(std::abs(weight() - 0.5) < 1e-9,
+              "the k-point weight is the fourth field of the k-point line");
+
+        // No DOSCAR and no OUTCAR: the states parse but there is no zero of
+        // energy, and that is a refusal rather than a silent E_F = 0.
+        QFile::remove(dir + QStringLiteral("/DOSCAR"));
+        const GpawEigenvalueSpectrum noFermi = peekVaspEigenvalues(dir);
+        check(!noFermi.ok && noFermi.errorMessage.contains(
+                  QStringLiteral("Fermi")),
+              "a parent with no DOSCAR/OUTCAR is refused, not defaulted to "
+              "E_F = 0");
     }
 
     std::printf(failures == 0 ? "\nAll dialog construction checks passed.\n"
