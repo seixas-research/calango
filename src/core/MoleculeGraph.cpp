@@ -604,6 +604,29 @@ std::vector<bool> MoleculeGraph::perceiveAromaticBonds() const
     return aromatic;
 }
 
+std::vector<std::vector<int>> MoleculeGraph::perceiveAromaticRings() const
+{
+    // Derived from the bond flags rather than by repeating the π count, so
+    // there is exactly ONE aromaticity rule in this file and a ring can never
+    // be filled as aromatic while its bonds are written as Kekulé (or the
+    // other way round).
+    const std::vector<bool> aromatic = perceiveAromaticBonds();
+    std::vector<std::vector<int>> result;
+    for (const std::vector<int>& ring : rings(6)) {
+        if (ring.size() < 3)
+            continue;
+        bool all = true;
+        for (std::size_t i = 0; i < ring.size() && all; ++i) {
+            const int bond =
+                bondBetween(ring[i], ring[(i + 1) % ring.size()]);
+            all = bond >= 0 && aromatic[static_cast<std::size_t>(bond)];
+        }
+        if (all)
+            result.push_back(ring);
+    }
+    return result;
+}
+
 int MoleculeGraph::atomAt(double x, double y, double radius) const
 {
     int best = -1;

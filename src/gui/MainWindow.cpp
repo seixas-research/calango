@@ -91,6 +91,7 @@
 #include "gui/NonlinearOpticsWizard.hpp"
 #include "gui/OpticsWizard.hpp"
 #include "gui/OverlayPanel.hpp"
+#include "gui/GoMdmcLiveTabs.hpp"
 #include "gui/GrapheneOxideMdmcWizard.hpp"
 #include "gui/GrapheneOxideWizard.hpp"
 #include "gui/GrainCasts.hpp"
@@ -132,6 +133,7 @@
 #include "gui/ScriptViewerDialog.hpp"
 #include "gui/SettingsManager.hpp"
 #include "gui/ShortcutRegistry.hpp"
+#include "gui/MdmcSummaryDialog.hpp"
 #include "gui/MaceTrainerDialog.hpp"
 #include "gui/SystemStatusBar.hpp"
 #include "gui/ThemeManager.hpp"
@@ -2000,6 +2002,19 @@ void MainWindow::createMenusAndDocks()
     splitDockWidget(overlayDock, processDock, Qt::Vertical);
     connect(processPanel_, &ProcessManagerPanel::loadResultRequested,
             this, &MainWindow::onProcessResultRequested);
+    // Double-click. A GO-MDMC row opens that run's Summary window — during
+    // the run (live counters) or after it (the persisted ones); every other
+    // row keeps "load this run's result", which is what double-click did for
+    // every row, GO-MDMC included, before the Summary moved out of the
+    // Results dock.
+    connect(processPanel_, &ProcessManagerPanel::taskActivated, this,
+            [this](int id, const QString& name, const QString& directory) {
+                if (name == goMdmcTaskLabel()) {
+                    showMdmcSummary(id, name);
+                    return;
+                }
+                onProcessResultRequested(directory);
+            });
     connect(processPanel_, &ProcessManagerPanel::viewScriptRequested,
             this, &MainWindow::onViewScriptRequested);
     connect(processPanel_, &ProcessManagerPanel::deleteRequested,
@@ -2140,13 +2155,19 @@ void MainWindow::createMenusAndDocks()
     jobTabs->addTab(plotPage(forcePlot_), tr("Force"));
     jobTabs->addTab(plotPage(pressurePlot_), tr("Pressure"));
 
-    // GO-MDMC's two tabs: Acceptance (a live multi-series plot — the overall
-    // rate CUMULATIVE and WINDOWED, plus one windowed line per move kind) and
-    // MDMC Summary (the run's counters, above the per-move-kind breakdown of
-    // the same data). Present unconditionally, like Pressure already is
-    // for a non-NPT run — empty and showing a placeholder for any job that
-    // is not GO-MDMC, populated the moment its metrics.json carries
-    // "acceptance_cumulative" (see readMetricsJson()/pollLiveMetrics()).
+    // GO-MDMC's tab here: Acceptance (a live multi-series plot — the overall
+    // rate CUMULATIVE and WINDOWED, plus one windowed line per move kind).
+    // Present unconditionally, like Pressure already is for a non-NPT run —
+    // empty and showing a placeholder for any job that is not GO-MDMC,
+    // populated the moment its metrics.json carries "acceptance_cumulative"
+    // (see readMetricsJson()/pollLiveMetrics()).
+    //
+    // The run's COUNTERS used to sit beside it as a second tab, "MDMC
+    // Summary". They are a window of their own now (MdmcSummaryDialog),
+    // opened when a run finishes and by double-clicking its row in the
+    // Processes panel — see MainWindow::showMdmcSummary(). A plot belongs in
+    // this dock; a block of numbers you want to watch while the run moves in
+    // the viewport does not.
     MultiSeriesPlotWidget::PlotSpec acceptanceSpec;
     acceptanceSpec.quantity = tr("Acceptance");
     // Not "(last 50 attempts)" any more: the cumulative series shares these
@@ -2173,87 +2194,6 @@ void MainWindow::createMenusAndDocks()
         connect(exportButton, &QPushButton::clicked, mdmcAcceptancePlot_,
                 &MultiSeriesPlotWidget::exportData);
         jobTabs->addTab(page, tr("Acceptance"));
-    }
-
-    // The RUN block: the five whole-run quantities. A second, two-column
-    // table above the per-move-kind one rather than extra rows in it — the
-    // two have different shapes (five named scalars against a row per move
-    // kind), and folding either into the other's columns would have cost a
-    // diagnostic this tab already had.
-    mdmcRunSummaryTable_ = new QTableWidget(0, 2, jobTabs);
-    mdmcRunSummaryTable_->setHorizontalHeaderLabels(
-        {tr("Quantity"), tr("Value")});
-    mdmcRunSummaryTable_->horizontalHeader()->setSectionResizeMode(
-        QHeaderView::Stretch);
-    mdmcRunSummaryTable_->verticalHeader()->setVisible(false);
-    mdmcRunSummaryTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    mdmcRunSummaryTable_->setSelectionMode(QAbstractItemView::NoSelection);
-    // Five rows and a header, and it never grows: capped so the per-move-kind
-    // table below it keeps the rest of the (zone-10, short) tab.
-    mdmcRunSummaryTable_->setMaximumHeight(170);
-
-    mdmcSummaryTable_ = new QTableWidget(0, 4, jobTabs);
-    mdmcSummaryTable_->setHorizontalHeaderLabels(
-        {tr("Move kind"), tr("Attempts"), tr("Accepted"),
-         tr("Acceptance ratio")});
-    mdmcSummaryTable_->horizontalHeader()->setSectionResizeMode(
-        QHeaderView::Stretch);
-    mdmcSummaryTable_->verticalHeader()->setVisible(false);
-    mdmcSummaryTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    mdmcSummaryTable_->setSelectionMode(QAbstractItemView::NoSelection);
-    {
-        auto* page = new QWidget(jobTabs);
-        auto* layout = new QVBoxLayout(page);
-        layout->setContentsMargins(0, 0, 0, 2);
-        layout->setSpacing(2);
-        layout->addWidget(mdmcRunSummaryTable_, 0);
-        layout->addWidget(mdmcSummaryTable_, 1);
-        auto* row = new QHBoxLayout;
-        row->addStretch(1);
-        auto* exportButton = new QPushButton(tr("Export CSV…"), page);
-        row->addWidget(exportButton);
-        layout->addLayout(row);
-        connect(exportButton, &QPushButton::clicked, this, [this]() {
-            const QString path = QFileDialog::getSaveFileName(
-                this, tr("Export MDMC Summary"),
-                QStringLiteral("mdmc_summary.csv"), tr("CSV (*.csv)"));
-            if (path.isEmpty())
-                return;
-            QFile file(path);
-            if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-                QMessageBox::critical(this, tr("Export MDMC Summary"),
-                                      tr("Could not write %1").arg(path));
-                return;
-            }
-            QTextStream out(&file);
-            // Both blocks, run first, separated by a blank line. The
-            // per-move-kind block keeps its original header and column order
-            // byte for byte, so anything that already parses this file
-            // still finds what it was reading.
-            out << "quantity,value\n";
-            for (int row2 = 0; row2 < mdmcRunSummaryTable_->rowCount(); ++row2) {
-                for (int col = 0; col < mdmcRunSummaryTable_->columnCount();
-                     ++col) {
-                    if (col > 0)
-                        out << ',';
-                    const auto* item = mdmcRunSummaryTable_->item(row2, col);
-                    out << (item ? item->text() : QString());
-                }
-                out << '\n';
-            }
-            out << '\n';
-            out << "move_kind,attempts,accepted,acceptance_ratio\n";
-            for (int row2 = 0; row2 < mdmcSummaryTable_->rowCount(); ++row2) {
-                for (int col = 0; col < mdmcSummaryTable_->columnCount(); ++col) {
-                    if (col > 0)
-                        out << ',';
-                    const auto* item = mdmcSummaryTable_->item(row2, col);
-                    out << (item ? item->text() : QString());
-                }
-                out << '\n';
-            }
-        });
-        jobTabs->addTab(page, tr("MDMC Summary"));
     }
 
     // Convex Hull and Effective Bands no longer live in the Results dock:
@@ -8500,19 +8440,23 @@ void MainWindow::openGoMdmc()
                "predates the persisted Graphene Oxide Build contract."));
     }
 
-    // A FRESH document for the run's input, decoupled from the source: this
-    // is what makes several independent runs from one build safe.
-    // stageJob() (called below, through runScript()/hpcPanel_) always stages
-    // whatever is the CURRENT document as structure.extxyz, so the source
-    // document — whichever tab it lives in — is never read from again after
-    // this copy, let alone written to.
-    const int tab = addDocument(structure, tr("Graphene oxide (GO-MDMC input)"));
-    tabBar_->setCurrentIndex(tab);
-
     GrapheneOxideMdmcWizard wizard(this);
     wizard.setInputBuild(*structure);
     if (wizard.exec() != QDialog::Accepted)
         return;
+
+    // The run's input is the FRESH copy made above, decoupled from the source
+    // document: that is what makes several independent runs from one build
+    // safe, and it means the source document — whichever tab it lives in — is
+    // never read from again, let alone written to.
+    //
+    // Handed to stageJob() directly rather than opened in a tab. It used to be
+    // opened in one purely because stageJob() stages whatever document is
+    // CURRENT, and the working copy had to be current to be staged; the tab
+    // was a side effect of that mechanism and not something anyone asked for.
+    // Set only now, after the wizard is accepted, so a cancelled wizard leaves
+    // nothing staged for the next job to pick up.
+    stagedRunStructure_ = structure;
 
     if (wizard.action() == SimulationWizardBase::Action::RunRemote) {
         const QString jobDir = stageJob(wizard.script());
@@ -8532,19 +8476,22 @@ void MainWindow::openGoMdmc()
     if (wizard.action() != SimulationWizardBase::Action::RunLocal)
         return;
 
-    // expectFrames: the run writes a trajectory of accepted configurations, so
-    // the live tab follows the annealing rather than waiting for the end.
-    runScript(wizard.script(), wizard.pythonExecutable(), tr("GO-MDMC"), true,
-              wizard.calculatorKind(), wizard.runCommand());
-    // liveDoc_ is set synchronously by launchJob() when nothing else is
-    // running, which is the overwhelmingly common case; the task-name check
-    // is a defensive match against the right tab rather than whatever
-    // liveDoc_ happened to hold. If this run instead queued behind another
-    // job, liveDoc_ is not (yet) this tab and the flag is simply not set —
-    // that GO-MDMC run falls back to a single, frame-0 Cast, exactly like the
-    // checkbox being off, rather than silently marking the wrong document.
-    if (liveDoc_ && liveDoc_->task == tr("GO-MDMC"))
-        liveDoc_->mdmcCastPerFrame = wizard.castPerFrame();
+    // "Redefine Cast on every accepted move", carried to the two live tabs
+    // through the queue rather than written onto a document here.
+    //
+    // It used to be applied straight to liveDoc_ after the runScript() call
+    // below, which worked only when the run started SYNCHRONOUSLY: a GO-MDMC
+    // submitted while another job was running got queued, liveDoc_ was still
+    // the other job's tab (or null), and the setting was silently dropped —
+    // a hole the old code documented rather than closed. Staged here, it
+    // survives the wait and reaches setUpGoMdmcLiveFiles() with its run.
+    pendingMdmcCastPerFrame_ = wizard.castPerFrame();
+
+    // expectFrames: the run produces frames, so the live tabs follow the
+    // annealing rather than waiting for the end. GO-MDMC is the one such run
+    // that takes NO stdout-streamed tab — see gui/GoMdmcLiveTabs.hpp.
+    runScript(wizard.script(), wizard.pythonExecutable(), goMdmcTaskLabel(),
+              true, wizard.calculatorKind(), wizard.runCommand());
 }
 
 void MainWindow::openBoltzmannTransport()
@@ -9780,11 +9727,13 @@ void MainWindow::syncResultsToProcess(int id)
     if (r.hasPressTarget)
         pressurePlot_->setTarget(r.pressTarget);
     jobLogWidget_->restoreLog(r.log);
-    // GO-MDMC's tabs reconnect the same way the four fixed ones do — the
-    // "reopen the panel on an already-running job" case this function's own
-    // lazy-hydration block above exists for.
+    // GO-MDMC's Acceptance tab reconnects the same way the four fixed ones do
+    // — the "reopen the panel on an already-running job" case this function's
+    // own lazy-hydration block above exists for.
     updateMdmcAcceptancePlot(r);
-    updateMdmcSummaryTable(r);
+    // The Summary WINDOW is deliberately not repainted from here: it is bound
+    // to a process of its own, which need not be the one just selected in
+    // this dock. It follows its own run through refreshMdmcSummaryDialog().
 }
 
 void MainWindow::onEnergySample(int step, double value)
@@ -9991,6 +9940,11 @@ void MainWindow::pollLiveMetrics()
         if (id == selectedProcessId_)
             it = record;
     }
+    // The Summary window follows the process IT is bound to, which need not
+    // be the one selected in the Results dock — so it is refreshed here,
+    // ahead of the selected-process early return below, from the records the
+    // loop has just re-read.
+    refreshMdmcSummaryDialog();
     if (it == processRecords_.end())
         return;
     // Repaint the four metric plots + progress bar from the freshly-read data.
@@ -10009,11 +9963,10 @@ void MainWindow::pollLiveMetrics()
     forcePlot_->setSamples(toSamples(r.force));
     pressurePlot_->setSamples(toSamples(r.pressure));
 
-    // GO-MDMC's two extra tabs, driven by the SAME poll — see
+    // GO-MDMC's Acceptance tab, driven by the SAME poll — see
     // readMetricsJson()'s generic extraSeries capture. Empty (placeholder)
     // for any job whose metrics.json carries none of these field names.
     updateMdmcAcceptancePlot(r);
-    updateMdmcSummaryTable(r);
 }
 
 void MainWindow::updateMdmcAcceptancePlot(const ProcessRecord& record)
@@ -10055,16 +10008,55 @@ void MainWindow::updateMdmcAcceptancePlot(const ProcessRecord& record)
     mdmcAcceptancePlot_->setSeries(series);
 }
 
+void MainWindow::showMdmcSummary(int processId, const QString& label)
+{
+    if (!mdmcSummaryDialog_) {
+        mdmcSummaryDialog_ = new MdmcSummaryDialog(this);
+        // NOT WA_DeleteOnClose: closing the window is not the same as being
+        // done with the run it was showing, and a re-open should come back
+        // with the same numbers rather than an empty frame.
+    }
+    const auto it = processRecords_.find(processId);
+    const QString name = !label.isEmpty()      ? label
+        : it != processRecords_.end()          ? it->second.label
+                                               : QString();
+    mdmcSummaryDialog_->bindProcess(processId, name,
+                                    processId == currentTaskId_);
+    refreshMdmcSummaryDialog();
+    mdmcSummaryDialog_->show();
+    mdmcSummaryDialog_->raise();
+    mdmcSummaryDialog_->activateWindow();
+}
+
+void MainWindow::refreshMdmcSummaryDialog()
+{
+    if (!mdmcSummaryDialog_ || !mdmcSummaryDialog_->isVisible())
+        return;
+    const int id = mdmcSummaryDialog_->processId();
+    if (id < 0)
+        return;
+    auto it = processRecords_.find(id);
+    if (it == processRecords_.end())
+        return;
+    // A finished run reopened from the Processes panel has no samples in
+    // memory — hydrate it from its proc_<id>/metrics.json, exactly as the
+    // Results selector does when it lands on such a record.
+    if (it->second.extraSeries.empty() && !it->second.directory.isEmpty())
+        loadProcessMetrics(id);
+    mdmcSummaryDialog_->setRunning(id == currentTaskId_);
+    updateMdmcSummaryTable(it->second);
+}
+
 void MainWindow::updateMdmcSummaryTable(const ProcessRecord& record)
 {
-    // The RUN block of the same tab, repainted from the same record. Driven
-    // from here rather than from pollLiveMetrics() so that every path which
-    // refreshes one half refreshes the other — the timer tick and the
-    // Results process selector both already come through this function.
+    // The RUN block of the same window, repainted from the same record.
+    // Driven from here rather than from pollLiveMetrics() so that every path
+    // which refreshes one half refreshes the other.
     updateMdmcRunSummary(record);
 
-    if (!mdmcSummaryTable_)
-        return;
+    if (!mdmcSummaryDialog_)
+        return; // the window has never been opened — nothing to paint into
+    QTableWidget* table = mdmcSummaryDialog_->moveBreakdownTable();
 
     const auto lastValue = [&](const QString& key) -> std::optional<double> {
         const auto it = record.extraSeries.find(key);
@@ -10077,7 +10069,7 @@ void MainWindow::updateMdmcSummaryTable(const ProcessRecord& record)
     // is a GO-MDMC run that has recorded at least one judged move — the
     // signal that decides whether this table has anything to show at all.
     if (!lastValue(QStringLiteral("acceptance_attempts"))) {
-        mdmcSummaryTable_->setRowCount(0);
+        table->setRowCount(0);
         return;
     }
 
@@ -10108,7 +10100,7 @@ void MainWindow::updateMdmcSummaryTable(const ProcessRecord& record)
             visible.push_back(row);
     }
 
-    mdmcSummaryTable_->setRowCount(static_cast<int>(visible.size()));
+    table->setRowCount(static_cast<int>(visible.size()));
     for (int i = 0; i < static_cast<int>(visible.size()); ++i) {
         const Row& row = visible[static_cast<std::size_t>(i)];
         const QString prefix = prefixFor(row);
@@ -10118,14 +10110,14 @@ void MainWindow::updateMdmcSummaryTable(const ProcessRecord& record)
             lastValue(prefix + QStringLiteral("_accepted")).value_or(0.0);
         const auto ratio = lastValue(prefix + QStringLiteral("_cumulative"));
 
-        mdmcSummaryTable_->setItem(i, 0, new QTableWidgetItem(row.label));
-        mdmcSummaryTable_->setItem(
+        table->setItem(i, 0, new QTableWidgetItem(row.label));
+        table->setItem(
             i, 1,
             new QTableWidgetItem(QString::number(static_cast<qlonglong>(attempts))));
-        mdmcSummaryTable_->setItem(
+        table->setItem(
             i, 2,
             new QTableWidgetItem(QString::number(static_cast<qlonglong>(accepted))));
-        mdmcSummaryTable_->setItem(
+        table->setItem(
             i, 3,
             new QTableWidgetItem(ratio ? tr("%1%").arg(*ratio * 100.0, 0, 'f', 1)
                                        : QStringLiteral("—")));
@@ -10134,8 +10126,9 @@ void MainWindow::updateMdmcSummaryTable(const ProcessRecord& record)
 
 void MainWindow::updateMdmcRunSummary(const ProcessRecord& record)
 {
-    if (!mdmcRunSummaryTable_)
-        return;
+    if (!mdmcSummaryDialog_)
+        return; // the window has never been opened — nothing to paint into
+    QTableWidget* table = mdmcSummaryDialog_->runSummaryTable();
 
     const auto lastValue = [&](const char* key) -> std::optional<double> {
         const auto it = record.extraSeries.find(QLatin1String(key));
@@ -10152,7 +10145,7 @@ void MainWindow::updateMdmcRunSummary(const ProcessRecord& record)
     // found no free site has cycles to report before it has attempts.)
     const std::optional<double> total = lastValue("mdmc_cycles_total");
     if (!total) {
-        mdmcRunSummaryTable_->setRowCount(0);
+        table->setRowCount(0);
         return;
     }
 
@@ -10215,46 +10208,39 @@ void MainWindow::updateMdmcRunSummary(const ProcessRecord& record)
         {tr("Elapsed"),
          formatElapsed(lastValue("mdmc_elapsed_s").value_or(0.0))},
     };
-    mdmcRunSummaryTable_->setRowCount(static_cast<int>(rows.size()));
+    table->setRowCount(static_cast<int>(rows.size()));
     for (int i = 0; i < static_cast<int>(rows.size()); ++i) {
         const auto& [label, value] = rows[static_cast<std::size_t>(i)];
-        mdmcRunSummaryTable_->setItem(i, 0, new QTableWidgetItem(label));
-        mdmcRunSummaryTable_->setItem(i, 1, new QTableWidgetItem(value));
+        table->setItem(i, 0, new QTableWidgetItem(label));
+        table->setItem(i, 1, new QTableWidgetItem(value));
     }
 }
 
 void MainWindow::setUpGoMdmcLiveFiles(
     const QString& jobDir, int processId,
-    const std::shared_ptr<core::Structure>& seed)
+    const std::shared_ptr<core::Structure>& seed, bool castPerFrame)
 {
     if (jobDir.isEmpty() || !seed || !tabBar_)
         return;
 
     // The two files S1/S3 make this module write, and the two tabs S4 asks
-    // for. Fixed literals here because they are fixed literals in the
-    // generated script too (DECISIONS.md D7) — nothing outside that script
-    // chooses either name.
-    struct Followed {
-        const char* fileName;
-        QString title;
-    };
-    const std::vector<Followed> followed = {
-        {"mdmc_all_structures.extxyz", tr("GO-MDMC / All Structures")},
-        {"accepted_structures.extxyz", tr("GO-MDMC / Accepted")},
-    };
+    // for — which are, since the tab audit, every viewport tab a GO-MDMC run
+    // creates. gui/GoMdmcLiveTabs.hpp holds the list and the reasoning.
+    const std::vector<GoMdmcLiveView> followed = goMdmcLiveViews();
 
-    // addDocument() selects each tab as it creates it; the run's own streamed
-    // tab is the one launchJob() just made current, and that is where the
-    // user expects to land. Restored below — the two new tabs are appended
-    // after every existing one, so no index shifts under this.
+    // addDocument() selects each tab as it creates it, which would move the
+    // user off whatever they were looking at when the run started. Restored
+    // below — the two new tabs are appended after every existing one, so no
+    // index shifts under this.
     const int restore = tabBar_->currentIndex();
-    for (const Followed& entry : followed) {
+    for (const GoMdmcLiveView& entry : followed) {
         GoMdmcLiveFile follow;
         follow.processId = processId;
-        follow.path = jobDir + QLatin1Char('/') + QLatin1String(entry.fileName);
+        follow.path = jobDir + QLatin1Char('/') + entry.fileName;
         // The input geometry is shown while the first frame is written, but
         // is NOT seeded as frame 0 — the same choice, for the same reason,
-        // that the streamed live tab above makes.
+        // that a streamed live tab makes: it carries no evaluated forces, so
+        // scrubbing back onto it would blank an overlay every real frame has.
         auto first = std::make_shared<core::Structure>(*seed);
         const int tab = addDocument(first, tr("%1 (live)").arg(entry.title), {},
                                     entry.title);
@@ -10267,10 +10253,17 @@ void MainWindow::setUpGoMdmcLiveFiles(
         // setUpFunctionalGroupCastKey() (which also switches the viewport to
         // Cast colouring and tells the Representation dock) and
         // redefineFunctionalGroupCastForFrame() (which calls
-        // GrapheneOxideBuilder::functionalGroupLabels()). Unconditional here,
-        // unlike the streamed tab's wizard checkbox: showing the grouping as
-        // it moves is the entire purpose of these two tabs.
-        doc->mdmcCastPerFrame = true;
+        // GrapheneOxideBuilder::functionalGroupLabels()).
+        //
+        // Driven by the wizard's "Redefine Cast on every accepted move",
+        // which is what that checkbox has always said it does. It used to
+        // reach only the stdout-streamed tab, and these two were hard-wired
+        // on (D26) because the wizard was outside that batch's fence; with
+        // the streamed tab gone that left the checkbox with nothing at all to
+        // control. Default is on, and leaving it on is the right answer for
+        // an MDMC run — a Cast fixed at frame 0 goes stale the moment the
+        // first move is accepted, which is the whole point of the module.
+        doc->mdmcCastPerFrame = castPerFrame;
         follow.documentId = doc->id;
         goMdmcLiveFiles_.push_back(follow);
     }
@@ -10297,6 +10290,19 @@ void MainWindow::setUpGoMdmcLiveFiles(
                           disconnect(*handle);
                           finishGoMdmcLiveFiles(processId);
                       });
+}
+
+QStringList MainWindow::goMdmcLiveTabTitles(int processId) const
+{
+    QStringList titles;
+    for (const GoMdmcLiveFile& follow : goMdmcLiveFiles_) {
+        if (follow.processId != processId)
+            continue;
+        for (const auto& doc : documents_)
+            if (doc && doc->id == follow.documentId)
+                titles << doc->fileName;
+    }
+    return titles;
 }
 
 void MainWindow::pollGoMdmcLiveFiles()
@@ -10463,7 +10469,20 @@ QString MainWindow::stageJob(const QString& script, int procId)
 
     try {
         // Stage inputs: structure (extxyz round-trips everything) + script.
-        if (doc && doc->structure)
+        // A launcher that runs against a working copy (GO-MDMC) puts that
+        // copy in stagedRunStructure_ and it wins here — the point being that
+        // such a copy no longer has to be opened in a tab to be staged.
+        // Consumed like every other staged member, so an unrelated later job
+        // never carries it.
+        const std::shared_ptr<core::Structure> staged =
+            std::move(stagedRunStructure_);
+        stagedRunStructure_.reset();
+        if (staged)
+            pybridge::AseBridge::writeStructure(
+                *staged,
+                (jobDir + QStringLiteral("/structure.extxyz")).toStdString(),
+                "extxyz");
+        else if (doc && doc->structure)
             pybridge::AseBridge::writeStructure(
                 *doc->structure,
                 (jobDir + QStringLiteral("/structure.extxyz")).toStdString(),
@@ -10580,6 +10599,13 @@ void MainWindow::runScript(const QString& script, const QString& pythonExe,
             refreshTabTitles();
         }
     }
+    // Read (not consume) the staged working copy BEFORE stageJob() below
+    // takes it: a run launched against one is a run whose input is that
+    // structure, so it is also what any live tab must be seeded from. Without
+    // this the seed would fall back to whatever tab happens to be current,
+    // which for such a launcher is a document it deliberately never opened.
+    const std::shared_ptr<core::Structure> stagedInput = stagedRunStructure_;
+
     // Allocate the process id first so the run stages into proc_<id>/ and its
     // metrics are recorded under that id.
     const int procId = processPanel_->registerTask(label, QString());
@@ -10618,12 +10644,18 @@ void MainWindow::runScript(const QString& script, const QString& pythonExe,
     job.kind = kind;
     job.requestedCores = context.cores;
     job.expectFrames = expectFrames;
+    // Consumed like stagedRunStructure_ above: a GO-MDMC run carries its own
+    // setting, and the next job of any kind starts from the default again.
+    job.mdmcCastPerFrame = pendingMdmcCastPerFrame_;
+    pendingMdmcCastPerFrame_ = true;
     // Snapshot the geometry the live tab would be seeded from. Deferring the
     // lookup to launch time would seed it from whatever tab happens to be
     // current then, which for a queued job is routinely a different structure
     // than the one the run was launched against.
     if (expectFrames) {
-        if (Document* doc = currentDocument(); doc && doc->structure)
+        if (stagedInput)
+            job.liveSeed = std::make_shared<core::Structure>(*stagedInput);
+        else if (Document* doc = currentDocument(); doc && doc->structure)
             job.liveSeed = std::make_shared<core::Structure>(*doc->structure);
     }
 
@@ -10664,10 +10696,20 @@ void MainWindow::launchJob(const QueuedJob& job)
     processPanel_->setTaskStatus(job.processId,
                                  ProcessManagerPanel::Status::Running);
 
+    // GO-MDMC is the one frame-producing run that gets NO stdout-streamed
+    // tab. It opens two file-followed tabs instead (setUpGoMdmcLiveFiles()
+    // below), and *All Structures* already carries every geometry the stdout
+    // stream would have shown — with the per-atom functional-group columns
+    // that wire format cannot express (DECISIONS.md D4). A third tab was
+    // therefore a duplicate of one of the two, and it spent the opening of
+    // every run showing the unrelaxed input geometry. job.liveSeed is still
+    // captured above: the two tabs below seed from it.
+    const bool goMdmc = job.label == tr("GO-MDMC");
+
     // Live viewport streaming: MD/relaxation scripts emit CALANGO_FRAME
     // blocks — open the trajectory tab NOW and let frames pour in.
     liveDoc_ = nullptr;
-    if (job.expectFrames && job.liveSeed) {
+    if (job.expectFrames && job.liveSeed && !goMdmc) {
         // The input geometry is shown while the first frame is computed,
         // but it is NOT seeded as trajectory frame 0: it carries no
         // evaluated forces or velocities, so scrubbing onto it blanked the
@@ -10679,15 +10721,17 @@ void MainWindow::launchJob(const QueuedJob& job)
         liveDoc_ = documents_[static_cast<std::size_t>(tab)].get();
         tabBar_->setCurrentIndex(tab);
     }
-    // GO-MDMC (S4): two MORE live tabs, each following one of the run's two
-    // structure FILES as the script appends to it. Not over the stdout frame
+    // GO-MDMC (S4): the run's TWO — and only two — live tabs, each following
+    // one of the run's two structure FILES as the script appends to it. Not
+    // over the stdout frame
     // stream: that wire format cannot carry the per-atom group columns the
     // Cast colouring needs and cannot say which of the two files a frame
     // belongs to (DECISIONS.md D4). Here rather than in openGoMdmc() so a run
     // that had to queue behind another job gets them too — this is the point
     // at which its own directory is known.
-    if (job.label == tr("GO-MDMC"))
-        setUpGoMdmcLiveFiles(job.jobDir, job.processId, job.liveSeed);
+    if (goMdmc)
+        setUpGoMdmcLiveFiles(job.jobDir, job.processId, job.liveSeed,
+                             job.mdmcCastPerFrame);
 
     jobDock_->show();
     jobDock_->raise();
@@ -10937,7 +10981,25 @@ void MainWindow::onJobFinished(int exitCode, bool crashed)
         // subsequent runs and can be reloaded from the Results selector.
         pollLiveMetrics();
         writeProcessMetrics(currentTaskId_);
+        const int finishedId = currentTaskId_;
         currentTaskId_ = -1;
+
+        // A GO-MDMC run that COMPLETED puts its counters in front of the
+        // user: the numbers are the result of the run in a way no other job
+        // type's are, and hunting for them afterwards was the whole reason
+        // they moved out of a Results tab.
+        //
+        // Only on success. A failed or aborted run is already reported — a
+        // red row with its reason in the tooltip and a status-bar message
+        // above — and popping a window of counters over that says nothing
+        // the failure did not, on numbers that stopped meaning anything the
+        // moment the run died. It stays reachable by double-clicking the row.
+        if (!failed) {
+            const auto record = processRecords_.find(finishedId);
+            if (record != processRecords_.end()
+                && record->second.label == goMdmcTaskLabel())
+                showMdmcSummary(finishedId, record->second.label);
+        }
     }
 
     // A live-streamed run already owns its trajectory tab — finalize its
@@ -10946,14 +11008,14 @@ void MainWindow::onJobFinished(int exitCode, bool crashed)
         const int index = indexOfDocument(liveDoc_);
         Document* streamed = liveDoc_;
         liveDoc_ = nullptr;
-        // A GO-MDMC run streams its equilibrated structure before the first
-        // cycle, so even a run that then accepts no move has exactly one
-        // real frame -- the puckered, thermalized sheet -- and that frame IS
-        // its result. Dropping the tab at "<= 1 frame" left the flat
-        // as-built input on screen as if the run had done nothing.
-        const bool keepSingleFrame =
-            streamed->frames.size() == 1 && streamed->task == tr("GO-MDMC");
-        if (index >= 0 && (streamed->frames.size() > 1 || keepSingleFrame)) {
+        // GO-MDMC used to need an exception here — it streams its
+        // equilibrated structure before the first cycle, so a run that then
+        // accepted nothing had exactly one real frame and that frame WAS its
+        // result, which the "<= 1 frame, drop the tab" rule threw away. It no
+        // longer takes a streamed tab at all (gui/GoMdmcLiveTabs.hpp), and the
+        // equivalent rule for the two tabs it does take lives in
+        // finishGoMdmcLiveFiles(), which keeps them unconditionally.
+        if (index >= 0 && streamed->frames.size() > 1) {
             streamed->fileName.replace(tr(" (live)"), QString());
             tabBar_->setTabText(index, streamed->fileName);
             if (tabBar_->currentIndex() == index)

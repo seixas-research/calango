@@ -119,6 +119,12 @@ Calango enforces a strict separation between what you see and what computes. The
             ↳ Result artifacts (JSON, CSV, trajectories, cube files)
               ↳ Dedicated viewers — bands, spectra, phonons, GW, Wannier, volumetric
 
+.. figure:: _static/data_pipeline.png
+   :alt: Schema of the Calango data pipeline — structure, wizard configuration, generated ASE script, isolated execution, live metrics, result artifacts, dedicated viewers
+   :width: 100%
+
+   The same pipeline as a schema: every stage is a separate, inspectable artifact.
+
 Three design rules follow from this pipeline:
 
 1. **Scripts are the contract.** Every calculation Calango runs can be exported and executed unmodified on any machine with ASE — the GUI is a script generator with a run button, not a black box.

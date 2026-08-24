@@ -110,6 +110,34 @@ appearance controls set bond width, label size, element colours on/off
 whether the canvas follows the application theme --- by default it does not,
 staying \textbf{white} like every other 2D figure in Calango.
 
+\subsection{Highlights}
+
+Two soft fills, both painted \emph{under} the structure and both
+\textbf{annotations rather than chemistry}: they go into an exported image,
+they survive undo, copy and paste, and they are not part of what
+\ui{Send to 3D Viewport} exports.
+
+\ui{Aromatic rings} (off by default) fills every ring the model perceives as
+aromatic. The rule is derived, never stored --- the sketch holds Kek\'ul\'e
+bond orders only --- and deliberately conservative: a five- or six-membered
+ring qualifies when every member contributes to a closed $\pi$ system (one
+ring double bond, or a heteroatom lone pair with none) and the total is
+$4n+2$. Benzene, pyridine, pyrrole, furan, thiophene and both rings of
+naphthalene fill; cyclohexene and cyclopentadiene do not.
+
+To colour an arbitrary \textbf{region}, select atoms and click one of the six
+palette swatches. Several differently-coloured regions can coexist. The
+colour lives on the atom, so a bond is coloured exactly when both of its
+atoms are, the eraser and \ui{Clear} take it away with the atom it belonged
+to, and paste carries it into the copy. \ui{Remove highlight} takes it off
+the selection without touching the atoms.
+
+\subsection{Clearing the canvas}
+
+The bin button, in the same action grid as undo and tidy, wipes the whole
+drawing in \textbf{one undo step}. No confirmation prompt: the editing model
+here is snapshot undo throughout, and \kbd{Ctrl+Z} brings the drawing back.
+
 \subsection{Keyboard}
 
 Scoped to the window, so the main window's viewport modes are untouched, and

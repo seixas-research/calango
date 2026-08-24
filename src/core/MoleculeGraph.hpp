@@ -35,6 +35,19 @@ struct MolAtom {
     /// implied count because "this nitrogen has no hydrogens" is a chemical
     /// statement a drawing must be able to make.
     int explicitHydrogens = -1;
+    /// Index into the sketcher's highlight palette, or -1 for none.
+    ///
+    /// PURELY AN ANNOTATION. It says nothing about the chemistry, is never
+    /// read by the 3D embedding or by the SMILES writer, and does not reach a
+    /// structure sent to the viewport. It lives on the atom rather than in a
+    /// side table so that everything which already moves atoms around moves it
+    /// too: an undo snapshot restores it, removeAtoms() takes it away with the
+    /// atom it belonged to, and copy/paste carries it into the pasted copy.
+    ///
+    /// An INDEX and not a colour, so that core stays Qt-free and so that a
+    /// highlight drawn under one theme means the same thing under the other.
+    /// The palette itself is gui/MoleculeCanvas.cpp's.
+    int highlight = -1;
 };
 
 struct MolBond {
@@ -211,6 +224,16 @@ public:
     /// instead of the alternating long/short one a Kekulé structure would
     /// otherwise relax to).
     std::vector<bool> perceiveAromaticBonds() const;
+
+    /// The perceived aromatic RINGS — every cycle from rings(6) all of whose
+    /// bonds perceiveAromaticBonds() flags, each in traversal order so the
+    /// atom sequence is a polygon that can be filled directly.
+    ///
+    /// Same rule, same conservatism: a ring only qualifies through the closed
+    /// π-system count above, so a benzene drawn by hand, one stamped from the
+    /// template, and one imported from `c1ccccc1` all pass, while cyclohexene
+    /// and cyclopentadiene do not. Naphthalene reports BOTH of its rings.
+    std::vector<std::vector<int>> perceiveAromaticRings() const;
 
     // -- Geometry helpers ---------------------------------------------------
 

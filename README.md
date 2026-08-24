@@ -79,7 +79,7 @@ Distribution builds are signed ad hoc rather than notarized, so the first launch
 
 | Resource | Covers |
 |---|---|
-| [Sphinx manual](docs/sphinx/) *(ReadTheDocs)* | The full manual: builders, wizards, calculators, analysis, orchestration, remote execution, gallery, and building from source |
+| [On-line manual](docs/sphinx/) *(ReadTheDocs)* | The full manual: builders, wizards, calculators, analysis, orchestration, remote execution, gallery, and building from source |
 | [User Guide (PDF)](docs/tex/user_guide/calango_user_guide.pdf) | The complete user guide, including a start-to-finish silicon tutorial |
 | [Packaging Guide (PDF)](docs/tex/packaging/packaging.pdf) | How the installers are produced and what each one bundles |
 

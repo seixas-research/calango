@@ -32,6 +32,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <tuple>
 #include <vector>
 
 using namespace calango::core;
@@ -406,6 +407,63 @@ int main()
         const std::vector<bool> fused = naphthalene.perceiveAromaticBonds();
         check(std::count(fused.begin(), fused.end(), true) == 11,
               "every naphthalene bond is aromatic, the shared one included");
+
+        // The RING form of the same perception, which the canvas fills. Not a
+        // second rule: perceiveAromaticRings() is derived from the bond flags
+        // above, so the two can never disagree about a ring.
+        check(benzene.perceiveAromaticRings().size() == 1,
+              "benzene reports one aromatic ring");
+        if (!benzene.perceiveAromaticRings().empty()) {
+            check(benzene.perceiveAromaticRings().front().size() == 6,
+                  "of six atoms — a polygon the highlight can fill directly");
+        }
+        check(cyclohexane.perceiveAromaticRings().empty(),
+              "cyclohexane reports no aromatic ring");
+        check(diene.perceiveAromaticRings().empty(),
+              "cyclopentadiene reports none");
+        check(naphthalene.perceiveAromaticRings().size() == 2,
+              "naphthalene reports BOTH of its rings, not the 10-cycle");
+
+        // Pyridine and pyrrole: the heteroatom cases the rule is written for,
+        // reached through SMILES because that is how a user gets one onto the
+        // canvas without drawing it.
+        for (const auto& [smiles, rings, label] :
+             {std::tuple<const char*, std::size_t, const char*>{
+                  "c1ccncc1", 1, "pyridine is aromatic"},
+              std::tuple<const char*, std::size_t, const char*>{
+                  "c1cc[nH]c1", 1, "pyrrole is aromatic"},
+              std::tuple<const char*, std::size_t, const char*>{
+                  "C1=CCCCC1", 0, "cyclohexene is not"},
+              std::tuple<const char*, std::size_t, const char*>{
+                  "O=C1C=CC=CC1", 0,
+                  "a cross-conjugated cyclohexadienone is not"}}) {
+            MoleculeGraph parsed;
+            std::string error;
+            const bool ok = smiles::parseTopology(smiles, parsed, &error);
+            check(ok, std::string("parsed ") + smiles + " (" + error + ")");
+            if (ok)
+                check(parsed.perceiveAromaticRings().size() == rings, label);
+        }
+
+        // The highlight annotation is chemistry-free: it rides on the atom,
+        // survives everything that moves atoms, and nothing reads it.
+        MoleculeGraph marked = makeRing(RingTemplate::Benzene, 0, 0);
+        marked.atoms()[0].highlight = 2;
+        marked.atoms()[1].highlight = 2;
+        check(marked.formula() == "C6H6",
+              "a highlighted atom does not change the formula");
+        const std::vector<bool> stillAromatic = marked.perceiveAromaticBonds();
+        check(std::count(stillAromatic.begin(), stillAromatic.end(), true) == 6,
+              "nor the perceived aromaticity");
+        const MoleculeGraph copied = marked.subgraph({0, 1, 2});
+        check(copied.atoms()[0].highlight == 2
+                  && copied.atoms()[1].highlight == 2,
+              "and it travels with the atoms through subgraph() — which is "
+              "what makes copy/paste carry a highlighted region");
+        marked.removeAtoms({0});
+        check(marked.atomCount() == 5 && marked.atoms()[0].highlight == 2,
+              "removeAtoms() takes the highlight away with its atom and "
+              "leaves the rest attached to the right ones after compaction");
     }
 
     // -----------------------------------------------------------------------

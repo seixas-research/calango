@@ -12,6 +12,7 @@
 #include "ui/IconManager.hpp"
 
 #include <QCheckBox>
+#include <QColorDialog>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
@@ -344,6 +345,15 @@ QWidget* MolecularDesignDialog::buildToolSidebar()
               &MoleculeCanvas::tidySelection);
     addAction(2, 1, QStringLiteral("focus-3-line"), tr("Zoom to fit"),
               &MoleculeCanvas::zoomToFit);
+    // Clear the whole canvas. Here, beside the other whole-sketch edits,
+    // rather than in the output sidebar: it is an EDIT, and putting it next to
+    // "Send to 3D Viewport" would be putting a destructive button next to the
+    // one people reach for constantly. No confirmation — see
+    // MoleculeCanvas::clearCanvas() for why undo is the answer instead.
+    addAction(3, 0, QStringLiteral("delete-bin-line"),
+              tr("Clear the canvas.\nOne undo step — Ctrl+Z brings the "
+                 "drawing back."),
+              &MoleculeCanvas::clearCanvas);
     layout->addLayout(actions);
 
     layout->addStretch(1);
@@ -491,6 +501,92 @@ QWidget* MolecularDesignDialog::buildOutputSidebar()
             &MoleculeCanvas::setFollowsTheme);
     form->addRow(followThemeBox_);
     layout->addWidget(appearance);
+
+    // -- Highlights ----------------------------------------------------------
+    //
+    // Annotations, kept apart from Appearance because they are not a property
+    // of the drawing style: they are marks on THIS drawing, they live in the
+    // sketch, and they survive undo. Both of them export with the image and
+    // neither reaches the 3D structure.
+    auto* highlights = new QGroupBox(tr("Highlights"), panel);
+    auto* highlightLayout = new QVBoxLayout(highlights);
+    highlightLayout->setSpacing(4);
+
+    auto* aromaticRow = new QHBoxLayout;
+    aromaticRow->setContentsMargins(0, 0, 0, 0);
+    aromaticBox_ = new QCheckBox(tr("Aromatic rings"), highlights);
+    aromaticBox_->setObjectName(QStringLiteral("aromaticHighlightBox"));
+    aromaticBox_->setChecked(canvas_->aromaticHighlight());
+    aromaticBox_->setToolTip(
+        tr("Fill every ring the model perceives as aromatic.\n\n"
+           "The rule is deliberately conservative and derived, never stored: a "
+           "5- or 6-membered ring qualifies when every member contributes to a "
+           "closed π system — one ring double bond, or a heteroatom lone pair "
+           "with none — and the total is 4n+2. Benzene, pyridine, pyrrole, "
+           "furan, thiophene and both rings of naphthalene fill; cyclohexene "
+           "and cyclopentadiene do not.\n\n"
+           "A ring drawn by hand, one stamped from the template and one "
+           "imported from SMILES are all judged the same way, because the "
+           "sketch stores Kekulé bond orders in all three cases."));
+    connect(aromaticBox_, &QCheckBox::toggled, canvas_,
+            &MoleculeCanvas::setAromaticHighlight);
+    aromaticRow->addWidget(aromaticBox_, 1);
+
+    aromaticColorButton_ = new QPushButton(highlights);
+    aromaticColorButton_->setObjectName(QStringLiteral("aromaticColorButton"));
+    aromaticColorButton_->setFixedSize(28, 20);
+    aromaticColorButton_->setToolTip(tr("Colour of the aromatic ring fill"));
+    setButtonColor(aromaticColorButton_, canvas_->aromaticHighlightColor());
+    connect(aromaticColorButton_, &QPushButton::clicked, this, [this] {
+        const QColor picked =
+            QColorDialog::getColor(canvas_->aromaticHighlightColor(), this,
+                                   tr("Aromatic Ring Colour"));
+        if (!picked.isValid())
+            return;
+        canvas_->setAromaticHighlightColor(picked);
+        setButtonColor(aromaticColorButton_, picked);
+    });
+    aromaticRow->addWidget(aromaticColorButton_, 0);
+    highlightLayout->addLayout(aromaticRow);
+
+    auto* regionLabel = new QLabel(tr("Colour selection:"), highlights);
+    regionLabel->setToolTip(
+        tr("Select atoms with the selection tool, then click a colour to mark "
+           "them.\nRegions of different colours can coexist; a bond is "
+           "coloured when both of its atoms are.\n\n"
+           "Highlights are annotations. They are drawn under the structure, "
+           "they follow their atoms through copy, paste and undo, the eraser "
+           "and Clear take them away with the atoms they belong to, and they "
+           "are not part of what Send to 3D Viewport exports."));
+    highlightLayout->addWidget(regionLabel);
+
+    auto* swatches = new QHBoxLayout;
+    swatches->setContentsMargins(0, 0, 0, 0);
+    swatches->setSpacing(3);
+    for (int i = 0; i < MoleculeCanvas::highlightPaletteSize(); ++i) {
+        auto* swatch = new QPushButton(highlights);
+        swatch->setObjectName(QStringLiteral("highlightSwatch%1").arg(i));
+        swatch->setFixedSize(24, 20);
+        swatch->setToolTip(tr("Highlight the selection — %1")
+                               .arg(MoleculeCanvas::highlightPaletteName(i)));
+        setButtonColor(swatch, MoleculeCanvas::highlightPaletteColor(i));
+        connect(swatch, &QPushButton::clicked, this,
+                [this, i] { canvas_->highlightSelection(i); });
+        swatches->addWidget(swatch);
+    }
+    swatches->addStretch(1);
+    highlightLayout->addLayout(swatches);
+
+    auto* clearHighlight =
+        new QPushButton(tr("Remove highlight"), highlights);
+    clearHighlight->setObjectName(QStringLiteral("clearHighlightButton"));
+    clearHighlight->setToolTip(
+        tr("Take the highlight off the selected atoms. One undo step, like "
+           "applying one."));
+    connect(clearHighlight, &QPushButton::clicked, this,
+            [this] { canvas_->highlightSelection(-1); });
+    highlightLayout->addWidget(clearHighlight);
+    layout->addWidget(highlights);
 
     layout->addStretch(1);
     panel->setFixedWidth(250);

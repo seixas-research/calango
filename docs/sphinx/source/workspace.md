@@ -127,7 +127,7 @@ The point of keeping these links is that a finished calculation stays one click 
 :width: 92%
 :figclass: screenshot
 
-The process manager. Each row keeps a live link to its job directory; double-clicking loads the result.
+The process manager. Each row keeps a live link to its job directory; double-clicking loads the result — except a {guilabel}`GO-MDMC` row, which opens that run's {ref}`MDMC Summary <go-mdmc-summary>` window instead, live or finished.
 ```
 
 ---

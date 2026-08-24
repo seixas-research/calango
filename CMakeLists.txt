@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.8.40
+    VERSION 26.8.41
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -523,6 +523,9 @@ qt_add_executable(calango
     src/gui/MoleculeCanvas.cpp
     src/gui/MolecularDesignDialog.hpp
     src/gui/MolecularDesignDialog.cpp
+    src/gui/MdmcSummaryDialog.hpp
+    src/gui/MdmcSummaryDialog.cpp
+    src/gui/GoMdmcLiveTabs.hpp
     src/gui/SlabWizard.hpp
     src/gui/SlabWizard.cpp
     src/gui/PreferencesDialog.hpp
@@ -2078,6 +2081,7 @@ if(CALANGO_BUILD_TESTS)
         # "Send to 3D Viewport" emits a structure.
         src/gui/MoleculeCanvas.cpp
         src/gui/MolecularDesignDialog.cpp
+        src/gui/MdmcSummaryDialog.cpp
         src/core/MoleculeGraph.cpp
         src/core/Smiles.cpp
         src/core/MoleculeEmbed3d.cpp

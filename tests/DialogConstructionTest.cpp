@@ -25,7 +25,9 @@
 #include "gui/FilmTimelineWidget.hpp"
 #include "gui/DatabaseImportDialog.hpp"
 #include "gui/GeometryConstraintsDialog.hpp"
+#include "gui/GoMdmcLiveTabs.hpp"
 #include "gui/GrapheneOxideMdmcWizard.hpp"
+#include "gui/MdmcSummaryDialog.hpp"
 #include "gui/WorkflowReportDialog.hpp"
 #include "gui/GrapheneOxideWizard.hpp"
 #include "gui/HubbardParametersDialog.hpp"
@@ -614,6 +616,92 @@ int main(int argc, char** argv)
         check(!hasStreamMdCheckbox,
               "no separate \"also show the dynamics\" checkbox - the "
               "interval is the only knob");
+    }
+
+    // GO-MDMC used to open FOUR viewport tabs per local run: the two live
+    // tabs it is supposed to, plus its working input copy (opened only so
+    // stageJob() -- which stages whatever document is current -- would find
+    // it) and the generic stdout-streamed trajectory tab every frame-
+    // producing run gets. Both extras spent the opening of a run showing the
+    // unrelaxed input geometry, and the streamed one was a strictly worse
+    // duplicate of "All Structures" besides.
+    //
+    // MainWindow itself is not built into any test binary, so what is pinned
+    // here is the CONTRACT the three tab-opening sites were rewritten
+    // against -- the list of views a run creates, and the predicate that
+    // suppresses the streamed tab. gui/GoMdmcLiveTabs.hpp is deliberately the
+    // only place either answer is written down, so a regression has to go
+    // through this.
+    std::printf("GO-MDMC live viewport tabs:\n");
+    {
+        const auto views = calango::gui::goMdmcLiveViews();
+        check(views.size() == 2,
+              "a GO-MDMC run creates exactly two viewport tabs (it was four)");
+        if (views.size() == 2) {
+            check(views[0].fileName
+                      == QStringLiteral("mdmc_all_structures.extxyz"),
+                  "the first follows mdmc_all_structures.extxyz");
+            check(views[0].title
+                      == QStringLiteral("GO-MDMC / All Structures"),
+                  "titled \"GO-MDMC / All Structures\"");
+            check(views[1].fileName
+                      == QStringLiteral("accepted_structures.extxyz"),
+                  "the second follows accepted_structures.extxyz");
+            check(views[1].title == QStringLiteral("GO-MDMC / Accepted"),
+                  "titled \"GO-MDMC / Accepted\"");
+        }
+        // Same file names the generated script writes. Read off the config
+        // rather than retyped, so renaming one and not the other fails here.
+        calango::core::GrapheneOxideMdmcConfig mdmcConfig;
+        check(QString::fromStdString(mdmcConfig.trajectory)
+                  == views[1].fileName,
+              "and the accepted-tab file name IS the script's own "
+              "config.trajectory, not a second copy of the literal");
+
+        check(!calango::gui::opensStreamedTrajectoryTab(
+                  calango::gui::goMdmcTaskLabel()),
+              "GO-MDMC takes no stdout-streamed trajectory tab");
+        for (const char* other : {"Molecular Dynamics", "Geometry Optimization",
+                                  "NEB", "Local calculation"}) {
+            check(calango::gui::opensStreamedTrajectoryTab(
+                      QString::fromLatin1(other)),
+                  std::string("every other frame-producing run still does (")
+                      + other + ")");
+        }
+    }
+
+    std::printf("MDMC Summary dialog:\n");
+    {
+        // The counters moved out of the Results dock into a window of their
+        // own, opened when a run finishes and by double-clicking its row in
+        // the Processes panel.
+        calango::gui::MdmcSummaryDialog summary;
+        check(summary.processId() == -1,
+              "starts bound to no process");
+        check(summary.runSummaryTable() != nullptr
+                  && summary.moveBreakdownTable() != nullptr,
+              "carries both tables MainWindow paints into");
+        check(summary.runSummaryTable()->columnCount() == 2,
+              "the run block is two columns (quantity, value)");
+        check(summary.moveBreakdownTable()->columnCount() == 4,
+              "the per-move-kind block keeps its four");
+        check(!summary.isModal(),
+              "modeless -- the numbers are meant to sit beside the viewport");
+
+        // Binding clears whatever the previous run left behind, so a window
+        // re-pointed at another process can never show a mix of the two.
+        summary.moveBreakdownTable()->setRowCount(3);
+        summary.runSummaryTable()->setRowCount(5);
+        summary.bindProcess(7, QStringLiteral("GO-MDMC"), true);
+        check(summary.processId() == 7, "binds to a process by id");
+        check(summary.runSummaryTable()->rowCount() == 0
+                  && summary.moveBreakdownTable()->rowCount() == 0,
+              "and clears both tables, so no other run's numbers survive it");
+        summary.setRunning(false);
+        check(summary.processId() == 7,
+              "a finished run keeps its binding -- only the subtitle changes");
+        exerciseControls(&summary);
+        check(true, "survives every control being toggled");
     }
 
     std::printf("Workflow report dialog:\n");
@@ -6406,6 +6494,131 @@ int main(int argc, char** argv)
             }
             check(canvas->tool() == MoleculeCanvas::Tool::Ring,
                   "every tool can be selected in turn");
+        }
+
+        // -- Highlights, and Clear ------------------------------------------
+        //
+        // Both are annotations on the drawing rather than changes to it, and
+        // both have to be one undo away — a wiped canvas that could not come
+        // back would be the one unrecoverable action in a dialog whose whole
+        // editing model is snapshot undo.
+        check(dialog.findChild<QCheckBox*>(
+                  QStringLiteral("aromaticHighlightBox")) != nullptr,
+              "the appearance sidebar offers the aromatic-ring highlight");
+        check(dialog.findChild<QPushButton*>(
+                  QStringLiteral("aromaticColorButton")) != nullptr,
+              "with a colour of its own");
+        {
+            int swatches = 0;
+            for (int i = 0; i < MoleculeCanvas::highlightPaletteSize(); ++i) {
+                if (dialog.findChild<QPushButton*>(
+                        QStringLiteral("highlightSwatch%1").arg(i)))
+                    ++swatches;
+            }
+            check(swatches == MoleculeCanvas::highlightPaletteSize()
+                      && swatches > 1,
+                  "and the region palette puts every colour on screen");
+        }
+        check(dialog.findChild<QPushButton*>(
+                  QStringLiteral("clearHighlightButton")) != nullptr,
+              "plus a way to take a highlight back off");
+
+        if (canvas) {
+            check(!canvas->aromaticHighlight(),
+                  "the aromatic fill is OFF by default — a Kekule drawing is "
+                  "what a chemist expects to see");
+            canvas->setAromaticHighlight(true);
+            check(canvas->aromaticHighlight(), "and can be turned on");
+            canvas->setAromaticHighlight(false);
+
+            // Region highlights ride on the atoms and survive undo with them.
+            check(!canvas->hasHighlights(), "a fresh sketch has no highlights");
+            canvas->selectAll();
+            canvas->highlightSelection(1);
+            check(canvas->hasHighlights(), "colouring a selection marks it");
+            canvas->undo();
+            check(!canvas->hasHighlights(),
+                  "and undo takes the colour back off — one step, like every "
+                  "other edit");
+            canvas->redo();
+            check(canvas->hasHighlights(), "redo puts it back");
+            canvas->selectAll();
+            canvas->highlightSelection(-1);
+            check(!canvas->hasHighlights(),
+                  "and \"remove highlight\" clears it without touching the "
+                  "atoms");
+            check(canvas->graph().atomCount() == 6,
+                  "which are all still there");
+
+            // Clear wipes everything, in ONE undo step.
+            const int before = canvas->graph().atomCount();
+            check(before > 0, "there is something on the canvas to clear");
+            canvas->clearCanvas();
+            check(canvas->graph().atomCount() == 0, "Clear empties the canvas");
+            check(canvas->canUndo(), "and is undoable");
+            canvas->undo();
+            check(canvas->graph().atomCount() == before,
+                  "one undo brings the whole drawing back");
+
+            // A highlight is an ANNOTATION: it must not reach the 3D export.
+            canvas->selectAll();
+            canvas->highlightSelection(0);
+            std::shared_ptr<calango::core::Structure> exported;
+            QObject::connect(
+                &dialog, &MolecularDesignDialog::structureReady, &dialog,
+                [&exported](std::shared_ptr<calango::core::Structure> s,
+                            const QString&) { exported = std::move(s); });
+            check(dialog.sendToViewport(),
+                  "a highlighted sketch still exports");
+            check(exported && exported->chemicalFormula() == "C6H6",
+                  "as the same C6H6 — the highlight is a drawing annotation, "
+                  "not chemistry");
+
+            // ...but it MUST reach the image export, which is the other half
+            // of "an annotation". renderTo() is the one path both the screen
+            // and the exported PNG/SVG go through, so rendering it here is
+            // rendering what the file would contain.
+            //
+            // Counted as SATURATED pixels: this sketch is all carbon, drawn
+            // in ink on white, so every pixel of it is grey. Anything with a
+            // channel spread came from a highlight and from nothing else.
+            const auto tintedPixels = [&canvas]() {
+                QImage image(320, 260, QImage::Format_ARGB32);
+                image.fill(Qt::white);
+                QPainter painter(&image);
+                painter.setRenderHint(QPainter::Antialiasing, true);
+                canvas->renderTo(painter, image.size(), Qt::white);
+                painter.end();
+                int tinted = 0;
+                for (int y = 0; y < image.height(); ++y) {
+                    for (int x = 0; x < image.width(); ++x) {
+                        const QColor c = image.pixelColor(x, y);
+                        const int spread =
+                            std::max({c.red(), c.green(), c.blue()})
+                            - std::min({c.red(), c.green(), c.blue()});
+                        if (spread > 25)
+                            ++tinted;
+                    }
+                }
+                return tinted;
+            };
+            const int withRegion = tintedPixels();
+            check(withRegion > 200,
+                  "a region highlight is rendered into the exported image");
+
+            canvas->selectAll();
+            canvas->highlightSelection(-1);
+            check(tintedPixels() == 0,
+                  "and the same drawing without it exports pure ink on white "
+                  "— nothing else in a carbon-only sketch is coloured");
+
+            canvas->setAromaticHighlight(true);
+            const int withAromatic = tintedPixels();
+            check(withAromatic > 200,
+                  "the aromatic fill is rendered into the export too — "
+                  "benzene is perceived aromatic and filled");
+            canvas->setAromaticHighlight(false);
+            check(tintedPixels() == 0, "and vanishes when it is switched off");
         }
 
         exerciseControls(&dialog);

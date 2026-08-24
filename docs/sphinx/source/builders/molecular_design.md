@@ -29,15 +29,15 @@ and appearance on the right.
 selection and eraser tools, the bond family (single, double, triple, wedge,
 hash), the chain tool, the atom-label and caption text tools, formal charge,
 and the ring-template tool. Below them sit the ring palette, the element the
-atom tool writes, and the undo / redo / copy / paste / tidy / zoom-to-fit
-actions.
+atom tool writes, and the undo / redo / copy / paste / tidy / zoom-to-fit /
+clear actions.
 
 **Centre — the canvas.** Everything the other two zones do not need.
 Mouse-wheel zooms toward the pointer, middle-drag (or {kbd}`Alt`-drag) pans.
 
 **Right — output and appearance.** The molecular formula of the drawing (or of
-the selection), the SMILES field, the two output buttons, and the appearance
-controls.
+the selection), the SMILES field, the two output buttons, the appearance
+controls, and the highlight controls.
 
 ---
 
@@ -158,6 +158,16 @@ tidying a canvas of three fragments must not stack them on each other.
 Disconnected fragments are legal and normal. The formula read-out covers the
 whole canvas and says how many fragments there are.
 
+### Clearing the canvas
+
+The **clear** button (the bin, in the same action grid as undo and tidy) wipes
+the whole drawing — atoms, bonds, captions and highlights — in **one undo
+step**. There is no confirmation prompt, deliberately: this dialog's entire
+editing model is snapshot undo, {kbd}`Ctrl+Z` brings the drawing straight back,
+and none of the other destructive actions here ({kbd}`Delete`, pasting over a
+selection, a SMILES import that replaces what is on the canvas) asks either.
+The status line says how many atoms went and that undo restores them.
+
 ---
 
 ## SMILES
@@ -276,6 +286,60 @@ band.
 | {guilabel}`Label size` | Point size of atom labels and captions, 6–36 pt |
 | {guilabel}`Element colours` | On, heteroatoms and the bond halves reaching them take their CPK colour. Off, the drawing is monochrome — which is what most journals still want |
 | {guilabel}`Canvas follows theme` | Off (the default), the drawing surface is **white** whatever the application theme is — the same rule every 2D figure in Calango follows, because a sketch ends up in a paper. On, the canvas follows Dark / Light instead. The export is unaffected either way |
+
+---
+
+## Highlights
+
+Two kinds of soft fill, painted **under** the structure so they read as
+highlighter behind the drawing rather than as ink on top of it. Both are
+**annotations, not chemistry**: they are part of the drawing, so they are drawn
+into an exported PNG or SVG, they survive undo, copy and paste — and they are
+*not* part of what {guilabel}`Send to 3D Viewport` exports. A highlighted
+benzene still sends C₆H₆ and nothing else.
+
+### Aromatic rings
+
+{guilabel}`Aromatic rings` fills every ring the model perceives as aromatic,
+in a colour of your choosing. **Off by default** — a Kekulé drawing is what a
+chemist expects to see, and the fill is an opinion about it.
+
+The rule is deliberately conservative, and it is **derived, never stored**: the
+sketch holds Kekulé bond orders only, so a ring drawn by hand, one stamped from
+the benzene template and one imported from `c1ccccc1` are all judged the same
+way. A five- or six-membered ring qualifies when every member contributes to a
+closed π system — one ring double bond, or a heteroatom donating a lone pair
+with none — and the total is 4n+2.
+
+| Fills | Does not fill |
+|---|---|
+| benzene, pyridine, pyrrole, furan, thiophene | cyclohexene, cyclopentadiene (its sp³ CH₂ breaks the ring) |
+| both rings of naphthalene, separately | a cross-conjugated ring ketone |
+
+Larger aromatic systems (azulene, the porphyrins) are handled correctly as
+Kekulé structures but are not filled: perception stops at six-membered rings.
+
+### Colouring a region
+
+Select atoms with the selection tool, then click one of the six palette
+swatches to mark them. Several differently-coloured regions can coexist on one
+canvas — the palette is a small fixed set rather than a free colour picker
+precisely so that two regions stay told apart.
+
+Highlights live **on the atoms**, which is what makes everything else follow
+without a special case:
+
+- a **bond** is coloured exactly when both of its atoms carry the same colour,
+  so two adjacent regions of different colours meet at the bond between them
+  instead of blending across it;
+- the **eraser** and **clear** take a highlight away with the atom it belonged
+  to;
+- **copy and paste** carry the colour into the pasted copy;
+- **undo** restores it like any other edit — applying or removing a highlight
+  is one step.
+
+{guilabel}`Remove highlight` takes the colour off the selected atoms without
+touching the atoms themselves.
 
 ---
 

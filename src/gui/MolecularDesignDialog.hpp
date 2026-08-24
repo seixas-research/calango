@@ -14,6 +14,7 @@ class QDoubleSpinBox;
 class QGridLayout;
 class QLabel;
 class QLineEdit;
+class QPushButton;
 class QSpinBox;
 class QToolButton;
 
@@ -108,6 +109,8 @@ private:
     QSpinBox* fontSizeBox_ = nullptr;
     QCheckBox* elementColorsBox_ = nullptr;
     QCheckBox* followThemeBox_ = nullptr;
+    QCheckBox* aromaticBox_ = nullptr;
+    QPushButton* aromaticColorButton_ = nullptr;
     QCheckBox* transparentBox_ = nullptr;
     QCheckBox* addHydrogensBox_ = nullptr;
     QCheckBox* relaxBox_ = nullptr;

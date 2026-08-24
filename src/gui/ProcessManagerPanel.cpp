@@ -216,11 +216,17 @@ ProcessManagerPanel::ProcessManagerPanel(QWidget* parent)
     connect(tree_, &QTreeWidget::currentItemChanged, this,
             [this] { updateAbortButton(); });
     updateAbortButton();
+    // Double-click reports the activation and lets the controller decide.
+    // It used to emit loadResultRequested() itself, which is still what
+    // MainWindow does for every row but a GO-MDMC one — that one now opens
+    // the run's Summary window instead, live or finished. A row with no
+    // directory (a remote submission before it has staged) is still inert.
     connect(tree_, &QTreeWidget::itemDoubleClicked, this,
             [this](QTreeWidgetItem* item, int) {
                 const QString dir = item->data(0, kDirRole).toString();
                 if (!dir.isEmpty())
-                    Q_EMIT loadResultRequested(dir);
+                    Q_EMIT taskActivated(item->data(0, kIdRole).toInt(),
+                                         item->text(ColTask), dir);
             });
 
     // Right-click a process for everything that can be done WITH that process,

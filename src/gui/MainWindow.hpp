@@ -14,6 +14,7 @@
 #include <QPair>
 #include <QSize>
 #include <QString>
+#include <QStringList>
 
 #include <deque>
 #include <functional>
@@ -44,6 +45,7 @@ namespace calango::gui {
 class BrandingPanel;
 class JobLogWidget;
 class NebDialog;
+class MdmcSummaryDialog;
 class MolecularDesignDialog;
 class PointOfViewDialog;
 class SimulationWizardBase;
@@ -905,6 +907,23 @@ private:
     /// "acceptance_cumulative" series (any non-GO-MDMC job) clears the table
     /// to its placeholder state.
     void updateMdmcSummaryTable(const ProcessRecord& record);
+    /// Open (or raise) the MDMC Summary window on `processId`.
+    ///
+    /// Two callers, and no third: onJobFinished() when a GO-MDMC run
+    /// completes SUCCESSFULLY, and a double-click on the run's row in the
+    /// Processes panel — which works during the run and long after it, the
+    /// difference being only whether the numbers are still moving.
+    ///
+    /// `label` is the process's display name when the caller has it (the
+    /// Processes panel does); empty falls back to the record's own.
+    void showMdmcSummary(int processId, const QString& label = {});
+    /// Repaint the MDMC Summary window from the record of the process it is
+    /// bound to, hydrating that record from disk if it has no samples in
+    /// memory. No-op when the window has never been opened or is hidden.
+    ///
+    /// Called on every metrics tick, INDEPENDENTLY of which process the
+    /// Results dock has selected: the window follows its own run.
+    void refreshMdmcSummaryDialog();
     /// Repaint the GO-MDMC "MDMC Summary" tab's RUN block — cycles done/total,
     /// MD steps done, accepted count, current acceptance %, elapsed. Called by
     /// updateMdmcSummaryTable(), so the two halves of that one tab always
@@ -921,8 +940,22 @@ private:
     /// and register the two files they follow. Called from launchJob() rather
     /// than from openGoMdmc() so a run that had to QUEUE behind another job
     /// gets them too — this is the point at which its own directory is known.
+    ///
+    /// These two are the ONLY viewport tabs a GO-MDMC run creates: it takes
+    /// no stdout-streamed tab (launchJob() skips it) and its working input
+    /// copy is staged without a tab (stagedRunStructure_).
+    ///
+    /// `castPerFrame` is the wizard's "Redefine Cast on every accepted move".
     void setUpGoMdmcLiveFiles(const QString& jobDir, int processId,
-                              const std::shared_ptr<core::Structure>& seed);
+                              const std::shared_ptr<core::Structure>& seed,
+                              bool castPerFrame);
+    /// Titles of the viewport tabs `setUpGoMdmcLiveFiles()` created for
+    /// `processId`, in creation order. Empty for a process that is not a
+    /// GO-MDMC run (or whose tabs the user has since closed).
+    ///
+    /// Exists for the regression test that pins "a GO-MDMC run opens exactly
+    /// these two tabs and no others" — the count used to be four.
+    QStringList goMdmcLiveTabTitles(int processId) const;
     /// Timer tick: re-read each followed file and append whatever frames are
     /// new to its tab. A file that does not exist yet, is mid-write or fails
     /// to parse is simply left for the next tick — nothing partial is ever
@@ -1129,17 +1162,12 @@ private:
     /// job type — same convention as e.g. the Pressure tab already follows
     /// for a non-NPT run.
     MultiSeriesPlotWidget* mdmcAcceptancePlot_ = nullptr;
-    /// GO-MDMC's "MDMC Summary" Results tab: cumulative attempts/accepted/
-    /// acceptance-ratio, one row per move kind, read from the SAME polled
-    /// metrics — see updateMdmcSummaryTable().
-    QTableWidget* mdmcSummaryTable_ = nullptr;
-    /// The RUN block of that same tab, above the per-move-kind breakdown: the
-    /// five whole-run quantities (cycles done/total, MD steps done, accepted
-    /// count, current acceptance %, elapsed). A second table rather than more
-    /// rows in the first because the two have different shapes — five named
-    /// scalars against a row per move kind — and folding either into the
-    /// other's columns would have cost a diagnostic the module already had.
-    QTableWidget* mdmcRunSummaryTable_ = nullptr;
+    /// GO-MDMC's counters, in a modeless window of their own rather than in a
+    /// Results tab: the five whole-run quantities above the per-move-kind
+    /// breakdown, both read from the SAME polled metrics that drive the
+    /// Acceptance plot beside them. Created on first use and kept for the
+    /// session; bound to one process at a time — see showMdmcSummary().
+    MdmcSummaryDialog* mdmcSummaryDialog_ = nullptr;
     TimelineWidget* timeline_ = nullptr;
     /// The default dock arrangement, captured once at construction before any
     /// saved state is restored — the only point at which it exists. View →
@@ -1179,6 +1207,11 @@ private:
         /// Geometry the live tab is seeded from, captured at submission for
         /// the reason above. Null when `expectFrames` is false.
         std::shared_ptr<core::Structure> liveSeed;
+        /// GO-MDMC only: the wizard's "Redefine Cast on every accepted move".
+        /// Captured at SUBMISSION, like liveSeed and for the same reason —
+        /// a run that queues behind another job reaches launchJob() long
+        /// after its wizard is gone. Ignored by every other job type.
+        bool mdmcCastPerFrame = true;
     };
     /// Jobs waiting for the runner, oldest first. Submitting while something
     /// runs appends here instead of being refused; each finish pops one.
@@ -1252,6 +1285,23 @@ private:
     /// Primitive reference cell staged as primitive.extxyz on the next
     /// stageJob (band unfolding); consumed and cleared there.
     std::shared_ptr<const core::Structure> stagedPrimitive_;
+    /// The geometry the next stageJob() writes as structure.extxyz, INSTEAD
+    /// of the current document's; consumed and cleared there, like
+    /// stagedPrimitive_ above.
+    ///
+    /// Exists for a launcher that runs against a working COPY the user never
+    /// asked to see — GO-MDMC, which refines a decoupled duplicate of the
+    /// chosen Graphene Oxide Build. Before this, the only way to stage
+    /// something other than what is on screen was to open it in a tab and
+    /// select it, which is exactly the spurious viewport tab that behaviour
+    /// left behind on every run. runScript() also seeds a live tab from this
+    /// when set, for the same reason: the run's input is this structure, not
+    /// whichever document happens to be current.
+    std::shared_ptr<core::Structure> stagedRunStructure_;
+    /// GO-MDMC's "Redefine Cast on every accepted move", staged for the next
+    /// runScript() the way stagedRunStructure_ is for the next stageJob();
+    /// copied into QueuedJob::mdmcCastPerFrame there and reset to its default.
+    bool pendingMdmcCastPerFrame_ = true;
     /// Calculator provenance JSON staged as calculator.json on the next
     /// stageJob (set by runSimulationWizard); consumed and cleared there. Lets
     /// the MLWF wizard inherit a completed baseline's engine + parameters.

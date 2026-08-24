@@ -5,6 +5,7 @@
 #include "gui/GuiUtils.hpp"
 #include "gui/PlotPalette.hpp"
 
+#include <QBrush>
 #include <QFont>
 #include <QFontMetricsF>
 #include <QKeyEvent>
@@ -13,6 +14,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QPen>
+#include <QPolygonF>
 #include <QRectF>
 #include <QWheelEvent>
 
@@ -216,6 +218,118 @@ void MoleculeCanvas::setFollowsTheme(bool on)
 {
     followTheme_ = on;
     update();
+}
+
+// ---------------------------------------------------------------------------
+// Highlights
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// The region-highlight palette: six hues that stay apart from one another on
+/// a white page AND on a dark one, and that none of the CPK element colours
+/// sits directly on top of. Painted at low alpha, so what matters is the hue.
+struct HighlightEntry {
+    const char* name;
+    QColor color;
+};
+
+const std::vector<HighlightEntry>& highlightEntries()
+{
+    static const std::vector<HighlightEntry> entries = {
+        {QT_TRANSLATE_NOOP("MoleculeCanvas", "Yellow"), QColor(0xf5, 0xd0, 0x3a)},
+        {QT_TRANSLATE_NOOP("MoleculeCanvas", "Green"), QColor(0x53, 0xc1, 0x6a)},
+        {QT_TRANSLATE_NOOP("MoleculeCanvas", "Blue"), QColor(0x4b, 0x9b, 0xe0)},
+        {QT_TRANSLATE_NOOP("MoleculeCanvas", "Pink"), QColor(0xe8, 0x6a, 0xa8)},
+        {QT_TRANSLATE_NOOP("MoleculeCanvas", "Purple"), QColor(0x9a, 0x74, 0xd6)},
+        {QT_TRANSLATE_NOOP("MoleculeCanvas", "Orange"), QColor(0xef, 0x8b, 0x3f)},
+    };
+    return entries;
+}
+
+} // namespace
+
+int MoleculeCanvas::highlightPaletteSize()
+{
+    return static_cast<int>(highlightEntries().size());
+}
+
+QColor MoleculeCanvas::highlightPaletteColor(int index)
+{
+    if (index < 0 || index >= highlightPaletteSize())
+        return {};
+    return highlightEntries()[static_cast<std::size_t>(index)].color;
+}
+
+QString MoleculeCanvas::highlightPaletteName(int index)
+{
+    if (index < 0 || index >= highlightPaletteSize())
+        return {};
+    return tr(highlightEntries()[static_cast<std::size_t>(index)].name);
+}
+
+void MoleculeCanvas::setAromaticHighlight(bool on)
+{
+    aromaticHighlight_ = on;
+    update();
+}
+
+void MoleculeCanvas::setAromaticHighlightColor(const QColor& color)
+{
+    if (!color.isValid())
+        return;
+    aromaticColor_ = color;
+    update();
+}
+
+bool MoleculeCanvas::hasHighlights() const
+{
+    for (const MolAtom& atom : graph_.atoms())
+        if (atom.highlight >= 0)
+            return true;
+    return false;
+}
+
+void MoleculeCanvas::highlightSelection(int index)
+{
+    if (selectedAtoms_.empty()) {
+        Q_EMIT statusMessage(tr("Select atoms first — a highlight colours a "
+                                "region of the drawing, not the whole canvas."));
+        return;
+    }
+    pushUndo(index < 0 ? tr("Clear highlight") : tr("Highlight"));
+    for (int atom : selectedAtoms_) {
+        if (atom >= 0 && atom < graph_.atomCount())
+            graph_.atoms()[static_cast<std::size_t>(atom)].highlight = index;
+    }
+    commit(index < 0
+               ? tr("Highlight cleared from %n atom(s).", nullptr,
+                    static_cast<int>(selectedAtoms_.size()))
+               : tr("%1 highlight on %n atom(s).", nullptr,
+                    static_cast<int>(selectedAtoms_.size()))
+                     .arg(highlightPaletteName(index)));
+}
+
+void MoleculeCanvas::clearCanvas()
+{
+    if (graph_.empty()) {
+        Q_EMIT statusMessage(tr("The canvas is already empty."));
+        return;
+    }
+    finishInlineEdit();
+    const int atoms = graph_.atomCount();
+    pushUndo(tr("Clear canvas"));
+    graph_ = core::MoleculeGraph();
+    selectedAtoms_.clear();
+    selectedCaptions_.clear();
+    hoverAtom_ = -1;
+    hoverBond_ = -1;
+    resetView();
+    Q_EMIT selectionChanged();
+    // One undo step, and the message says so — a wiped canvas that looks
+    // unrecoverable is the thing this has to not be.
+    commit(tr("Canvas cleared — %n atom(s) removed. Undo restores them.",
+              nullptr, atoms));
 }
 
 // ---------------------------------------------------------------------------
@@ -524,6 +638,96 @@ void MoleculeCanvas::renderTo(QPainter& painter, const QSize& size,
     paintSketch(painter, size, scale, origin, false);
 }
 
+void MoleculeCanvas::paintHighlights(QPainter& painter, double scale)
+{
+    const std::vector<MolAtom>& atoms = graph_.atoms();
+    if (atoms.empty())
+        return;
+
+    const QPainter::RenderHints hints = painter.renderHints();
+    const QPen savedPen = painter.pen();
+    const QBrush savedBrush = painter.brush();
+    painter.setPen(Qt::NoPen);
+
+    // -- Aromatic rings ------------------------------------------------------
+    //
+    // Drawn FIRST, so a region colour the user applied deliberately is never
+    // buried under a fill the program decided to draw. Inset toward the ring
+    // centre so the fill reads as being inside the ring rather than as a
+    // thickening of its bonds.
+    if (aromaticHighlight_) {
+        QColor fill = aromaticColor_;
+        fill.setAlpha(78);
+        painter.setBrush(fill);
+        for (const std::vector<int>& ring : graph_.perceiveAromaticRings()) {
+            QPointF centre;
+            for (int atom : ring) {
+                const MolAtom& a = atoms[static_cast<std::size_t>(atom)];
+                centre += toScreen(a.x, a.y);
+            }
+            centre /= static_cast<double>(ring.size());
+            QPolygonF polygon;
+            for (int atom : ring) {
+                const MolAtom& a = atoms[static_cast<std::size_t>(atom)];
+                polygon << centre + 0.78 * (toScreen(a.x, a.y) - centre);
+            }
+            painter.drawPolygon(polygon);
+        }
+    }
+
+    // -- Region colours ------------------------------------------------------
+    //
+    // A round-capped band along every bond whose two atoms carry the SAME
+    // colour, plus a disc behind each highlighted atom — so an isolated
+    // highlighted atom still shows, and two adjacent regions of different
+    // colours meet at the bond between them instead of blending across it.
+    //
+    // Built as ONE path per colour and filled once, rather than drawn shape by
+    // shape. The shapes overlap heavily (a disc at every vertex, a band along
+    // every bond), and painting them separately at the same alpha composites
+    // each overlap twice: a marker pen with a dark blob at every atom, which
+    // is exactly what a highlight must not look like. simplified() unions
+    // them, so the band is one even tint however many pieces it is made of.
+    const double radius = 0.27 * scale;
+    for (int index = 0; index < highlightPaletteSize(); ++index) {
+        QPainterPath discs;
+        for (int i = 0; i < graph_.atomCount(); ++i) {
+            if (atoms[static_cast<std::size_t>(i)].highlight != index)
+                continue;
+            const MolAtom& a = atoms[static_cast<std::size_t>(i)];
+            discs.addEllipse(toScreen(a.x, a.y), radius, radius);
+        }
+        if (discs.isEmpty())
+            continue;
+
+        QPainterPath segments;
+        for (const MolBond& bond : graph_.bonds()) {
+            const MolAtom& a = atoms[static_cast<std::size_t>(bond.a)];
+            const MolAtom& b = atoms[static_cast<std::size_t>(bond.b)];
+            if (a.highlight != index || b.highlight != index)
+                continue;
+            segments.moveTo(toScreen(a.x, a.y));
+            segments.lineTo(toScreen(b.x, b.y));
+        }
+        QPainterPath region = discs;
+        if (!segments.isEmpty()) {
+            QPainterPathStroker stroker;
+            stroker.setWidth(2.0 * radius);
+            stroker.setCapStyle(Qt::RoundCap);
+            region = region.united(stroker.createStroke(segments));
+        }
+
+        QColor color = highlightPaletteColor(index);
+        color.setAlpha(96);
+        painter.setBrush(color);
+        painter.drawPath(region.simplified());
+    }
+
+    painter.setPen(savedPen);
+    painter.setBrush(savedBrush);
+    painter.setRenderHints(hints);
+}
+
 void MoleculeCanvas::paintSketch(QPainter& painter, const QSize& size,
                                  double scale, const QPointF& origin,
                                  bool decorations)
@@ -536,6 +740,12 @@ void MoleculeCanvas::paintSketch(QPainter& painter, const QSize& size,
     const QPointF savedOrigin = origin_;
     scale_ = scale;
     origin_ = origin;
+
+    // Annotations first, so everything else is drawn on top of them. Not
+    // gated on `decorations`: a highlight is part of the drawing the user
+    // made, unlike a selection halo or a rubber band, and an exported image
+    // that dropped it would be missing something they put there.
+    paintHighlights(painter, scale);
 
     if (decorations && !selectedAtoms_.empty()) {
         QColor halo = PlotPalette::highlight;

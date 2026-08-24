@@ -89,6 +89,16 @@ Q_SIGNALS:
     /// "Load Result" on a task — MainWindow decides what the directory
     /// contains (trajectory, band data, ...) and opens it.
     void loadResultRequested(const QString& directory);
+    /// A task was DOUBLE-CLICKED. Carries its id and name as well as its
+    /// directory, because what a double-click should do depends on what kind
+    /// of run it is: a GO-MDMC row opens that run's Summary window, every
+    /// other row keeps the "load this run's result" behaviour double-click
+    /// has always had (which is what this signal used to emit directly, as
+    /// loadResultRequested).
+    ///
+    /// The panel does not decide — it reports the activation and the
+    /// controller, which is what knows one run from another, decides.
+    void taskActivated(int id, const QString& name, const QString& directory);
     /// Right-click on a task. MainWindow builds the menu, since what belongs
     /// in it depends on which result files that run left behind.
     void contextMenuRequested(const QString& directory, const QPoint& globalPos);

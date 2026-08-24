@@ -88,6 +88,42 @@ public:
     bool followsTheme() const { return followTheme_; }
     void setFollowsTheme(bool on);
 
+    // -- Highlights ---------------------------------------------------------
+    //
+    // Two independent things, both DRAWING ANNOTATIONS and neither of them
+    // chemistry: they are painted under the structure, they survive undo and
+    // the image export, and nothing reads them on the way to a 3D structure or
+    // to a SMILES string.
+
+    /// The soft fill inside every ring core::MoleculeGraph::
+    /// perceiveAromaticRings() reports. Off by default — a Kekulé drawing is
+    /// what a chemist expects to see, and the fill is an opinion about it.
+    bool aromaticHighlight() const { return aromaticHighlight_; }
+    void setAromaticHighlight(bool on);
+    QColor aromaticHighlightColor() const { return aromaticColor_; }
+    void setAromaticHighlightColor(const QColor& color);
+
+    /// Size of the region-highlight palette, and its colours. A small fixed
+    /// set rather than a full colour picker: several regions on one canvas
+    /// have to stay distinguishable from each other, which a free choice makes
+    /// the user's problem.
+    static int highlightPaletteSize();
+    /// Palette entry `index`, or an invalid colour when out of range.
+    static QColor highlightPaletteColor(int index);
+    /// A short name for palette entry `index`, for the swatch's tooltip.
+    static QString highlightPaletteName(int index);
+
+    /// Paint every SELECTED atom with palette colour `index`, or clear the
+    /// highlight with -1. One undo step; a no-op when nothing is selected.
+    ///
+    /// Regions are per-atom, so a bond is highlighted exactly when both of its
+    /// atoms carry the same colour — which is what makes two adjacent regions
+    /// of different colours meet at a bond instead of blending across it.
+    void highlightSelection(int index);
+    /// Whether any atom carries a region highlight (drives the "clear
+    /// highlights" swatch's enabled state).
+    bool hasHighlights() const;
+
     // -- View ---------------------------------------------------------------
 
     /// Fit the whole sketch in the widget with a comfortable margin. No-op on
@@ -107,6 +143,12 @@ public:
     void pasteClipboard();
     void deleteSelection();
     void selectAll();
+    /// Wipe the canvas — every atom, bond, caption and highlight — as ONE undo
+    /// step. Deliberately not guarded by a confirmation: this dialog's whole
+    /// editing model is snapshot undo, a cleared canvas is one Ctrl+Z away,
+    /// and no other destructive action here (Delete, Paste over a selection,
+    /// a SMILES import that replaces the drawing) asks either.
+    void clearCanvas();
     /// Regularize the selection, or the whole sketch when nothing is selected.
     void tidySelection();
 
@@ -145,6 +187,10 @@ private:
     // -- Painting -----------------------------------------------------------
     void paintSketch(QPainter& painter, const QSize& size, double scale,
                      const QPointF& origin, bool decorations);
+    /// The aromatic fills and the region colours, painted UNDER the structure
+    /// so they read as highlighter behind the drawing rather than as ink on
+    /// top of it. Part of paintSketch(), so an exported image carries them.
+    void paintHighlights(QPainter& painter, double scale);
     /// `scale` is passed rather than read from scale_ only so that the font
     /// and pen sizes stay tied to the render being done; the POSITION
     /// transform goes through toScreen(), which paintSketch() has already
@@ -200,6 +246,10 @@ private:
     int labelPointSize_ = 12;
     bool elementColors_ = true;
     bool followTheme_ = false;
+    bool aromaticHighlight_ = false;
+    /// Default aromatic fill: the classic pale amber a ring highlight is drawn
+    /// in. Overridable from the appearance sidebar.
+    QColor aromaticColor_{0xf5, 0xb0, 0x41};
 
     std::set<int> selectedAtoms_;
     std::set<int> selectedCaptions_;

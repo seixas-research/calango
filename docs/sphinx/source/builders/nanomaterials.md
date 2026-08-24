@@ -512,12 +512,40 @@ The cost estimate on the page counts the equilibration steps too.
 
 ### Live partial results
 
+#### Two viewport tabs, and only two
+
+Starting a run opens exactly **two** viewport tabs, each following one of the two
+structure files the script appends to as it goes:
+
+{guilabel}`GO-MDMC / All Structures`
+: every geometry the walk visits — the equilibrated starting point, each MD burst,
+  and each trial configuration, accepted or rejected — in the order they happened.
+
+{guilabel}`GO-MDMC / Accepted`
+: the accepted configurations alone, each carrying its acceptance ordinal. This is
+  the ensemble; the tab is kept even when a run accepts nothing, because "nothing was
+  accepted" is a result and not a missing one.
+
+Both follow their file on the same `metrics.json` polling tick the plots use, so
+frames appear as they are written. Neither is seeded with the input geometry as frame
+0 — the input carries no evaluated energy, and scrubbing back onto it would show a
+frame unlike every other one.
+
+The run's working copy of the input build exists internally (it is what gets staged as
+`structure.extxyz`) but **does not open a tab of its own**, and neither does the
+generic streamed-trajectory tab other frame-producing runs get: *All Structures*
+already carries the same geometries, with the per-atom functional-group columns the
+stdout frame stream cannot express. A tab you had open before starting the run is
+untouched.
+
+#### Plots and counters
+
 While a run is in progress, the **Results** dock's {guilabel}`Energy` tab plots total
 energy against cycle exactly like any other monitored job, on the same polling channel
 (`metrics.json`, written by `_calango_metric()`) — reopening the panel reconnects to a
 run already under way the same way it does for any other job type.
 
-Two more tabs are GO-MDMC specific:
+One more tab is GO-MDMC specific:
 
 {guilabel}`Acceptance` plots the **windowed** (last 50 judged moves) Metropolis
 acceptance rate, broken out **by move type** — each functional-group swap kind, plus
@@ -527,16 +555,35 @@ near 0% means that move is never finding room, which a single overall acceptance
 hides. Only kinds actually attempted get a line, so a build with no carboxyls does not
 clutter the legend with a permanent flat zero.
 
-{guilabel}`MDMC Summary` is the same analysis as a table instead of a trend: one row per
-move kind (again, only kinds attempted), each showing attempts, accepted count and the
-**cumulative** acceptance ratio for the whole run so far — the plot favors the windowed
-rate because it shows drift, the table favors the cumulative rate because it is the
-number that actually settles.
+(go-mdmc-summary)=
 
-Both tabs refresh from the very same `metrics.json` the Energy tab reads, so a completed
-run's acceptance analysis stays inspectable afterward exactly like the energy trace does,
-and {guilabel}`Export Data…` / {guilabel}`Export CSV…` write it out the same way every
-other Results tab's export button does.
+The run's **counters** live in a window of their own rather than in a Results tab.
+{guilabel}`MDMC Summary` shows the five whole-run quantities — cycles done out of
+total, MD steps, accepted count, acceptance percentage and elapsed time — above the
+same acceptance analysis as a table instead of a trend: one row per move kind (again,
+only kinds attempted), each showing attempts, accepted count and the **cumulative**
+acceptance ratio for the whole run so far. The plot favors the windowed rate because it
+shows drift; the table favors the cumulative rate because it is the number that actually
+settles.
+
+It opens two ways:
+
+* **automatically when a run finishes**, and only when it finishes *successfully* — a
+  failed or aborted run is already reported by the Processes panel (a red row whose
+  tooltip carries the reason) and its counters stopped meaning anything when it died;
+* **on double-clicking the GO-MDMC row in the Processes panel**, during the run or long
+  afterwards. During a run the numbers update underneath the open window; for a finished
+  one they are read back from that run's `proc_<id>/metrics.json`. (Double-clicking any
+  other kind of process still loads that run's result, which is what double-click has
+  always done.)
+
+The window is modeless and single, so double-clicking again raises the one that is
+already open, and it is bound to one run — polling another process leaves it alone.
+
+Everything here refreshes from the very same `metrics.json` the Energy tab reads, so a
+completed run's acceptance analysis stays inspectable afterward exactly like the energy
+trace does, and {guilabel}`Export Data…` / {guilabel}`Export CSV…` write it out the same
+way every other export button does.
 
 #### Cast follows the chemistry, frame by frame
 
@@ -547,7 +594,8 @@ stale the moment the first move is accepted — the carbon that WAS
 "epoxide" may now be bare, and a bare carbon elsewhere may have just become
 one.
 
-With the option on, every streamed frame's own bonding is reclassified —
+With the option on, every frame that arrives in either live tab is
+reclassified from its own bonding —
 using the *same* connectivity-based classifier
 (`core::GrapheneOxideBuilder::functionalGroupLabels()`) the builder itself
 uses to decide where a group can go, not a second, re-derived notion of
