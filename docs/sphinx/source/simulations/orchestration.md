@@ -838,16 +838,17 @@ Trains a [MACE](https://github.com/ACEsuit/mace) machine-learned
 interatomic potential from a Dataset Manager node's split. **Simulation**
 family — it launches a real job through the ordinary job-runner/Processes-
 panel machinery, the same as any other Simulation node — but its setup
-dialog is the pre-existing, standalone MACE Trainer dialog (also reachable
-from the {guilabel}`Simulation` menu on its own), reused as-is rather than
-rebuilt behind the wizard interface every other Simulation node uses.
+dialog is the pre-existing, standalone Trainer wizard (also reachable from
+{menuselection}`Modules --> MLIP --> Trainer…` on its own), reused as-is
+rather than rebuilt behind the wizard interface every other Simulation node
+uses.
 
 | Node type | Slot | Staged as |
 |---|---|---|
 | MACE Trainer | dataset | `dataset_manifest.json` |
 
 Link it downstream of exactly one **Dataset Manager** node. Double-clicking
-it opens the MACE Trainer dialog: on first configure, if the linked Dataset
+it opens the Trainer wizard: on first configure, if the linked Dataset
 Manager has already produced a manifest (it may not have — a node is
 normally configured before its parents have ever run), the dialog's
 training-file, validation-file and energy/forces-key fields are **pre-wired
@@ -857,12 +858,20 @@ already-configured node instead restores exactly the YAML you last saved,
 including any hand edits, rather than re-deriving it and silently discarding
 them.
 
-The dialog itself covers model size/architecture presets, the cutoff radius
-and per-property loss weights, batch size/epochs/learning rate/seed, device
-(cpu/cuda/mps), isolated-atom energy (E0s) handling, stage-two (SWA) and EMA
-settings, and an optional Query-by-Committee ensemble — see
-{doc}`/simulations/mlip` for the full reference. Two things specific to
-running it from this canvas:
+The wizard itself covers the framework choice, then — for MACE, the one
+framework with an implemented trainer — dataset and reference keys, model
+size/architecture presets and the cutoff radius, per-property loss weights,
+batch size/epochs/learning rate/seed, device (cpu/cuda/mps), isolated-atom
+energy (E0s) handling, stage-two (SWA) and EMA settings, an optional
+Query-by-Committee ensemble, and finally the generated config itself,
+editable. See {doc}`/simulations/mlip` for the full reference.
+
+**Nothing about this node's behaviour changed when the dialog became a
+wizard**: the same pre-flight, the same execution, the same live log, the
+same model artifact, the same calculator hand-off, and the same saved
+settings key (the node stores the config text and nothing else, so a project
+saved before the restructuring re-opens into the wizard unchanged). Two
+things specific to running it from this canvas:
 
 **Dependency pre-flight.** Both Run buttons check that `mace-torch` is
 importable under the configured interpreter **before** launching anything —

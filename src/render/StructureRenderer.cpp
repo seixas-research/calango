@@ -1599,12 +1599,52 @@ void StructureRenderer::setHydrogenBonds(const std::vector<float>& segments)
 
 void StructureRenderer::buildHydrogenBondDashes(
     const std::vector<std::pair<QVector3D, QVector3D>>& contacts,
-    const QColor& color, float dashLength, std::vector<float>& out)
+    const QColor& color, float dashLength, HydrogenBondLineStyle style,
+    float width, std::vector<float>& out)
 {
     const float r = static_cast<float>(color.redF());
     const float g = static_cast<float>(color.greenF());
     const float b = static_cast<float>(color.blueF());
-    const float period = std::max(dashLength, 1e-3f) * 2.0f; // dash + equal gap
+    const float unit = std::max(dashLength, 1e-3f);
+    // The three styles differ only in where a mark ends and the next one
+    // begins. Dashed keeps the historical pattern exactly — a mark of
+    // `dashLength` then a gap of the same — so an existing scene is
+    // unchanged by this control appearing. Dotted keeps the SPACING and
+    // shortens the mark, which is what makes it read as dots rather than as
+    // short dashes: a pattern that changed both would read as a different
+    // line at a different density.
+    float markLength = unit;
+    float period = unit * 2.0f;
+    switch (style) {
+    case HydrogenBondLineStyle::Solid:
+        break; // handled per contact below: one mark, the whole length
+    case HydrogenBondLineStyle::Dashed:
+        break;
+    case HydrogenBondLineStyle::Dotted:
+        markLength = unit * 0.3f;
+        period = unit;
+        break;
+    }
+    const float radius =
+        kHydrogenBondBaseRadius * std::max(width, 0.05f);
+
+    // One mark, thickened into a cross of two quads through the contact
+    // axis. Two quads and not a tube: see buildHydrogenBondDashes' own
+    // declaration for why. The cross is what stops a mark disappearing when
+    // the camera happens to lie in the plane of a single quad.
+    const auto emitMark = [&](const QVector3D& start, const QVector3D& end,
+                              const QVector3D& u, const QVector3D& v) {
+        const auto quad = [&](const QVector3D& offset) {
+            const QVector3D p0 = start - offset;
+            const QVector3D p1 = start + offset;
+            const QVector3D p2 = end + offset;
+            const QVector3D p3 = end - offset;
+            for (const QVector3D& p : {p0, p1, p2, p0, p2, p3})
+                out.insert(out.end(), {p.x(), p.y(), p.z(), r, g, b});
+        };
+        quad(u * radius);
+        quad(v * radius);
+    };
 
     for (const auto& [from, to] : contacts) {
         const QVector3D delta = to - from;
@@ -1612,16 +1652,21 @@ void StructureRenderer::buildHydrogenBondDashes(
         if (length < 1e-4f)
             continue;
         const QVector3D direction = delta / length;
-        // Walk the contact in dash+gap periods. The dash length is fixed in
-        // Angstroms, so a long contact simply gets more dashes rather than
-        // longer ones — the pattern reads the same at every bond length, and
-        // (unlike line stipple) it does not change with zoom.
+        // Camera-independent, so the stream stays valid while orbiting —
+        // the same reason multi-bond offsets are built this way.
+        const QVector3D u = perpendicularTo(direction);
+        const QVector3D v =
+            QVector3D::crossProduct(direction, u).normalized();
+        if (style == HydrogenBondLineStyle::Solid) {
+            emitMark(from, to, u, v);
+            continue;
+        }
+        // Walk the contact in mark+gap periods. The mark length is fixed in
+        // Angstroms, so a long contact simply gets more marks rather than
+        // longer ones — the pattern reads the same at every bond length.
         for (float t = 0.0f; t < length; t += period) {
-            const float end = std::min(t + dashLength, length);
-            const QVector3D a = from + direction * t;
-            const QVector3D c = from + direction * end;
-            out.insert(out.end(), {a.x(), a.y(), a.z(), r, g, b,
-                                   c.x(), c.y(), c.z(), r, g, b});
+            const float end = std::min(t + markLength, length);
+            emitMark(from + direction * t, from + direction * end, u, v);
         }
     }
 }
@@ -3334,17 +3379,20 @@ void StructureRenderer::render(const QMatrix4x4& view, const QMatrix4x4& project
         wireProgram_.release();
     }
 
-    // Hydrogen bonds: dashed lines, drawn last so they read on top of the
-    // covalent geometry they connect. The dashes are baked into the vertex
-    // stream (core-profile GL has no line stipple). Every dash starts on a
-    // hydrogen, so hiding the hydrogens hides these with them — the alternative
-    // is a dash floating away from an acceptor toward nothing.
+    // Hydrogen bonds: broken strokes, drawn last so they read on top of the
+    // covalent geometry they connect. Both the breaks and the STROKE WIDTH
+    // are baked into the vertex stream — core-profile GL has neither line
+    // stipple nor a usable glLineWidth (see buildHydrogenBondDashes) — so
+    // these are triangles, drawn through the same unlit wire program a line
+    // would have used. Every mark starts on a hydrogen, so hiding the
+    // hydrogens hides these with them; the alternative is a dash floating
+    // away from an acceptor toward nothing.
     if (hydrogenBonds_.vertexCount > 0 && style_.showHydrogens) {
         wireProgram_.bind();
         wireProgram_.setUniformValue("uMvp", projection * view);
         wireProgram_.setUniformValue("uAlpha", 1.0f);
         hydrogenBonds_.vao.bind();
-        gl_->glDrawArrays(GL_LINES, 0, hydrogenBonds_.vertexCount);
+        gl_->glDrawArrays(GL_TRIANGLES, 0, hydrogenBonds_.vertexCount);
         hydrogenBonds_.vao.release();
         wireProgram_.release();
     }

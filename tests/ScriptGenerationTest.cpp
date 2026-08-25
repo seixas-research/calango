@@ -427,6 +427,22 @@ int main(int argc, char** argv)
             gcmc.deltaMuOEv = -1.5;
             dumpText("graphene_oxide_gcmc.py",
                      GrapheneOxideMcmdScriptGenerator::generate(gcmc));
+
+            // The SAME module under the computational hydrogen electrode.
+            // A second dump rather than a second assertion on the first:
+            // the mode is a branch in the emitted script, and the lint
+            // that byte-compiles these files can only see the branch it
+            // is handed. Non-default U/pH/T, so the numbers in the file
+            // are distinguishable from the defaults if any of them stops
+            // being written.
+            GrapheneOxideMcmdConfig che = gcmc;
+            che.potentialMode =
+                GoGcmcPotentialMode::ComputationalHydrogenElectrode;
+            che.electrodePotentialV = 0.8;
+            che.pH = 2.0;
+            che.potentialTemperatureK = 298.15;
+            dumpText("graphene_oxide_gcmc_che.py",
+                     GrapheneOxideMcmdScriptGenerator::generate(che));
         }
 
         // Thermodynamic integration. Four dumps, because the branches that

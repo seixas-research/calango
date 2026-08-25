@@ -61,24 +61,40 @@ def _find_script_test():
     return cand if os.access(cand, os.X_OK) else None
 
 
+# k_B in eV/K, and the ONLY place this test states it. Every expected value
+# below is computed from this constant rather than from a number typed out
+# of a calculator, and the same object is injected into the extracted script
+# as `units.kB` — so the test compares the script's ARITHMETIC against the
+# formula, not two independently rounded transcriptions of a constant.
+KB_EV_PER_K = 8.617333262e-5
+
+
+class _Units:
+    """Stand-in for `ase.units`, which the extracted helpers touch for kB."""
+    kB = KB_EV_PER_K
+
+
 def _gcmc_namespace(script_text):
     """exec the grand-canonical section of the generated script.
 
     Only the section: the rest of the file wants ase and a calculator. The
-    two definitions this test is about — the stoichiometry table and the
-    chemical-potential term — have no dependencies beyond the module
+    definitions this test is about — the stoichiometry table, the
+    chemical-potential term, and the two helpers that turn the reference
+    energies into absolute μ — have no dependencies beyond the module
     globals the script sets above them, which are supplied here.
     """
     start = script_text.index("GCMC_STOICHIOMETRY = {")
     end = script_text.index("def _gcmc_insertable_kinds()")
     body = script_text[start:end]
-    # Keep only the pieces that stand alone: the table, the delta helper and
-    # the mu term. The insertion/deletion machinery needs the live system.
+    # Keep only the pieces that stand alone: the table, the delta helper, the
+    # mu term and the two potential helpers. The insertion/deletion machinery
+    # needs the live system.
     # Split on top-level statements: a line that starts at column 0 and is
     # not a continuation. re.split on a lookahead would cut inside the
     # multi-line dict literal, whose closing brace IS at column 0.
     wanted = ("GCMC_STOICHIOMETRY", "GCMC_INSERTABLE",
-              "def gcmc_delta_counts", "def gcmc_mu_term")
+              "def gcmc_delta_counts", "def gcmc_mu_term",
+              "def gcmc_potential_shift", "def gcmc_chemical_potentials")
     keep, taking = [], False
     for line in body.splitlines():
         if line and not line[0].isspace() and not line.startswith(("}", ")")):
@@ -88,9 +104,168 @@ def _gcmc_namespace(script_text):
         elif keep and line.startswith(("}", ")")):
             # The closing brace of a literal that was being kept.
             keep.append(line)
-    namespace = {"mu_H": 0.0, "mu_O": 0.0}
+    # The module globals the extracted helpers read. Seeded at the MANUAL
+    # defaults; each CHE check below sets what it is about and leaves the
+    # rest alone, so a value that stopped being read would show up as a
+    # check that no longer moves.
+    namespace = {
+        "mu_H": 0.0, "mu_O": 0.0,
+        "math": math, "units": _Units,
+        "mu_mode": "manual",
+        "delta_mu_H": 0.0, "delta_mu_O": 0.0,
+        "electrode_potential_V": 0.0,
+        "solution_pH": 0.0,
+        "potential_temperature_K": 298.15,
+    }
     exec(compile("\n".join(keep), "<gcmc>", "exec"), namespace)
     return namespace
+
+
+def _check_computational_hydrogen_electrode(ns, delta, mu_term):
+    """The CHE: the formula, its two limits, and the sign it enters with.
+
+    Hand-computed throughout, from KB_EV_PER_K above — no number here is
+    copied from a run of this code, which is this repository's standing rule
+    for what a test may compare against.
+
+    The scheme (Nørskov et al., J. Phys. Chem. B 108, 17886 (2004)):
+
+        μ_H = ½E(H₂) − eU − k_B T ln(10)·pH      (U on the SHE scale)
+        μ_O = E(H₂O) − 2μ_H + Δμ_O
+
+    Two reference energies stand in for what a real run computes. Their
+    VALUES are arbitrary and deliberately not round: every assertion below
+    is a relation between μ and (U, pH, T), and a relation that only held
+    for tidy inputs would not be one.
+    """
+    shift = ns["gcmc_potential_shift"]
+    potentials = ns["gcmc_chemical_potentials"]
+    e_h2, e_h2o = -6.7712, -14.2231
+
+    def configure(mode="che", u=0.0, ph=0.0, temperature=298.15,
+                  dmu_h=0.0, dmu_o=0.0):
+        ns["mu_mode"] = mode
+        ns["electrode_potential_V"] = u
+        ns["solution_pH"] = ph
+        ns["potential_temperature_K"] = temperature
+        ns["delta_mu_H"] = dmu_h
+        ns["delta_mu_O"] = dmu_o
+        return potentials(e_h2, e_h2o)
+
+    print("\nThe computational hydrogen electrode — the formula:")
+    configure(u=0.0, ph=0.0)
+    check(shift() == 0.0,
+          "at U = 0 V vs SHE and pH 0 the electrochemical shift is exactly "
+          "zero — that IS the standard hydrogen electrode's definition")
+    configure(u=0.8, ph=0.0)
+    check(abs(shift() - 0.8) < 1e-12,
+          "e = 1 in these units, so U = +0.800 V shifts by exactly 0.800 eV")
+    # k_B T ln(10) at 298.15 K — the textbook 59 meV per pH unit.
+    per_ph = KB_EV_PER_K * 298.15 * math.log(10.0)
+    configure(u=0.0, ph=1.0, temperature=298.15)
+    check(abs(shift() - per_ph) < 1e-12,
+          f"and one pH unit shifts by k_B T ln(10) = {per_ph * 1000:.1f} meV "
+          f"at 298.15 K, the value every CHE paper quotes as ~59 meV")
+    configure(u=0.0, ph=1.0, temperature=596.30)
+    check(abs(shift() - 2.0 * per_ph) < 1e-12,
+          "the pH term scales with T, and only the pH term does")
+
+    print("\nThe two limits, which are what make the mode reviewable:")
+    che_h, che_o = configure(u=0.0, ph=0.0)
+    manual_h, manual_o = configure(mode="manual", dmu_h=0.0, dmu_o=0.0)
+    check(abs(che_h - manual_h) < 1e-12 and abs(che_o - manual_o) < 1e-12,
+          "at U = 0, pH 0 the CHE reproduces the manual references EXACTLY "
+          "(μ_H = ½E(H₂), μ_O = E(H₂O) − E(H₂)) — the same numbers, from "
+          "the same function, by two routes")
+    che_h, che_o = configure(u=0.8, ph=2.0, temperature=298.15, dmu_o=-0.25)
+    expected_shift = 0.8 + 2.0 * per_ph
+    check(abs(che_h - (0.5 * e_h2 - expected_shift)) < 1e-12,
+          "μ_H = ½E(H₂) − eU − k_B T ln(10)·pH, to the last digit")
+    check(abs(che_o - (e_h2o - 2.0 * che_h - 0.25)) < 1e-12,
+          "μ_O = E(H₂O) − 2μ_H + Δμ_O — oxygen from water in equilibrium "
+          "with the ELECTRODE, which is what makes it U-dependent")
+    loud_h, loud_o = configure(u=0.8, ph=2.0, temperature=298.15,
+                               dmu_h=+9.0, dmu_o=-0.25)
+    check(loud_h == che_h and loud_o == che_o,
+          "and Δμ_H is not read at all in CHE mode — the potential fixes "
+          "μ_H, so an additive knob on top would be a second, unlabelled "
+          "potential axis")
+
+    print("\nOxidation against the potential (the knob the mode exists for):")
+    # The ladder. mu_O must rise by exactly 2 eV per volt: water releases
+    # TWO proton-electron pairs per oxygen, so the oxygen reference carries
+    # twice the electrode's shift. That factor of two is the whole
+    # potential dependence of oxidation, and getting it wrong (or dropping
+    # it to one) would halve every Pourbaix slope this module can produce.
+    ladder = [0.0, 0.3, 0.6, 0.9, 1.2]
+    mu_o_ladder = [configure(u=u, ph=0.0)[1] for u in ladder]
+    check(all(b > a for a, b in zip(mu_o_ladder, mu_o_ladder[1:])),
+          f"μ_O rises monotonically with U "
+          f"({mu_o_ladder[0]:.3f} → {mu_o_ladder[-1]:.3f} eV over "
+          f"0 → 1.2 V)")
+    slopes = [(b - a) / (v - u) for a, b, u, v
+              in zip(mu_o_ladder, mu_o_ladder[1:], ladder, ladder[1:])]
+    check(all(abs(s - 2.0) < 1e-9 for s in slopes),
+          f"at exactly 2 eV per volt ({slopes[0]:.6f}) — two "
+          f"proton-electron pairs per oxygen, not one")
+    mu_h_ladder = [configure(u=u, ph=0.0)[0] for u in ladder]
+    check(all(b < a for a, b in zip(mu_h_ladder, mu_h_ladder[1:])),
+          f"while μ_H falls with U ({mu_h_ladder[0]:.3f} → "
+          f"{mu_h_ladder[-1]:.3f} eV) — a more oxidizing electrode makes "
+          f"hydrogen cheaper to REMOVE, which is the same statement")
+
+    # And now the part that matters: that this reaches the acceptance
+    # criterion with the right sign. Insert one epoxide (+1 O, no H) at a
+    # fixed, unfavourable dE, and read the grand-canonical exponent
+    # dE - sum_s dn_s mu_s straight out of the shipped gcmc_mu_term().
+    insert_epoxide = delta("epoxide", +1)
+    kT = KB_EV_PER_K * 300.0
+    # The SHEET's own energy change on gaining one oxygen — negative,
+    # because an epoxide binds. Chosen so the ladder straddles the
+    # acceptance threshold: with a ΔE far from it, every point on the ladder
+    # would be accepted (or refused) outright and the monotonicity would be
+    # a statement about nothing.
+    trial_dE = -6.5
+
+    def grand_delta(u):
+        ns["mu_H"], ns["mu_O"] = configure(u=u, ph=0.0)
+        return trial_dE - mu_term(insert_epoxide)
+
+    exponents = [grand_delta(u) for u in ladder]
+    check(all(b < a for a, b in zip(exponents, exponents[1:])),
+          f"the grand-canonical ΔE − Σ Δn μ for inserting an epoxide falls "
+          f"monotonically as U rises ({exponents[0]:+.3f} → "
+          f"{exponents[-1]:+.3f} eV)")
+    probabilities = [min(1.0, math.exp(-x / kT)) for x in exponents]
+    check(all(b >= a for a, b in zip(probabilities, probabilities[1:])),
+          "so the Metropolis acceptance probability for OXIDATION rises "
+          "monotonically with the electrode potential — the equilibrium "
+          "coverage can only follow")
+    check(probabilities[0] < 1e-12 and probabilities[-1] == 1.0,
+          f"and it spans the whole range over this ladder: {probabilities[0]:.1e} "
+          f"at U = 0 V, accepted outright by U = +1.2 V")
+
+    print("\npH, at fixed U vs SHE:")
+    # At a FIXED potential vs. SHE, raising the pH is OXIDIZING — the same
+    # direction as raising U, at 59 meV per pH unit. Fewer protons in
+    # solution is a lower μ(H⁺ + e⁻), so the sheet gives one up more
+    # readily; it is the −59 mV/pH slope every Pourbaix diagram draws its
+    # oxide boundaries with. The intuition that "alkaline is reducing"
+    # belongs to the RHE scale, where the two terms cancel — and it is
+    # exactly why an RHE potential alongside a pH box would be one control
+    # with no effect, which is why this module's U is SHE-referenced.
+    alkaline = [configure(u=0.5, ph=ph, temperature=298.15)[1]
+                for ph in (0.0, 3.0, 7.0, 14.0)]
+    check(all(b > a for a, b in zip(alkaline, alkaline[1:])),
+          f"μ_O rises monotonically as the solution is made alkaline "
+          f"({alkaline[0]:.3f} → {alkaline[-1]:.3f} eV from pH 0 to 14) — "
+          f"the same direction raising U moves it")
+    rhe_equivalent = configure(u=0.5 + per_ph, ph=0.0)[1]
+    check(abs(configure(u=0.5, ph=1.0, temperature=298.15)[1]
+              - rhe_equivalent) < 1e-12,
+          "and one pH unit is worth exactly one k_B T ln(10)/e of potential, "
+          "which is the SHE↔RHE conversion — so the two scales agree, as "
+          "they must")
 
 
 def main():
@@ -123,6 +298,21 @@ def main():
     check("attach_calculator(molecule)" in text,
           "through the SAME calculator every sheet energy uses — the "
           "consistency the criterion depends on")
+    check('mu_mode = "manual"' in text,
+          "and defaults to the MANUAL reference scheme")
+
+    che_path = os.path.join(tmp, "graphene_oxide_gcmc_che.py")
+    che_text = ""
+    if check(os.path.isfile(che_path),
+             "the computational-hydrogen-electrode variant is dumped too"):
+        with open(che_path) as fh:
+            che_text = fh.read()
+        check('mu_mode = "che"' in che_text,
+              "carrying the CHE mode tag")
+        check("electrode_potential_V = 0.8" in che_text
+              and "solution_pH = 2" in che_text
+              and "potential_temperature_K = 298.15" in che_text,
+              "with U, pH and the pH term's temperature all written out")
 
     print("\nStoichiometry, read off the group recipes:")
     ns = _gcmc_namespace(text)
@@ -199,6 +389,8 @@ def main():
     check(all(table[k]["C"] == 0 for k in insertable),
           "and none of them carries a carbon, which is what makes the "
           "carbon refusal above unreachable in practice")
+
+    _check_computational_hydrogen_electrode(ns, delta, mu_term)
 
     print("\n" + (f"{failures} check(s) FAILED." if failures
                   else "All GO Grand Canonical MC invariant checks passed."))

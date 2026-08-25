@@ -161,6 +161,7 @@ void ViewportWidget::refreshHydrogenBonds()
         }
         render::StructureRenderer::buildHydrogenBondDashes(
             segments, hbondStyle_.color, hbondStyle_.dashLength,
+            hbondStyle_.lineStyle, hbondStyle_.lineWidth,
             hydrogenBondSegments_);
     }
     hydrogenBondsDirty_ = true;

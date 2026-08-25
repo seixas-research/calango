@@ -232,6 +232,49 @@ BondEditorDialog::BondEditorDialog(
     hbondColorButton_ = new QPushButton(hbondTab);
     hbondForm->addRow(tr("Color:"), hbondColorButton_);
 
+    // -- Stroke ------------------------------------------------------------
+    //
+    // Below the colour, because the order on the page is the order of the
+    // mark's parts: what it is drawn in, then how it is stroked and how
+    // thick — the same order the Unit Cell tab puts its own three in.
+    hbondStyleCombo_ = new QComboBox(hbondTab);
+    hbondStyleCombo_->setObjectName(QStringLiteral("hbondLineStyle"));
+    // Order matches render::HydrogenBondLineStyle.
+    hbondStyleCombo_->addItem(tr("Solid"));
+    hbondStyleCombo_->addItem(tr("Dashed"));
+    hbondStyleCombo_->addItem(tr("Dotted"));
+    hbondStyleCombo_->setCurrentIndex(static_cast<int>(hbond.lineStyle));
+    hbondStyleCombo_->setToolTip(
+        tr("How the contact is stroked.\n\n"
+           "Dashed is the default, and is what this overlay has always "
+           "drawn: a broken stroke is the convention for an interaction "
+           "that is NOT a covalent bond, and it says so beside the solid "
+           "cylinders it sits among without needing a caption.\n\n"
+           "Solid is for a figure in which the hydrogen bonds are the "
+           "subject — a network worth following mark by mark loses more to "
+           "the gaps than it gains from them. Dotted keeps the dash "
+           "spacing and shortens the marks, for a dense structure where "
+           "dashes start competing with the geometry they cross.\n\n"
+           "The break is cut into the geometry rather than painted, so it "
+           "does not change with zoom the way a stippled line would."));
+    hbondForm->addRow(tr("Line style:"), hbondStyleCombo_);
+
+    hbondWidthSpin_ = new QDoubleSpinBox(hbondTab);
+    hbondWidthSpin_->setObjectName(QStringLiteral("hbondLineWidth"));
+    hbondWidthSpin_->setRange(0.5, 8.0);
+    hbondWidthSpin_->setDecimals(1);
+    hbondWidthSpin_->setSingleStep(0.5);
+    hbondWidthSpin_->setValue(hbond.lineWidth);
+    hbondWidthSpin_->setToolTip(
+        tr("Stroke width, on the same scale as the unit cell's line width — "
+           "so the same number is the same thickness on both.\n\n"
+           "The stroke is real geometry, not a GL line: core-profile "
+           "OpenGL clamps line width (to 1 px outright on macOS), so a "
+           "width control over a line primitive would do nothing. The one "
+           "consequence is that it scales with the camera, like a bond, "
+           "rather than staying a fixed number of pixels."));
+    hbondForm->addRow(tr("Line width:"), hbondWidthSpin_);
+
     hbondCountLabel_ = new QLabel(hbondTab);
     hbondCountLabel_->setWordWrap(true);
     hbondForm->addRow(hbondCountLabel_);
@@ -241,6 +284,12 @@ BondEditorDialog::BondEditorDialog(
         style.enabled = hbondEnableCheck_->isChecked();
         style.options.maxDonorAcceptor = hbondDistanceSpin_->value();
         style.options.minAngle = hbondAngleSpin_->value();
+        style.lineStyle = static_cast<render::HydrogenBondLineStyle>(
+            hbondStyleCombo_->currentIndex());
+        style.lineWidth = static_cast<float>(hbondWidthSpin_->value());
+        // Both are baked into the vertex stream, so this is a rebuild of
+        // the overlay rather than a repaint — which refreshHydrogenBonds()
+        // already is.
         viewport_->refreshHydrogenBonds();
         // Report the count: with no feedback, "nothing appeared" is
         // indistinguishable between criteria that are too strict and a
@@ -258,6 +307,10 @@ BondEditorDialog::BondEditorDialog(
             applyHydrogenBonds);
     connect(hbondAngleSpin_, &QDoubleSpinBox::valueChanged, this,
             applyHydrogenBonds);
+    connect(hbondWidthSpin_, &QDoubleSpinBox::valueChanged, this,
+            applyHydrogenBonds);
+    connect(hbondStyleCombo_, &QComboBox::currentIndexChanged, this,
+            [applyHydrogenBonds](int) { applyHydrogenBonds(); });
     const auto paintHbondSwatch = [this] {
         const QColor c = viewport_->hydrogenBondStyle().color;
         hbondColorButton_->setText(c.name(QColor::HexRgb).toUpper());

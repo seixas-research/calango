@@ -76,6 +76,24 @@ enum class CellLineStyle {
     Dotted, ///< short marks, long gaps
 };
 
+/// How a hydrogen-bond contact is stroked. Same three names as
+/// CellLineStyle, and deliberately NOT the same enum.
+///
+/// The two solve the same problem with opposite rules, and the rule is the
+/// whole content of each. A cell edge is cut into a WHOLE NUMBER of marks so
+/// the pattern starts and finishes exactly on two corners — the box is a
+/// closed shape and a truncated last mark at a corner reads as a rendering
+/// fault. A hydrogen bond is cut at a FIXED LENGTH in angstrom, so a long
+/// contact simply gets more dashes rather than longer ones and the pattern
+/// reads the same at 1.8 Å as at 3.4 Å — which is what lets the eye compare
+/// two contacts by their dash count. Sharing one enum would put two
+/// incompatible meanings behind one set of names.
+enum class HydrogenBondLineStyle {
+    Solid,  ///< one unbroken stroke per contact
+    Dashed, ///< marks and gaps of equal length (the historical output)
+    Dotted, ///< short marks at the same spacing — reads as a dotted line
+};
+
 enum class RepresentationMode {
     BallAndStick,
     SpaceFilling, ///< van-der-Waals-sized spheres, no bonds
@@ -915,16 +933,47 @@ public:
                            const std::vector<OverlayRange>& faceRanges,
                            bool visible);
 
-    /// Hydrogen-bond overlay: an interleaved pos(3)+color(3) GL_LINES stream
-    /// of PRE-DASHED segments (see buildHydrogenBondDashes). Empty clears it.
+    /// Hydrogen-bond overlay: an interleaved pos(3)+color(3) GL_TRIANGLES
+    /// stream of PRE-BROKEN, thickened marks (see buildHydrogenBondDashes).
+    /// Empty clears it.
     void setHydrogenBonds(const std::vector<float>& segments);
 
-    /// Split each D-H···A contact into dashes of `dashLength` Å separated by
-    /// equal gaps, appending an interleaved pos+color stream. Static so the
-    /// geometry can be built without a current GL context.
+    /// Break each D-H···A contact into marks of `dashLength` Å and thicken
+    /// each into geometry `width` × kHydrogenBondBaseRadius Å in radius,
+    /// appending an interleaved pos+color stream of TRIANGLES. Static so the
+    /// geometry can be built without a current GL context — which is also
+    /// what makes it testable.
+    ///
+    /// WHY TRIANGLES AND NOT LINES. This used to emit GL_LINES, which gave
+    /// a stroke exactly one pixel wide and no way to ask for another:
+    /// core-profile GL clamps glLineWidth, and macOS's profile clamps it to
+    /// 1 px outright — so a width control over a line primitive would be a
+    /// control that does nothing on the machine this is developed on. The
+    /// unit cell hit the same wall and answered it the same way (see
+    /// Style::cellLineWidth): if you want a thick line, give it a surface.
+    ///
+    /// Each mark becomes a CROSS of two quads through the contact axis
+    /// rather than a tessellated tube. A tube of this radius — hundredths of
+    /// an angstrom — is a few pixels across at any usable zoom, where the
+    /// difference between a cylinder and two crossed quads is invisible,
+    /// and the cross costs four triangles instead of a ring of them. The
+    /// stream stays flat-shaded through the wire program: a hydrogen bond is
+    /// an ANNOTATION on the structure, and lighting it would make it read as
+    /// another object in the scene rather than as a mark drawn over one.
+    ///
+    /// The consequence to know about: the stroke is now in WORLD units, so
+    /// it shrinks as the camera pulls back, exactly like a bond and unlike
+    /// the pixel-wide line it replaced.
     static void buildHydrogenBondDashes(
         const std::vector<std::pair<QVector3D, QVector3D>>& contacts,
-        const QColor& color, float dashLength, std::vector<float>& out);
+        const QColor& color, float dashLength, HydrogenBondLineStyle style,
+        float width, std::vector<float>& out);
+
+    /// Stroke radius, in Å, at width 1.0. The unit cell's own scale factor
+    /// (Style::cellLineWidth maps to 0.015 Å of tube radius per unit), so
+    /// "width 2" means the same thickness on a hydrogen bond as on a cell
+    /// edge and the two do not need separate calibration by eye.
+    static constexpr float kHydrogenBondBaseRadius = 0.015f;
 
     Style& style() { return style_; }
     const Style& style() const { return style_; }

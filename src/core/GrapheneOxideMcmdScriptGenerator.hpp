@@ -121,6 +121,31 @@ enum class GoMcRelaxation {
     Optimization,      ///< GO/MC-Opt — relax to a local minimum per cycle
 };
 
+/// How the grand-canonical run gets its two absolute chemical potentials.
+///
+/// Append-only: the value is written into saved projects and into the
+/// generated script as a string tag.
+///
+/// MANUAL is the module's original scheme — μ_s = μ_s⁰ + Δμ_s about the
+/// gas-phase references μ_H⁰ = ½E(H₂), μ_O⁰ = E(H₂O) − E(H₂). Two knobs,
+/// no electrochemistry: the reservoir is a humid atmosphere.
+///
+/// CHE is Nørskov's **computational hydrogen electrode** (Nørskov, J. K.
+/// et al. *J. Phys. Chem. B* **108**, 17886–17892 (2004),
+/// doi:10.1021/jp047349j). The reservoir is an ELECTRODE: the sheet
+/// exchanges H not with H₂ gas but with the solution as a
+/// proton-electron pair, whose chemical potential is tied to ½E(H₂)
+/// through the electrode potential. See ChemicalPotentialMode below for
+/// the formulas and the sign conventions this implementation adopted.
+enum class GoGcmcPotentialMode {
+    Manual, ///< μ_s = μ_s⁰ + Δμ_s about the gas-phase references
+    /// Computational hydrogen electrode: μ_H derived from U (and pH, T).
+    ComputationalHydrogenElectrode,
+};
+
+/// The tag `potentialMode` is written into the generated script as.
+const char* goGcmcPotentialModeTag(GoGcmcPotentialMode mode);
+
 /// Local-optimizer choice for GoMcRelaxation::Optimization. Append-only: the
 /// value is written into the generated script as an ASE class name.
 enum class GoMcOptimizer {
@@ -346,8 +371,78 @@ struct GrapheneOxideMcmdConfig {
     /// reference computed at a different cutoff or functional leaves a
     /// residue in every acceptance decision that has nothing to do with the
     /// chemistry. The run computes them itself for exactly that reason.
+    ///
+    /// In CHE mode `deltaMuHEv` is NOT read: μ_H is derived from the
+    /// electrode potential instead (see `potentialMode`). `deltaMuOEv`
+    /// still applies, as an offset about the CHE's own μ_O reference.
     double deltaMuHEv = 0.0;
     double deltaMuOEv = 0.0;
+
+    // ---- Computational hydrogen electrode -------------------------------
+    //
+    // THE SCHEME, and the conventions this implementation adopted. Under
+    // Nørskov's computational hydrogen electrode the reaction
+    //
+    //     H⁺ + e⁻  ⇌  ½ H₂
+    //
+    // is at equilibrium at U = 0 V vs. SHE, pH 0, 1 bar H₂ — that is the
+    // DEFINITION of the standard hydrogen electrode, and it fixes
+    // μ(H⁺ + e⁻) = ½ E(H₂) there. Away from that reference point two
+    // terms move it:
+    //
+    //   * the ELECTRODE POTENTIAL. Raising the potential by U lowers the
+    //     electron's energy by eU, so
+    //
+    //         μ(H⁺ + e⁻) = ½ E(H₂) − eU
+    //
+    //     — μ_H FALLS as the electrode is made more oxidizing, which is
+    //     the whole point: stripping hydrogen off the sheet gets cheaper,
+    //     and (through the water equilibrium below) oxygen gets cheaper
+    //     to add.
+    //   * the pH, through the proton's own concentration:
+    //
+    //         μ(H⁺ + e⁻) = ½ E(H₂) − eU_SHE − k_B T ln(10) · pH
+    //
+    // U IS ON THE SHE SCALE HERE. That is the choice, and it is the one
+    // that makes the pH field mean anything: the same two terms written
+    // on the RHE scale collapse into one, because
+    // U_SHE = U_RHE − (k_B T ln 10 / e) · pH makes the pH term cancel
+    // exactly — the familiar statement that a CHE free energy is
+    // pH-independent *when quoted vs. RHE*. A wizard offering "U vs.
+    // RHE" AND a pH box would therefore be offering a control with no
+    // effect. Leave pH at 0 and the two scales coincide.
+    //
+    // The cross-check this convention was verified against is the
+    // standard surface-Pourbaix step * + H₂O → *OH + (H⁺ + e⁻), whose
+    // free energy under the expressions above is
+    // ΔG = ΔG⁰ − eU − k_B T ln(10)·pH — the form used throughout the
+    // CHE literature, and RHE-invariant as it must be.
+    //
+    // OXYGEN. The manual mode's μ_O⁰ = E(H₂O) − E(H₂) is exactly "oxygen
+    // from water in equilibrium with H₂". The CHE replaces the H₂ half
+    // of that statement with the ELECTRODE: water in equilibrium with the
+    // proton-electron pair, H₂O ⇌ O + 2(H⁺ + e⁻), so
+    //
+    //     μ_O = E(H₂O) − 2 μ_H
+    //
+    // which is what makes oxidation potential-dependent (μ_O rises by
+    // 2eU). At U = 0 and pH = 0 it reduces to E(H₂O) − E(H₂) — the manual
+    // reference, identically. That identity is a test, not a remark.
+
+    /// Manual Δμ, or the computational hydrogen electrode. Ignored unless
+    /// `grandCanonical`.
+    GoGcmcPotentialMode potentialMode = GoGcmcPotentialMode::Manual;
+    /// Electrode potential U, in volts **vs. SHE** (see above). Positive is
+    /// oxidizing.
+    double electrodePotentialV = 0.0;
+    /// Solution pH. Enters as −k_B T ln(10)·pH on the SHE scale.
+    double pH = 0.0;
+    /// Temperature, in kelvin, of the pH term ONLY. Defaults to (and the
+    /// wizard keeps it in step with) `temperatureK`: the two are the same
+    /// physical temperature, and they are separate fields only because a
+    /// user comparing against a paper's 298.15 K numbers must be able to
+    /// say so without also changing the ensemble the walk samples.
+    double potentialTemperatureK = 300.0;
 
     /// Relative proposal weights for the three move classes. Normalized in
     /// the script, so these are ratios rather than probabilities. Swap is

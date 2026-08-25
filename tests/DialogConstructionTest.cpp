@@ -50,6 +50,7 @@
 #include "gui/MlwfSourceSelector.hpp"
 #include "gui/TopologyDialog.hpp"
 #include "gui/MaceTrainerDialog.hpp"
+#include "gui/MlipTrainerBackend.hpp"
 #include "gui/MolecularDesignDialog.hpp"
 #include "gui/MoleculeCanvas.hpp"
 #include "gui/VaspPotcarPreflight.hpp"
@@ -62,6 +63,7 @@
 #include "gui/MagneticSpaceGroupDialog.hpp"
 #include "gui/RandomNoiseViewer.hpp"
 #include "gui/RandomNoiseWizard.hpp"
+#include "gui/TwoDRipplesWizard.hpp"
 #include "gui/SimulationWizardBase.hpp"
 #include "gui/GeometryOptimizationWizard.hpp"
 #include "gui/PhononWizard.hpp"
@@ -109,6 +111,7 @@
 #include <QLabel>
 #include <QLayout>
 #include <QComboBox>
+#include <QFormLayout>
 #include <QDockWidget>
 #include <QGroupBox>
 #include <QDoubleSpinBox>
@@ -1447,6 +1450,161 @@ int main(int argc, char** argv)
                 check(rms(wizard.frames().size() - 1) > 3.0 * rms(1),
                       "and the full-amplitude last frame is displaced well "
                       "past the smallest-amplitude first perturbed frame");
+            }
+        }
+    }
+
+    // 2D Ripples: the same in-process-generator shape as Random Noise Setup,
+    // and the same reason to construct it here — the arithmetic is pinned
+    // calculator-free in ripples_2d, so what is checked HERE is the wiring
+    // a widget test is the only thing that can see: that the out-of-plane
+    // axis is SEEDED from the geometry (getting it wrong ripples the
+    // structure sideways), that a single build and a series come out of the
+    // one signal in the right shapes, and that the disabled controls follow
+    // the profile.
+    std::printf("2D Ripples wizard:\n");
+    {
+        // A hexagonal graphene supercell with a thin sheet in 15 Å of
+        // vacuum along c — so the axis guess has something real to find.
+        auto sheet = std::make_shared<calango::core::Structure>();
+        const double lattice = 2.46 * 4;
+        sheet->setCell(calango::core::UnitCell(
+            {lattice, 0.0, 0.0},
+            {-0.5 * lattice, std::sqrt(3.0) / 2.0 * lattice, 0.0},
+            {0.0, 0.0, 15.0}, {true, true, true}));
+        for (int i = 0; i < 4; ++i)
+            for (int j = 0; j < 4; ++j) {
+                calango::core::Atom atom;
+                atom.atomicNumber = 6;
+                atom.position = sheet->cell().fractionalToCartesian(
+                    {(i + 1.0 / 3.0) / 4.0, (j + 2.0 / 3.0) / 4.0, 0.5});
+                sheet->addAtom(atom);
+            }
+
+        TwoDRipplesWizard wizard(sheet);
+        check(true, "constructs");
+
+        auto* axis = wizard.findChild<QComboBox*>(
+            QStringLiteral("rippleNormalAxis"));
+        check(axis != nullptr && axis->currentData().toInt() == 2,
+              "seeds the out-of-plane axis from the geometry — c, the one "
+              "carrying the vacuum");
+
+        auto* direction = wizard.findChild<QComboBox*>(
+            QStringLiteral("rippleDirection"));
+        auto* first = wizard.findChild<QSpinBox*>(
+            QStringLiteral("ripplePeriodsFirst"));
+        auto* second = wizard.findChild<QSpinBox*>(
+            QStringLiteral("ripplePeriodsSecond"));
+        check(direction && first && second,
+              "offers a profile direction and a period count per in-plane "
+              "axis");
+        if (direction && first && second) {
+            check(first->isEnabled() && second->isEnabled(),
+                  "both period counts are live for the default 'xy' profile");
+            direction->setCurrentIndex(1); // 'x only'
+            check(first->isEnabled() && !second->isEnabled(),
+                  "and 'x only' greys out the second — a period count for a "
+                  "direction the sheet is straight in is not a setting this "
+                  "run has");
+            direction->setCurrentIndex(0);
+        }
+
+        int generated = 0;
+        QObject::connect(
+            &wizard, &TwoDRipplesWizard::structuresGenerated,
+            [&generated](
+                const std::vector<std::shared_ptr<calango::core::Structure>>& f) {
+                generated = static_cast<int>(f.size());
+            });
+        const auto buttons = wizard.findChildren<QPushButton*>();
+        const auto generate = std::find_if(
+            buttons.begin(), buttons.end(), [](const QPushButton* button) {
+                return button->text() == QStringLiteral("Generate");
+            });
+        check(generate != buttons.end(), "offers a Generate button");
+        if (generate != buttons.end()) {
+            (*generate)->click();
+            check(generated == 1,
+                  "a single amplitude publishes ONE structure — a one-frame "
+                  "trajectory would be a timeline with one stop on it");
+            if (!wizard.frames().empty()) {
+                const auto& built = *wizard.frames().front();
+                check(built.size() == sheet->size(),
+                      "with every atom still there");
+                check(built.cell().vectors()[0].norm()
+                          < sheet->cell().vectors()[0].norm(),
+                      "and the in-plane cell contracted, which is the "
+                      "default and the physics");
+                bool displaced = false;
+                for (std::size_t i = 0; i < built.size(); ++i)
+                    displaced = displaced
+                        || std::abs(built.atoms()[i].position.z
+                                    - sheet->atoms()[i].position.z) > 1e-6;
+                check(displaced, "atoms actually left the plane");
+            }
+
+            // The series: the same signal, several frames, each tagged.
+            auto* series = wizard.findChild<QGroupBox*>(
+                QStringLiteral("rippleSeriesGroup"));
+            auto* count = wizard.findChild<QSpinBox*>(
+                QStringLiteral("rippleSeriesCount"));
+            check(series && count, "offers an amplitude series");
+            if (series && count) {
+                series->setChecked(true);
+                count->setValue(5);
+                generated = 0;
+                (*generate)->click();
+                check(generated == 5,
+                      "which publishes exactly the frames it was asked for");
+                bool tagged = wizard.frames().size() == 5;
+                double previous = -1.0;
+                for (const auto& frame : wizard.frames()) {
+                    const auto& fields = frame->scalarFields();
+                    const auto it = fields.find("ripple_amplitude");
+                    if (it == fields.end() || it->second.empty()
+                        || it->second.front() <= previous) {
+                        tagged = false;
+                        break;
+                    }
+                    previous = it->second.front();
+                }
+                check(tagged,
+                      "each carrying its own amplitude, strictly increasing "
+                      "— the tag a fanned-out Structure Container reads back "
+                      "after the trajectory has been saved");
+                series->setChecked(false);
+            }
+
+            // The read-out and the button must agree about what is
+            // possible. "Too large for this cell" is a statement about the
+            // CONTRACTION; with it switched off there is no footprint to
+            // solve for and any amplitude builds. A read-out that refused
+            // here would refuse something Generate goes on to produce.
+            auto* contract = wizard.findChild<QCheckBox*>(
+                QStringLiteral("rippleContract"));
+            auto* amplitude = wizard.findChild<QDoubleSpinBox*>(
+                QStringLiteral("rippleAmplitude"));
+            check(contract && amplitude,
+                  "offers the contraction toggle and the amplitude");
+            if (contract && amplitude) {
+                // 4nA well past the ~9.84 Å cell vector: refused with the
+                // contraction on, fine with it off.
+                amplitude->setValue(6.0);
+                contract->setChecked(true);
+                generated = 0;
+                (*generate)->click();
+                check(generated == 0,
+                      "an amplitude the cell cannot contract around is "
+                      "refused rather than clamped — a clamp would silently "
+                      "stretch the sheet, which is the error the contraction "
+                      "exists to prevent");
+                contract->setChecked(false);
+                generated = 0;
+                (*generate)->click();
+                check(generated == 1,
+                      "and the same amplitude builds with the contraction "
+                      "off, because there is then no footprint to solve for");
             }
         }
     }
@@ -5391,6 +5549,180 @@ int main(int argc, char** argv)
               "the launcher is self-contained too");
     }
 
+    // --- The Trainer as a WIZARD -----------------------------------------
+    //
+    // What changed: one page with every MACE parameter on it became a
+    // wizard — framework, then the framework's own parameter pages, then the
+    // editable config. Three things about that are worth pinning, because
+    // each of them is a promise the restructuring makes and none of them is
+    // visible to a compile.
+    std::printf("Trainer wizard: framework gating, page height, YAML "
+                "round-trip:\n");
+    {
+        MaceTrainerDialog wizard;
+        wizard.show();
+
+        // 1. THE FRAMEWORK LIST is derived from the calculator library's
+        //    MachineLearning family, not typed out — so it must match that
+        //    family exactly, and exactly one entry must be implemented.
+        int mlipEngines = 0;
+        for (int value = 0; calango::core::isValidCalculatorKind(value);
+             ++value)
+            if (calango::core::calculatorFamily(
+                    static_cast<calango::core::CalculatorKind>(value))
+                == calango::core::CalculatorFamily::MachineLearning)
+                ++mlipEngines;
+        const auto& registry = calango::gui::mlipTrainerFrameworks();
+        check(static_cast<int>(registry.size()) == mlipEngines
+                  && mlipEngines >= 7,
+              "the framework registry is exactly the MachineLearning "
+              "family (" + std::to_string(mlipEngines) + " engines)");
+        int implemented = 0;
+        bool everyUnsupportedExplained = true;
+        for (const auto& entry : registry) {
+            if (entry.implemented)
+                ++implemented;
+            else
+                everyUnsupportedExplained = everyUnsupportedExplained
+                    && !entry.status.isEmpty() && !entry.configFormat.isEmpty()
+                    && !entry.entryPoint.isEmpty();
+        }
+        check(implemented == 1,
+              "exactly one of them has a trainer today, which is the honest "
+              "count and the one the page states");
+        check(everyUnsupportedExplained,
+              "and every unsupported entry says what its trainer would read "
+              "and run — a listed framework with no explanation is worse "
+              "than a hidden one");
+
+        auto* list = wizard.findChild<QListWidget*>(
+            QStringLiteral("trainerFrameworkList"));
+        check(list != nullptr
+                  && list->count() == static_cast<int>(registry.size()),
+              "the page lists every one of them");
+        if (list) {
+            check(wizard.framework() == calango::core::CalculatorKind::Mace,
+                  "and starts on MACE — the one that works");
+            check(wizard.currentPage() && wizard.currentPage()->isComplete(),
+                  "so Next is available");
+
+            // Selecting an unimplemented framework must STOP the wizard,
+            // rather than walking the user into a config page for a trainer
+            // that does not exist.
+            int unsupportedRow = -1;
+            for (int row = 0; row < list->count(); ++row) {
+                const auto kind = static_cast<calango::core::CalculatorKind>(
+                    list->item(row)->data(Qt::UserRole).toInt());
+                const auto* entry = calango::gui::mlipTrainerFramework(kind);
+                if (entry && !entry->implemented) {
+                    unsupportedRow = row;
+                    break;
+                }
+            }
+            check(unsupportedRow >= 0, "there is one to select");
+            if (unsupportedRow >= 0) {
+                list->setCurrentRow(unsupportedRow);
+                check(wizard.currentPage()
+                          && !wizard.currentPage()->isComplete(),
+                      "selecting an unsupported framework leaves the page "
+                      "INCOMPLETE, so Next is disabled — the gate is the "
+                      "button, not a hidden row, which is what lets the "
+                      "reason be read");
+                // Back to MACE for the rest of the checks.
+                for (int row = 0; row < list->count(); ++row)
+                    if (static_cast<calango::core::CalculatorKind>(
+                            list->item(row)->data(Qt::UserRole).toInt())
+                        == calango::core::CalculatorKind::Mace)
+                        list->setCurrentRow(row);
+                check(wizard.currentPage()
+                          && wizard.currentPage()->isComplete(),
+                      "and choosing MACE again re-enables it");
+            }
+        }
+
+        // 2. THE HEIGHT BOUND, measured on EVERY page. The whole reason for
+        //    the restructuring was a dialog that ran off the bottom of a
+        //    laptop screen, one reasonable addition at a time — and the
+        //    thing that makes a bound stick is checking it where the
+        //    content is, not once on the page that happens to be showing.
+        //    Every parameter page is wrapped in a vertical scroll area, so
+        //    content grows INSIDE the window; this walks the wizard through
+        //    and asserts the window never grew.
+        wizard.ensurePolished();
+        int tallest = wizard.height();
+        int pagesVisited = 1;
+        while (wizard.nextId() != -1 && pagesVisited < 12) {
+            wizard.next();
+            QApplication::processEvents();
+            wizard.ensurePolished();
+            tallest = std::max(tallest, wizard.height());
+            ++pagesVisited;
+        }
+        std::printf("       %d pages, tallest %d px (window %dx%d)\n",
+                    pagesVisited, tallest, wizard.width(), wizard.height());
+        check(pagesVisited >= 5,
+              "the wizard walks framework → dataset → model → training → "
+              "config, so the parameters really are split up");
+        check(tallest <= 700,
+              "and no page pushes the window past the height of a laptop "
+              "screen — which is exactly what the single-page dialog it "
+              "replaced did");
+
+        // 3. THE YAML ROUND TRIP: settings → config → manual edit → launch.
+        //    The last page's editor is the LAST WORD, and the promise is
+        //    that what is in it is what runs, verbatim.
+        auto* editor = wizard.findChild<QPlainTextEdit*>(
+            QStringLiteral("trainerConfigEditor"));
+        check(editor != nullptr, "the config page has an editable editor");
+        if (editor) {
+            check(!editor->isReadOnly(),
+                  "which is genuinely editable, not a preview wearing a "
+                  "monospaced font");
+            check(editor->toPlainText().contains(QLatin1String("model: MACE")),
+                  "pre-filled from the settings pages");
+
+            // Settings → config: a change on an earlier page reaches it.
+            auto* channels = wizard.findChild<QSpinBox*>(
+                QStringLiteral("maceChannels"));
+            check(channels != nullptr, "the model page has a channel count");
+            if (channels) {
+                channels->setValue(96);
+                check(editor->toPlainText().contains(
+                          QLatin1String("num_channels: 96")),
+                      "and a settings change regenerates it");
+            }
+
+            // Manual edit → launch. The edit must survive both a later
+            // settings change AND the launcher generation.
+            const QString edited =
+                editor->toPlainText()
+                + QStringLiteral("\n# hand-written by the user\n"
+                                 "max_num_epochs: 7\n");
+            editor->setPlainText(edited);
+            check(wizard.yaml() == edited,
+                  "a hand edit is what yaml() returns");
+            if (channels) {
+                channels->setValue(64);
+                check(wizard.yaml() == edited,
+                      "and a LATER settings change does not overwrite it — "
+                      "the text is the user's, and silently replacing it is "
+                      "exactly what an editable config must not do");
+            }
+            check(wizard.runnerScript().contains(
+                      QLatin1String("# hand-written by the user")),
+                  "the launcher carries the EDITED config verbatim, so what "
+                  "was reviewed is what runs");
+
+            // Regenerate throws the edit away — deliberately, and only when
+            // asked. Driven here through the same path the button takes,
+            // minus the confirmation dialog a headless test cannot answer.
+            wizard.setInitialYaml(QStringLiteral("restored: verbatim\n"));
+            check(wizard.yaml() == QStringLiteral("restored: verbatim\n"),
+                  "and a saved Orchestration node's config is restored "
+                  "verbatim, still without the settings pages clobbering it");
+        }
+    }
+
     // --- Preview refresh during construction ------------------------------
     //
     // The invariant, pinned in the base class rather than in one wizard: a
@@ -7450,6 +7782,82 @@ int main(int argc, char** argv)
                   calango::gui::goGcmcTaskLabel()),
               "and it is recognised as a GO Monte Carlo run, so it gets the "
               "three files, the live tabs and the Summary window");
+
+        // --- The computational hydrogen electrode -----------------------
+        //
+        // The scheme's own arithmetic is pinned calculator-free in
+        // graphene_oxide_gcmc; what is checked HERE is only what a widget
+        // test can see and nothing else can: that the mode switch reaches
+        // the generated script, that the rows follow it, and that the
+        // temperature the pH term uses starts out equal to the sampling
+        // temperature rather than to some second default.
+        auto* mode = wizard.findChild<QComboBox*>(
+            QStringLiteral("gcmcPotentialMode"));
+        auto* potential = wizard.findChild<QDoubleSpinBox*>(
+            QStringLiteral("gcmcElectrodePotential"));
+        auto* ph = wizard.findChild<QDoubleSpinBox*>(
+            QStringLiteral("gcmcSolutionPh"));
+        auto* cheTemperature = wizard.findChild<QDoubleSpinBox*>(
+            QStringLiteral("gcmcPotentialTemperature"));
+        check(mode && potential && ph && cheTemperature,
+              "offers the CHE mode switch, an electrode potential, a pH and "
+              "the pH term's temperature");
+        if (mode && potential && ph && cheTemperature && muH) {
+            check(mode->count() == 2,
+                  "two reference schemes: manual Δμ, and the CHE");
+            // Asked of the FORM ROW, not of the widget. The settings page
+            // lives on a stepper stack, so nothing on it is "visible" in the
+            // QWidget sense while another stage is current — isVisibleTo()
+            // would report the stage, not the row. QFormLayout::isRowVisible
+            // is the state setFormRowVisible() actually sets.
+            auto* form = qobject_cast<QFormLayout*>(
+                muH->parentWidget() ? muH->parentWidget()->layout() : nullptr);
+            const auto rowShown = [form](QWidget* field) {
+                if (!form || !field)
+                    return false;
+                int row = -1;
+                QFormLayout::ItemRole role{};
+                form->getWidgetPosition(field, &row, &role);
+                return row >= 0 && form->isRowVisible(row);
+            };
+            check(form != nullptr, "the reservoir group is one form layout");
+            // Manual is the default, and the electrochemical rows are not
+            // controls in it — an inapplicable row that is merely disabled
+            // reads as a broken dialog rather than as "this scheme does not
+            // have that". Same rule as every engine settings group.
+            check(mode->currentIndex() == 0 && rowShown(muH)
+                      && !rowShown(potential),
+                  "manual is the default, with Δμ_H shown and U hidden");
+
+            mode->setCurrentIndex(1);
+            check(!rowShown(muH) && rowShown(potential) && rowShown(ph)
+                      && rowShown(cheTemperature),
+                  "switching to the CHE swaps Δμ_H out for U, pH and T — "
+                  "the potential IS μ_H there, so a second additive knob "
+                  "would be an unlabelled second potential axis");
+
+            potential->setValue(0.75);
+            ph->setValue(3.0);
+            const QString script = wizard.script();
+            check(script.contains(QStringLiteral("mu_mode = \"che\"")),
+                  "and the generated script is told which scheme it is in");
+            check(script.contains(
+                      QStringLiteral("electrode_potential_V = 0.75"))
+                      && script.contains(QStringLiteral("solution_pH = 3")),
+                  "carrying the potential and pH the wizard was set to");
+
+            // The pH term's temperature is the SAME physical temperature as
+            // the sampling one; it is a separate field only so a run can be
+            // lined up against a paper's 298.15 K without also changing the
+            // ensemble the walk samples. It must therefore START in step.
+            const QString withDefaults = script;
+            check(withDefaults.contains(
+                      QStringLiteral("potential_temperature_K = 300")),
+                  "and the pH term's temperature starts at the sampling "
+                  "temperature rather than at a second, independent default");
+
+            mode->setCurrentIndex(0); // leave the wizard as it was found
+        }
     }
 
     // --- Task 4 (2026-08-24): the convergence sweeps with VASP.

@@ -17,8 +17,14 @@ namespace calango::gui {
 /// where it is displayed rather than stored here, so inserting a new
 /// citation never means renumbering the ones after it by hand.
 struct Citation {
-    /// "Core", "Databases", "Calculators" or "Libraries" — the four section
-    /// headers the Citations tab groups entries under, in that order.
+    /// "Core", "Databases", "Calculators", "Methods" or "Libraries" — the
+    /// five section headers the Citations tab groups entries under, in that
+    /// order.
+    ///
+    /// "Methods" is for a paper a Calango MODULE implements the scheme of
+    /// (the computational hydrogen electrode is the first), so a result
+    /// from that module rests on it the way a GPAW result rests on GPAW —
+    /// not for physics a module merely cites in its documentation.
     QString category;
     /// The Nature-format reference, as HTML: authors as "Surname, F. M.",
     /// the journal (or conference proceedings) name in <i>italics</i>,

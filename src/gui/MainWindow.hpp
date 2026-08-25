@@ -304,6 +304,16 @@ private Q_SLOTS:
     void showNonlinearOptics();
     /// Open the nonlinear-response viewer for a finished job (nlopt.json).
     void openNonlinearOpticsResults(const QString& directory);
+    /// Modules → 2D Materials → "2D Ripples…": a sinusoidal out-of-plane
+    /// corrugation of the current monolayer supercell, with the in-plane
+    /// footprint contracted so the sheet's arc length is unchanged.
+    ///
+    /// The one entry on that menu that MAKES a structure rather than
+    /// reading one, which is why it is first on it and behind a separator.
+    /// A pure in-process generator — no script, no job — so it lands as a
+    /// new document (one amplitude) or a new trajectory tab (a series),
+    /// exactly like Random Noise Setup.
+    void open2DRipples();
     /// Modules → 2D Materials → "2D Bands…": band surfaces E_n(kx, ky) over
     /// the two-dimensional Brillouin zone. Needs a completed single point with
     /// a saved GPAW density, exactly as Electronic Structure does.

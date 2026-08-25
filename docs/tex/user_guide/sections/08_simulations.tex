@@ -548,3 +548,71 @@ structure model, specifically so that energies, forces and stresses
 attached to the frames survive into the training files. A dataset exported
 from a finished MD run carries the labels a potential needs to train on.
 \end{calnote}
+
+\section{The MLIP trainer}
+\label{sec:mlip-trainer}
+
+\menu{Modules}\menusep\menu{MLIP}\menusep\menu{Trainer} is a wizard, one
+decision per page: \ui{Framework}, then the framework's own parameter pages
+(\ui{Dataset}, \ui{Model}, \ui{Training} for MACE), then
+\ui{Config and launch}. It is a fixed height and every parameter page
+scrolls inside it, so no future addition can push it off a laptop screen.
+
+\subsection{Which framework}
+
+Every machine-learning potential Calango knows how to \emph{run} is listed,
+and exactly one has an implemented trainer:
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Framework & Trainer & Config / entry point \\
+\midrule
+MACE           & \textbf{implemented} & YAML, \texttt{mace.cli.run\_train} \\
+DeePMD-kit     & not yet supported    & JSON, \texttt{dp train} \\
+NequIP         & not yet supported    & YAML, \texttt{nequip-train} \\
+Allegro        & not yet supported    & YAML, \texttt{nequip-train} \\
+CHGNet         & not yet supported    & Python API, no CLI \\
+MatterSim      & not yet supported    & CLI flags, fine-tuning only \\
+FAIRChem / OCP & not yet supported    & YAML fragments, LMDB datasets \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The unsupported six are listed rather than hidden --- hiding them answers
+``can Calango train a NequIP model?'' with silence, and silence reads as
+\emph{look harder}. Selecting one shows what its trainer reads and runs, and
+leaves \ui{Next} disabled: the gate is the button, not the row, so the
+reason can be read.
+
+\subsection{The MACE parameter pages}
+
+\ui{Dataset} carries the training and validation files, the
+\ui{Energy key} / \ui{Forces key} (\texttt{energy}/\texttt{forces}, what
+ASE writes, versus MACE's own \texttt{REF\_*}) and the isolated-atom
+energies. Getting the keys wrong does not fail the run --- MACE warns, sets
+the corresponding loss weight to zero and trains on nothing --- and E0s is
+not optional at all: without it MACE aborts before the first epoch.
+
+\ui{Model} carries the size preset, the cutoff radius, the channel count and
+the equivariance order, with the two architecture constants (interaction
+layers, correlation order) under \ui{Advanced}. \ui{Training} carries the
+learning rate, batch size, epochs, device, seed and the per-property loss
+weights, with the schedule, the two-phase (SWA/EMA) loss and the
+Query-by-Committee ensemble under its own \ui{Advanced} group.
+
+\subsection{The config has the last word}
+
+The final page shows the generated \file{mace\_train.yaml} in a monospaced,
+editable view. \textbf{Whatever is in that editor is what gets written and
+what runs}, verbatim, hand edits included. A change on an earlier page
+regenerates the text --- unless you have edited it, in which case the page
+says the settings moved under it and leaves your text alone.
+\ui{Regenerate from settings} rebuilds it from the pages, and asks first.
+
+The same page carries the execution-environment selector and
+\ui{Check Environment}, which probes the chosen interpreter for the
+framework's package (reporting its version, recorded as a comment in the
+generated config) and for which PyTorch devices it can actually use. Both
+\ui{Run (Local)} and \ui{Run (Remote)} re-run that check before launching
+anything.

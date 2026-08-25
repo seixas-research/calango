@@ -133,6 +133,12 @@ private:
     QDoubleSpinBox* hbondDistanceSpin_ = nullptr;
     QDoubleSpinBox* hbondAngleSpin_ = nullptr;
     QPushButton* hbondColorButton_ = nullptr;
+    /// Stroke: solid/dashed/dotted, and the width in the same units the
+    /// cell wireframe's own width uses. Both are cut into the overlay's
+    /// geometry rather than set on the GL state — see
+    /// render::StructureRenderer::buildHydrogenBondDashes.
+    QComboBox* hbondStyleCombo_ = nullptr;
+    QDoubleSpinBox* hbondWidthSpin_ = nullptr;
     QLabel* hbondCountLabel_ = nullptr;
 
     QListWidget* overrideList_;

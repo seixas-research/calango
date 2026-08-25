@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(calango
-    VERSION 26.8.45
+    VERSION 26.8.46
     DESCRIPTION "Calango — For visual atomistic modeling."
     LANGUAGES CXX
 )
@@ -184,6 +184,8 @@ qt_add_executable(calango
     src/core/StructureFactor.cpp
     src/core/Noise.hpp
     src/core/Noise.cpp
+    src/core/Ripples.hpp
+    src/core/Ripples.cpp
     src/core/PhononScriptGenerator.hpp
     src/core/PhononScriptGenerator.cpp
     src/core/TdbDatabase.cpp
@@ -608,6 +610,10 @@ qt_add_executable(calango
     src/gui/CondaEnvs.cpp
     src/gui/MaceTrainerDialog.hpp
     src/gui/MaceTrainerDialog.cpp
+    src/gui/MlipTrainerBackend.hpp
+    src/gui/MlipTrainerBackend.cpp
+    src/gui/MaceTrainerBackend.hpp
+    src/gui/MaceTrainerBackend.cpp
     src/gui/PythonPackagePreflight.hpp
     src/gui/PythonPackagePreflight.cpp
     src/gui/VaspPotcarPreflight.hpp
@@ -703,6 +709,8 @@ qt_add_executable(calango
     src/gui/OrchestrationProvenance.cpp
     src/gui/RandomNoiseWizard.hpp
     src/gui/RandomNoiseWizard.cpp
+    src/gui/TwoDRipplesWizard.hpp
+    src/gui/TwoDRipplesWizard.cpp
     src/gui/HistogramPlotWidget.hpp
     src/gui/HistogramPlotWidget.cpp
     src/gui/RandomNoiseViewer.hpp
@@ -1741,6 +1749,19 @@ if(CALANGO_BUILD_TESTS)
     target_include_directories(calango_hbond_test PRIVATE src)
     add_test(NAME hydrogen_bonds COMMAND calango_hbond_test)
 
+    # 2D Ripples: the arc-length quadrature and the contraction it drives.
+    # Pure geometry on a HEXAGONAL cell, which is the shape a Cartesian
+    # profile would be silently discontinuous on.
+    add_executable(calango_ripples_test
+        tests/RipplesTest.cpp
+        src/core/Ripples.cpp
+        src/core/Structure.cpp
+        src/core/UnitCell.cpp
+        src/core/Element.cpp
+    )
+    target_include_directories(calango_ripples_test PRIVATE src)
+    add_test(NAME ripples_2d COMMAND calango_ripples_test)
+
     # Periodic bond perception: that an atom bonds to EVERY lattice image
     # within reach, not just the nearest one (the MoS2 two-bonds-instead-of-six
     # bug), and to its own images when the cell holds a single atom.
@@ -2020,6 +2041,12 @@ if(CALANGO_BUILD_TESTS)
         src/core/KpointsConvergenceScriptGenerator.cpp
         src/core/CddScriptGenerator.cpp
         src/core/Noise.cpp
+        # 2D Ripples: the same in-process-generator shape as Random Noise
+        # Setup, and the same reason to construct it here — its controls
+        # drive a live read-out that calls the arc-length solver on every
+        # keystroke.
+        src/gui/TwoDRipplesWizard.cpp
+        src/core/Ripples.cpp
         src/gui/SimulationWizardBase.cpp
         src/gui/ExtendedEngineGroups.cpp
         src/core/EngineCalculatorBlocks.cpp
@@ -2031,6 +2058,8 @@ if(CALANGO_BUILD_TESTS)
         # uses, and its launcher has to be valid Python. All three fail at run
         # time on someone else's cluster, hours in, so they are pinned here.
         src/gui/MaceTrainerDialog.cpp
+        src/gui/MlipTrainerBackend.cpp
+        src/gui/MaceTrainerBackend.cpp
         src/gui/PythonPackagePreflight.cpp
         src/gui/VaspPotcarPreflight.cpp
         src/gui/GpawMpiPreflight.cpp
@@ -2341,6 +2370,8 @@ if(CALANGO_BUILD_TESTS)
         # Dataset Manager node's stratified split goes through
         # core::DatasetSplit::makeStratified().
         src/gui/MaceTrainerDialog.cpp
+        src/gui/MlipTrainerBackend.cpp
+        src/gui/MaceTrainerBackend.cpp
         src/gui/PythonPackagePreflight.cpp
         src/gui/VaspPotcarPreflight.cpp
         src/gui/GpawMpiPreflight.cpp
@@ -2430,6 +2461,8 @@ if(CALANGO_BUILD_TESTS)
         src/python_bridge/PythonEngine.cpp
         src/jobs/JobRunner.cpp
         src/gui/MaceTrainerDialog.cpp
+        src/gui/MlipTrainerBackend.cpp
+        src/gui/MaceTrainerBackend.cpp
         src/gui/PythonPackagePreflight.cpp
         src/gui/VaspPotcarPreflight.cpp
         src/gui/GpawMpiPreflight.cpp
@@ -2526,6 +2559,8 @@ if(CALANGO_BUILD_TESTS)
         # Dataset Manager node's stratified split goes through
         # core::DatasetSplit::makeStratified().
         src/gui/MaceTrainerDialog.cpp
+        src/gui/MlipTrainerBackend.cpp
+        src/gui/MaceTrainerBackend.cpp
         src/gui/PythonPackagePreflight.cpp
         src/gui/VaspPotcarPreflight.cpp
         src/gui/GpawMpiPreflight.cpp
@@ -2627,6 +2662,8 @@ if(CALANGO_BUILD_TESTS)
         # Dataset Manager node's stratified split goes through
         # core::DatasetSplit::makeStratified().
         src/gui/MaceTrainerDialog.cpp
+        src/gui/MlipTrainerBackend.cpp
+        src/gui/MaceTrainerBackend.cpp
         src/gui/PythonPackagePreflight.cpp
         src/gui/VaspPotcarPreflight.cpp
         src/gui/GpawMpiPreflight.cpp
@@ -3867,6 +3904,15 @@ if(CALANGO_BUILD_TESTS)
     # same order, with C++/Qt versions read out of this file rather than
     # trusted. Two hand-maintained copies of one row is exactly the pair that
     # drifts -- and had.
+    # Qt APIs used in src/ must exist at the Qt floor CMakeLists declares,
+    # not merely on the developer's machine. Catches the std::string-into-a-
+    # Qt-string-API shape that broke a .deb build twice over. Pure text, no
+    # Qt, no build -- so the machine that cannot otherwise see the problem
+    # runs it in milliseconds.
+    add_test(NAME qt_api_floor
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/qt_api_floor_test.py)
+
     add_test(NAME docs_badge_parity
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/docs_badge_parity_test.py)
@@ -3952,6 +3998,7 @@ if(CALANGO_BUILD_TESTS)
         docs_version_sync       # one version string, everywhere a reader sees it
         docs_ui_labels          # the manual may not name a control that is gone
         docs_badge_parity       # README and the landing page agree
+        qt_api_floor            # no Qt API newer than the declared floor
         docs_sphinx_build)      # the site still builds
 
     # Everything else: physics, numerics, crystallography, parsers of
@@ -3991,7 +4038,8 @@ if(CALANGO_BUILD_TESTS)
         phonon_diamond phonon_thermodynamics piezoelectric_tensor
         polymer_builder raman_ir_math
         raman_ir_mgo raman_ir_parsers raman_si_diamond remote_session
-        remote_session_helper run_commands scheduler_script shortcut_registry solid_interface_builder
+        remote_session_helper ripples_2d
+        run_commands scheduler_script shortcut_registry solid_interface_builder
         solvation_builder sqs_generator sqs_sige_alloy strain_voigt
         structural_phase
         structure_transforms sublattice_cluster_variation
@@ -4114,22 +4162,20 @@ if(APPLE AND CALANGO_MACOS_BUNDLE)
 
     # macdeployqt rewrites a copied library's own LC_LOAD_DYLIB entries to
     # @executable_path-relative but leaves its ORIGINAL build-machine
-    # LC_RPATH search-path entries in place. calango 26.8.36 shipped a
-    # bundled libopenblas.0.dylib carrying three absolute Homebrew GCC
-    # rpaths; on the build machine those happened to be how dyld's chained
-    # rpath search found libgcc_s.1.1.dylib (a dependency of the
-    # also-bundled libgfortran.5.dylib, itself never actually copied into
-    # the bundle) — on a clean Mac without that exact Homebrew install,
-    # every one of those paths misses and the app aborts at launch before
-    # main() runs (see packaging/README.md's "BLAS/LAPACK backend"
-    # section). The real fix for THAT specific chain is CALANGO_BLAS
-    # defaulting to Accelerate above (a system framework needing none of
-    # it); this strips the same class of leftover rpath from every OTHER
-    # bundled library too — auditing the same .dmg also found it on
-    # libdbus-1.3.dylib, libjasper.7.dylib and libjpeg.8.dylib, none of
-    # them BLAS-related. Must run before the final codesign below:
-    # install_name_tool invalidates a Mach-O's signature exactly like the
-    # comment there already says stripping Python-framework paths does.
+    # LC_RPATH search-path entries in place. Those absolute paths keep
+    # working on the build machine — dyld's chained rpath search resolves
+    # through them — and miss on every other Mac, where the app then aborts
+    # at launch before main() runs. A bundle-relative load path is proof of
+    # FORM, not of RESOLUTION, which is why this strips every
+    # non-relocatable LC_RPATH from every bundled Mach-O rather than from
+    # whichever library somebody thought was at risk.
+    #
+    # Must run before the final codesign below: install_name_tool
+    # invalidates a Mach-O's signature exactly like the comment there
+    # already says stripping Python-framework paths does.
+    # packaging/macos/audit_macho_deps.py then checks both halves — that no
+    # absolute rpath survives, and that every relative dependency actually
+    # resolves inside the bundle.
     install(CODE "
         execute_process(
             COMMAND bash

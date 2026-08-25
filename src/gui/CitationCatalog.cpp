@@ -505,6 +505,39 @@ const std::vector<Citation>& citationCatalog()
          QStringLiteral("Elstner1998sccdftb")},
 
         // ---------------------------------------------------------------
+        // Methods
+        // ---------------------------------------------------------------
+        //
+        // A fifth group, and the one whose membership rule is worth
+        // stating: a paper belongs here when a Calango MODULE implements
+        // the scheme it introduced, so a result produced by that module
+        // rests on it in the way a GPAW result rests on GPAW. It is not a
+        // reading list — the physics a module merely cites in its own
+        // documentation stays in the documentation.
+        {QStringLiteral("Methods"),
+         QStringLiteral(
+             "N&oslash;rskov, J. K. <i>et al.</i> Origin of the "
+             "overpotential for oxygen reduction at a fuel-cell cathode. "
+             "<i>J. Phys. Chem. B</i> <b>108</b>, 17886&ndash;17892 (2004)."),
+         QStringLiteral(
+             "The computational hydrogen electrode, which GO Grand Canonical "
+             "MC's <b>CHE</b> reference scheme implements &mdash; cite it "
+             "for a run whose chemical potentials came from an electrode "
+             "potential rather than from Δμ."),
+         QStringLiteral(R"(@article{Norskov2004che,
+  author  = {N{\o}rskov, J. K. and Rossmeisl, J. and Logadottir, A. and Lindqvist, L. and
+             Kitchin, J. R. and Bligaard, T. and J{\'o}nsson, H.},
+  title     = {Origin of the Overpotential for Oxygen Reduction at a Fuel-Cell Cathode},
+  journal   = {The Journal of Physical Chemistry B},
+  volume    = {108},
+  number    = {46},
+  pages     = {17886--17892},
+  year      = {2004},
+  doi       = {10.1021/jp047349j}
+})"),
+         QStringLiteral("Norskov2004che")},
+
+        // ---------------------------------------------------------------
         // Libraries
         // ---------------------------------------------------------------
         {QStringLiteral("Libraries"),

@@ -1593,8 +1593,13 @@ bool SimulationWizardBase::preflightMlipPackage(RunTarget target)
         return true;
 
     const char* pip = core::mlipPipPackage(kind);
+    // fromStdString, not the std::string itself: core::toString() returns
+    // std::string and QString::arg() has no overload for it on the Qt 6.4
+    // this project targets. A newer Qt accepts it, which is exactly how
+    // this compiled on a development machine and broke the .deb build.
+    const QString engine = QString::fromStdString(toString(kind));
     QMessageBox::warning(
-        this, tr("%1 is not installed").arg(toString(kind)),
+        this, tr("%1 is not installed").arg(engine),
         tr("The Python interpreter this run would use cannot import "
            "<b>%1</b>, which %2 needs:<br><br><tt>%3</tt><br><br>"
            "Nothing was launched. Install it into that interpreter:"
@@ -1602,7 +1607,7 @@ bool SimulationWizardBase::preflightMlipPackage(RunTarget target)
            "or point Preferences → Run at an interpreter that already has "
            "it. Launching without it fails inside the generated script with "
            "a ModuleNotFoundError, in a log you would have to go and find.")
-            .arg(QString::fromLatin1(module), toString(kind),
+            .arg(QString::fromLatin1(module), engine,
                  pythonExecutable().toHtmlEscaped(),
                  QString::fromLatin1(pip)));
     return false;

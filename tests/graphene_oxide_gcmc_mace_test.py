@@ -36,6 +36,16 @@ sheet must show.
 Two points, not a fine scan: each is a MACE run of 30 optimisation cycles,
 and the claim being tested is a DIRECTION and a plateau, not a curve.
 
+THE CHE, in one more run. The same module can take its potentials from an
+electrode instead (mu_H = 1/2 E(H2) - eU, mu_O = E(H2O) - 2 mu_H), and that
+algebra says U = +2.5 V vs SHE is the SAME oxygen reservoir as
+dmu_O = +5 eV while U = 0 is the same as dmu_O = 0 — so a third run at
+U = +2.5 V, read against the two above, is a two-point scan in the
+potential: pristine at U = 0, oxidised at U = +2.5 V. The formula itself,
+its limits and its sign are pinned calculator-free in
+graphene_oxide_gcmc_test.py; this checks that a real run actually behaves
+that way.
+
 SELF-SKIPS (exit 0) without mace-torch or ase.
 
 Run directly, or through ctest as `graphene_oxide_gcmc_mace`.
@@ -128,7 +138,15 @@ def main():
          "size=(3,3,1), vacuum=7.0))"],
         cwd=run, check=True)
 
-    def prepare(work, delta_mu_o):
+    def prepare(work, delta_mu_o, electrode_potential=None):
+        """One run. `electrode_potential` not None switches it to CHE mode.
+
+        Under the CHE the module derives mu_H from U instead of offsetting
+        it, and mu_O = E(H2O) - 2 mu_H then carries 2 eU — so U = +2.5 V is
+        the same oxygen reservoir as dmu_O = +5 eV, by construction. That
+        identity is what makes ONE extra MACE run enough to check the mode
+        end to end against runs this test already pays for.
+        """
         os.makedirs(work, exist_ok=True)
         seed = os.path.join(run, "structure.extxyz")
         target = os.path.join(work, "structure.extxyz")
@@ -139,9 +157,15 @@ def main():
                 (r"^mc_cycles = .*$", "mc_cycles = %d" % CYCLES),
                 (r"^delta_mu_O = .*$", "delta_mu_O = %g" % delta_mu_o),
                 (r"^delta_mu_H = .*$", "delta_mu_H = 0.0"),
+                (r"^mu_mode = .*$",
+                 'mu_mode = "%s"'
+                 % ("manual" if electrode_potential is None else "che")),
+                (r"^electrode_potential_V = .*$",
+                 "electrode_potential_V = %g" % (electrode_potential or 0.0)),
+                (r"^solution_pH = .*$", "solution_pH = 0.0"),
                 (r"^optimizer_max_steps = .*$", "optimizer_max_steps = 25"),
                 (r"^equilibration_steps = .*$", "equilibration_steps = 5"),
-                # Shared, so the two points pay for the references once.
+                # Shared, so the three points pay for the references once.
                 (r"^reference_cache_path = .*$",
                  'reference_cache_path = r"../go_gcmc_references.json"')):
             text = re.sub(pattern, replacement, text, count=1, flags=re.M)
@@ -272,6 +296,67 @@ def main():
             check(counts[-1].get("C", 0) == 18,
                   "the carbon framework is untouched — no move has a carbon "
                   "reservoir to draw on")
+
+    # --- The computational hydrogen electrode, end to end. ---------------
+    #
+    # ONE extra run, because the CHE's own algebra says where to put it.
+    # mu_H = 1/2 E(H2) - eU and mu_O = E(H2O) - 2 mu_H, so U = +2.5 V vs SHE
+    # is the same oxygen reservoir as dmu_O = +5 eV — the point already run
+    # above — and U = 0 is the same as dmu_O = 0, the pristine point. The
+    # pair is therefore a two-point scan in U over runs that mostly already
+    # exist: at U = 0 nothing is placed, at U = +2.5 V an oxide appears.
+    # That is the direction the mode exists for, checked with a real
+    # potential rather than asserted.
+    print("\nThe same module driven by an electrode potential (CHE):")
+    che = os.path.join(tmp, "che")
+    done_che = prepare(che, 0.0, electrode_potential=2.5)
+    if check(done_che.returncode == 0,
+             f"the U = +2.5 V vs SHE run completed "
+             f"(exit {done_che.returncode})"
+             + ("" if done_che.returncode == 0
+                else f": {(done_che.stdout + done_che.stderr)[-1500:]}")):
+        che_messages = []
+        che_log = os.path.join(che, "log.json")
+        if os.path.isfile(che_log):
+            che_messages = [e["message"]
+                            for e in json.load(open(che_log))["log"]]
+        che_line = next((m for m in che_messages
+                         if "chemical potentials (CHE)" in m), "")
+        check(bool(che_line),
+              "and reported its potentials as CHE-derived, not as mu0 + dmu")
+        if che_line and None not in (e_h2, e_h2o, mu_o0):
+            found = re.findall(r"mu_[HO] = .*?(-?\d+\.\d+) eV", che_line)
+            if check(len(found) == 2,
+                     f"with both absolute potentials in the log ({che_line})"):
+                che_mu_h, che_mu_o = float(found[0]), float(found[1])
+                # The formula, against THIS run's own reference energies.
+                check(abs(che_mu_h - (0.5 * e_h2 - 2.5)) < 1e-3,
+                      f"mu_H = 1/2 E(H2) - eU: {che_mu_h:.4f} vs "
+                      f"{0.5 * e_h2 - 2.5:.4f} eV at U = +2.5 V")
+                check(abs(che_mu_o - (e_h2o - 2.0 * che_mu_h)) < 1e-3,
+                      f"mu_O = E(H2O) - 2 mu_H: {che_mu_o:.4f} vs "
+                      f"{e_h2o - 2.0 * che_mu_h:.4f} eV")
+                # And the identity that makes the two-point scan legitimate:
+                # this reservoir IS the dmu_O = +5 eV one already run.
+                check(abs(che_mu_o - (mu_o0 + 5.0)) < 1e-3,
+                      f"which is mu_O0 + 5 eV ({mu_o0 + 5.0:.4f}) — the same "
+                      f"oxygen reservoir as the dmu_O = +5 eV run above, "
+                      f"reached from a potential instead of an offset")
+
+        che_metrics = os.path.join(che, "metrics.json")
+        if os.path.isfile(che_metrics):
+            che_oxygen = [m["gcmc_n_O"] for m
+                          in json.load(open(che_metrics))["metrics"]
+                          if "gcmc_n_O" in m]
+            if che_oxygen:
+                check(che_oxygen[0] == 0,
+                      "the CHE run also starts from a pristine sheet")
+                check(max(che_oxygen) > 0,
+                      f"and OXIDISES at U = +2.5 V (peak {max(che_oxygen)} O) "
+                      f"where the U = 0 equivalent — the dmu_O = 0 run above "
+                      f"— accepted nothing at all: O coverage rises with the "
+                      f"electrode potential, which is the whole point of the "
+                      f"mode")
 
     shutil.rmtree(tmp, ignore_errors=True)
     print("\n" + (f"{failures} check(s) FAILED." if failures

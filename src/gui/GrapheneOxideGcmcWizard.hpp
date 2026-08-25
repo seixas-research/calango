@@ -2,7 +2,9 @@
 
 #include "gui/GrapheneOxideMcmdWizard.hpp"
 
+class QComboBox;
 class QDoubleSpinBox;
+class QGroupBox;
 class QLabel;
 
 namespace calango::gui {
@@ -35,6 +37,15 @@ namespace calango::gui {
 /// reference from a different engine or cutoff leaves a per-species constant
 /// in every decision that has nothing to do with the chemistry. They are
 /// cached by calculator signature, so a scan over Δμ pays for them once.
+///
+/// THE SECOND SCHEME. The reservoir can instead be an ELECTRODE, through
+/// Nørskov's computational hydrogen electrode: the user sets a potential
+/// (and pH) and μ_H is DERIVED rather than offset. The formulas, the
+/// SHE-vs-RHE choice and the reason μ_O stops being a constant live on
+/// core::GrapheneOxideMcmdConfig::potentialMode; this class only puts the
+/// controls on the page and shows what they imply. Both schemes read the
+/// same two cached reference energies — the CHE changes what is done with
+/// them, not where they come from.
 class GrapheneOxideGcmcWizard : public GrapheneOxideMcmdWizard {
     Q_OBJECT
 
@@ -65,9 +76,25 @@ protected:
 
 private:
     void refreshPotentialSummary();
+    /// Show only the rows the selected scheme actually reads: Δμ_H is not a
+    /// control in CHE mode (the potential fixes μ_H), and U/pH/T are not
+    /// controls in manual mode. Hiding beats disabling here — a greyed row
+    /// still reads as "a setting this run has", and it does not.
+    void syncPotentialModeRows();
 
+    QComboBox* potentialMode_ = nullptr;
+    QGroupBox* reservoirBox_ = nullptr;
     QDoubleSpinBox* deltaMuH_ = nullptr;
     QDoubleSpinBox* deltaMuO_ = nullptr;
+    QDoubleSpinBox* electrodePotential_ = nullptr;
+    QDoubleSpinBox* solutionPh_ = nullptr;
+    QDoubleSpinBox* potentialTemperature_ = nullptr;
+    /// Set once the user edits the CHE temperature, after which it stops
+    /// following the sampling temperature. Same rule as every other
+    /// "sensible default that gets out of the way" in this application: the
+    /// two ARE one physical temperature, and a user who has said otherwise
+    /// has said so on purpose.
+    bool potentialTemperatureTouched_ = false;
     QDoubleSpinBox* swapWeight_ = nullptr;
     QDoubleSpinBox* insertWeight_ = nullptr;
     QDoubleSpinBox* deleteWeight_ = nullptr;

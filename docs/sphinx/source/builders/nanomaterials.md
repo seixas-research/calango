@@ -836,6 +836,17 @@ oxide whose stoichiometry the chemical potentials select.
 
 ### The reservoir and its references
 
+{guilabel}`Reference scheme` picks what the sheet is in equilibrium **with**:
+
+| Scheme | The reservoir | Controls |
+|---|---|---|
+| **Manual** (default) | a humid atmosphere | {guilabel}`Δμ_H`, {guilabel}`Δμ_O` |
+| **Computational hydrogen electrode (CHE)** | an **electrode** | {guilabel}`U` (V vs. SHE), {guilabel}`pH`, {guilabel}`Temperature`, {guilabel}`Δμ_O` |
+
+Both read the *same* two reference energies, computed once by the run with
+its own calculator; what differs is what is done with them. Manual is
+described immediately below, the CHE in [its own section](#the-computational-hydrogen-electrode).
+
 Δμ_H and Δμ_O are set relative to reference potentials the run computes for itself:
 
 $$\mu_\mathrm{H}^{0} = \tfrac{1}{2} E_\mathrm{tot}(\mathrm{H_2})$$
@@ -859,6 +870,96 @@ calculator+settings signature next to the run directory. A scan over Δμ pays f
 once; a run with different settings recomputes rather than silently inheriting them.
 Both energies and the resulting absolute μ are reported in the run log.
 :::
+
+(the-computational-hydrogen-electrode)=
+### The computational hydrogen electrode
+
+Set {guilabel}`Reference scheme` to **Computational hydrogen electrode (CHE)**
+and hydrogen stops leaving the sheet as ½H₂ and starts leaving it as a
+**proton–electron pair**, in equilibrium with an electrode. Its chemical
+potential is then no longer a number you set — it is set by the electrode
+potential.
+
+Under Nørskov's computational hydrogen electrode, the reaction
+
+$$\mathrm{H^+} + e^- \;\rightleftharpoons\; \tfrac{1}{2}\mathrm{H_2}$$
+
+is at equilibrium at $U = 0$ V vs. SHE, pH 0 and 1 bar H₂ — that is the
+*definition* of the standard hydrogen electrode, and it fixes
+$\mu(\mathrm{H^+} + e^-) = \tfrac{1}{2}E(\mathrm{H_2})$ there. Away from that
+reference point, two terms move it:
+
+$$\mu_\mathrm{H} = \tfrac{1}{2}E(\mathrm{H_2}) - eU_\mathrm{SHE} - k_\mathrm{B}T\ln(10)\cdot\mathrm{pH}$$
+
+and oxygen follows from **water in equilibrium with that reservoir**,
+$\mathrm{H_2O} \rightleftharpoons \mathrm{O} + 2(\mathrm{H^+} + e^-)$:
+
+$$\mu_\mathrm{O} = E(\mathrm{H_2O}) - 2\mu_\mathrm{H} + \Delta\mu_\mathrm{O}$$
+
+Two consequences, and they are the whole reason the mode exists:
+
+- **μ_H falls as the electrode is made more oxidizing**, so hydrogen gets
+  cheaper to strip off the sheet;
+- **μ_O rises by exactly 2 eV per volt** — water releases *two*
+  proton-electron pairs per oxygen, so the oxygen reference carries twice the
+  electrode's shift. That factor of two is the potential dependence of
+  oxidation, and it is what makes a coverage-vs-potential scan a single
+  parameter sweep.
+
+{guilabel}`Δμ_H` is not a control in this mode and is hidden: the potential
+*is* μ_H, and an additive knob on top of it would be a second, unlabelled
+potential axis. {guilabel}`Δμ_O` stays, as an offset for exploring around the
+CHE's own oxygen reference.
+
+:::{important}
+**U is on the SHE scale, and that is a choice.** On the RHE scale the
+potential and the pH terms collapse into one, because
+$U_\mathrm{SHE} = U_\mathrm{RHE} - (k_\mathrm{B}T\ln 10/e)\cdot\mathrm{pH}$
+cancels the pH term exactly — the familiar statement that a CHE free energy
+*quoted vs. RHE* is pH-independent. A wizard offering "U vs. RHE" **and** a
+pH box would therefore be offering a control with no effect. Leave pH at 0
+and the two scales coincide.
+
+At a fixed potential vs. SHE, **raising the pH is oxidizing**, in the same
+direction as raising U: fewer protons in solution is a lower
+$\mu(\mathrm{H^+}+e^-)$, so the sheet gives one up more readily. That is the
+−59 mV per pH unit slope every Pourbaix diagram draws its oxide boundaries
+with. (The intuition that "alkaline is reducing" belongs to the RHE scale,
+where the two terms cancel.)
+:::
+
+**The conventions were verified, not remembered.** The cross-check is the
+standard surface-Pourbaix step $* + \mathrm{H_2O} \to *\mathrm{OH} +
+(\mathrm{H^+} + e^-)$, whose free energy under the expressions above is
+$\Delta G = \Delta G^0 - eU - k_\mathrm{B}T\ln(10)\cdot\mathrm{pH}$ — the form
+used throughout the CHE literature, and RHE-invariant as it must be. Cite
+Nørskov *et al.*, *J. Phys. Chem. B* **108**, 17886–17892 (2004),
+doi:10.1021/jp047349j; it is on the Citations tab under **Methods**
+({doc}`/reference/citing`).
+
+{guilabel}`Temperature` scales the pH term and nothing else — with pH 0 it has
+no effect at all. It follows the sampling temperature until you change it,
+because the two *are* one physical temperature; they are separate fields so
+that a run can be lined up against a paper's 298.15 K numbers without also
+changing the ensemble the walk samples.
+
+The wizard shows the derived potentials live as U, pH and T change:
+
+```
+eU + k_B T ln(10)·pH = 0.8595 eV
+μ_H = ½E(H₂) − 0.860 eV  ·  μ_O = E(H₂O) − E(H₂) + 1.719 eV + 0.000 eV
+```
+
+Written that way on purpose: the manual formula, plus twice the shift. The
+reference energies are still not invented — the potential-dependent part is
+arithmetic on U, pH and T with no reference energy in it, so it *can* be
+shown as a number, and the rest stays a definition until the run computes it.
+
+**At U = 0 V and pH 0 the CHE reproduces the manual references exactly**
+($\mu_\mathrm{H} = \tfrac{1}{2}E(\mathrm{H_2})$,
+$\mu_\mathrm{O} = E(\mathrm{H_2O}) - E(\mathrm{H_2})$), from the same function
+by two routes. That identity is a test, not a remark — see
+[What was verified](#what-was-verified).
 
 ### The move set and the acceptance criterion
 
@@ -912,7 +1013,10 @@ the carbon count is refused by name rather than priced at zero.
 ### Settings
 
 The GO/MC-Opt wizard's four stages, plus a {guilabel}`Reservoir (chemical potentials)`
-group: {guilabel}`Δμ_H`, {guilabel}`Δμ_O` and the three move weights. The relaxation
+group: the {guilabel}`Reference scheme`, its own controls (Δμ_H for manual; U, pH and
+temperature for the CHE), {guilabel}`Δμ_O` and the three move weights. Only the rows the
+selected scheme actually reads are shown — an inapplicable row that is merely greyed out
+reads as a broken dialog rather than as "this scheme does not have that". The relaxation
 strategy is pluggable exactly as in the shared core, and **optimization is the default**:
 relaxing both sides of the Metropolis test to a minimum is what removed the
 placement-strain bias that made GO/MCMD's trial deltas 150 kT, and an insertion arrives
@@ -940,6 +1044,25 @@ runs everywhere:
   accepted outright; deletion is the exact negative of insertion at the same μ;
 - a swap prices at exactly zero, so the criterion is the conserving one.
 
+**The CHE formula**, in the same calculator-free test — every number hand-computed from
+the Boltzmann constant, never from a previous run of this code:
+
+- the shift is **exactly zero** at U = 0 V vs. SHE and pH 0 (that *is* the standard
+  hydrogen electrode's definition), exactly 0.800 eV at U = +0.800 V, and exactly
+  59.2 meV per pH unit at 298.15 K — the ~59 meV every CHE paper quotes;
+- at U = 0, pH 0 the CHE reproduces the manual references to the last digit, from the
+  same function by two routes;
+- Δμ_H is **not read at all** in CHE mode: setting it to +9 eV changes neither μ;
+- μ_O rises with U at **exactly 2 eV per volt** over a 0 → 1.2 V ladder (two
+  proton-electron pairs per oxygen, not one), while μ_H falls;
+- and that reaches the acceptance criterion with the right sign and magnitude: the
+  grand-canonical ΔE − Σ Δn μ for inserting an epoxide falls monotonically over that
+  ladder, so the Metropolis acceptance probability for oxidation rises monotonically —
+  from 10⁻¹⁶ at U = 0 to accepted outright by U = +1.2 V. **The equilibrium coverage can
+  only follow.**
+- one pH unit is worth exactly one k_BT ln(10)/e of potential, which is the SHE↔RHE
+  conversion — so the two scales agree, as they must.
+
 **The physics**, in `graphene_oxide_gcmc_mace` — needs MACE, self-skips without it.
 Starting from pristine periodic graphene (18 C, 30 cycles), the run computes
 μ_H⁰ = −3.278 eV and μ_O⁰ = −7.481 eV from its own H₂ and H₂O calculations, and the
@@ -963,6 +1086,23 @@ than climbing to full coverage, which is the saturation a finite sheet must show
 The test asserts the two ends of that: nothing placed at Δμ_O = 0, an oxide that
 plateaus at +5 eV. It does not assert the intermediate shape — 30 cycles on an
 18-carbon sheet is a direction and a plateau, not a curve.
+
+**The CHE end to end**, in one more run of the same test. The scheme's own algebra says
+where to put it: μ_O carries 2eU, so **U = +2.5 V vs. SHE is the same oxygen reservoir
+as Δμ_O = +5 eV**, and U = 0 is the same as Δμ_O = 0. The third run is therefore a
+two-point scan in the potential over runs that mostly already exist. With MACE it
+reports
+
+```
+chemical potentials (CHE): U = +2.500 V vs SHE, pH = 0.00, T = 300.0 K
+  -> shift = 2.5000 eV; mu_H = 1/2 E(H2) - shift = -5.7780 eV,
+     mu_O = E(H2O) - 2 mu_H +0.000 = -2.4808 eV
+```
+
+which is μ_O⁰ + 5 eV to within a millielectronvolt — the same reservoir reached from a
+potential instead of an offset — and the sheet **oxidises** (peak 7 O) where the U = 0
+equivalent accepted nothing at all. O coverage rises with the electrode potential, with
+a real potential rather than by assertion.
 
 ## GO Functional Group Analysis — census and geometry
 

@@ -24,6 +24,19 @@ const char* goMcOptimizerName(GoMcOptimizer optimizer)
     return "BFGS";
 }
 
+const char* goGcmcPotentialModeTag(GoGcmcPotentialMode mode)
+{
+    // Same rule as goMcOptimizerName above: no default, so a new mode stops
+    // compiling here instead of silently emitting "manual".
+    switch (mode) {
+    case GoGcmcPotentialMode::Manual:
+        return "manual";
+    case GoGcmcPotentialMode::ComputationalHydrogenElectrode:
+        return "che";
+    }
+    return "manual";
+}
+
 std::string
 GrapheneOxideMcmdScriptGenerator::generate(const GrapheneOxideMcmdConfig& c)
 {
@@ -149,6 +162,15 @@ GrapheneOxideMcmdScriptGenerator::generate(const GrapheneOxideMcmdConfig& c)
         << (c.grandCanonical ? "True" : "False") << "\n"
         << "delta_mu_H = " << c.deltaMuHEv << "\n"
         << "delta_mu_O = " << c.deltaMuOEv << "\n"
+        // How the two absolute potentials are obtained: "manual" (mu0 + dmu)
+        // or "che" (Norskov's computational hydrogen electrode, in which
+        // mu_H is DERIVED from the electrode potential and delta_mu_H is not
+        // read at all). The conventions are documented in full on
+        // GrapheneOxideMcmdConfig::potentialMode.
+        << "mu_mode = \"" << goGcmcPotentialModeTag(c.potentialMode) << "\"\n"
+        << "electrode_potential_V = " << c.electrodePotentialV << "\n"
+        << "solution_pH = " << c.pH << "\n"
+        << "potential_temperature_K = " << c.potentialTemperatureK << "\n"
         << "move_weights = {\"swap\": " << c.swapWeight
         << ", \"insert\": " << c.insertWeight
         << ", \"delete\": " << c.deleteWeight << "}\n"
@@ -1734,6 +1756,60 @@ def gcmc_reference_potentials():
     return e_h2, e_h2o
 
 
+def gcmc_potential_shift():
+    """The electrochemical shift of mu_H, in eV. Zero outside CHE mode.
+
+    Under the computational hydrogen electrode (Norskov, J. K. et al.,
+    J. Phys. Chem. B 108, 17886-17892 (2004), doi:10.1021/jp047349j) the
+    proton-electron pair is in equilibrium with 1/2 H2 at U = 0 V vs. SHE,
+    pH 0, so
+
+        mu(H+ + e-) = 1/2 E(H2) - eU_SHE - kB T ln(10) pH
+
+    and this returns the subtracted part. U IS ON THE SHE SCALE: on the RHE
+    scale the two terms collapse into one (U_SHE = U_RHE - (kB T ln10 / e)
+    pH cancels the pH term exactly), which is the familiar statement that a
+    CHE free energy quoted vs. RHE is pH-independent -- and the reason a pH
+    field only means something alongside an SHE potential.
+
+    e = 1 in these units, so eU in eV is numerically U in volts.
+    """
+    return (electrode_potential_V
+            + units.kB * potential_temperature_K * math.log(10.0) * solution_pH)
+
+
+def gcmc_chemical_potentials(e_h2, e_h2o):
+    """(mu_H, mu_O) in eV, from the two reference energies.
+
+    ONE function for both modes, because the acceptance criterion must not
+    care which one produced the numbers -- and because the CHE reduces to
+    the manual scheme exactly at U = 0, pH = 0, which is only checkable if
+    both come out of the same place.
+
+    MANUAL:  mu_H = 1/2 E(H2) + dmu_H
+             mu_O = E(H2O) - E(H2) + dmu_O
+        Hydrogen from the H2 molecule; oxygen from water in equilibrium
+        with it -- the standard humid-environment reference.
+
+    CHE:     mu_H = 1/2 E(H2) - eU - kB T ln(10) pH        (dmu_H unused)
+             mu_O = E(H2O) - 2 mu_H + dmu_O
+        The electrode replaces H2 as the hydrogen reservoir. Oxygen is
+        still "from water in equilibrium with the hydrogen reservoir" --
+        H2O <-> O + 2(H+ + e-) -- which is what makes it POTENTIAL
+        dependent: mu_O rises by 2eU, so a more oxidizing electrode makes
+        oxygen cheaper to place, exactly as it should.
+
+    dmu_H is deliberately NOT applied in CHE mode: the whole content of the
+    scheme is that mu_H is fixed by the potential, and an extra additive
+    knob on top would be a second, unlabelled potential axis.
+    """
+    if mu_mode == "che":
+        mu_H = 0.5 * e_h2 - gcmc_potential_shift()
+        return mu_H, (e_h2o - 2.0 * mu_H) + delta_mu_O
+    mu_H = 0.5 * e_h2 + delta_mu_H
+    return mu_H, (e_h2o - e_h2) + delta_mu_O
+
+
 def gcmc_rebuild_state(system):
     """Re-derive every index-based structure after atoms were added/removed.
 
@@ -2237,17 +2313,28 @@ mu_H = 0.0
 mu_O = 0.0
 if grand_canonical:
     _e_h2, _e_h2o = gcmc_reference_potentials()
-    # mu_H0 = 1/2 E(H2); mu_O0 = E(H2O) - E(H2). Water in equilibrium with
-    # hydrogen -- the standard humid-environment reference.
-    _mu_H0 = 0.5 * _e_h2
-    _mu_O0 = _e_h2o - _e_h2
-    mu_H = _mu_H0 + delta_mu_H
-    mu_O = _mu_O0 + delta_mu_O
-    _calango_event(
-        "info",
-        "chemical potentials: mu_H0 = %.4f eV, mu_O0 = %.4f eV; "
-        "with dmu_H = %+.3f, dmu_O = %+.3f -> mu_H = %.4f, mu_O = %.4f eV"
-        % (_mu_H0, _mu_O0, delta_mu_H, delta_mu_O, mu_H, mu_O))
+    # ONE call for both schemes -- see gcmc_chemical_potentials(). The two
+    # log lines below differ because the two schemes are parameterized
+    # differently, not because the arithmetic lives in two places.
+    mu_H, mu_O = gcmc_chemical_potentials(_e_h2, _e_h2o)
+    if mu_mode == "che":
+        _calango_event(
+            "info",
+            "chemical potentials (CHE): U = %+.3f V vs SHE, pH = %.2f, "
+            "T = %.1f K -> shift = %.4f eV; mu_H = 1/2 E(H2) - shift = "
+            "%.4f eV, mu_O = E(H2O) - 2 mu_H %+.3f = %.4f eV"
+            % (electrode_potential_V, solution_pH, potential_temperature_K,
+               gcmc_potential_shift(), mu_H, delta_mu_O, mu_O))
+    else:
+        # mu_H0 = 1/2 E(H2); mu_O0 = E(H2O) - E(H2). Water in equilibrium
+        # with hydrogen -- the standard humid-environment reference.
+        _mu_H0 = 0.5 * _e_h2
+        _mu_O0 = _e_h2o - _e_h2
+        _calango_event(
+            "info",
+            "chemical potentials: mu_H0 = %.4f eV, mu_O0 = %.4f eV; "
+            "with dmu_H = %+.3f, dmu_O = %+.3f -> mu_H = %.4f, mu_O = %.4f eV"
+            % (_mu_H0, _mu_O0, delta_mu_H, delta_mu_O, mu_H, mu_O))
 
 kB = units.kB
 # Progress is counted in energy evaluations -- the cost the wizard quotes --

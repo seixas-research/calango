@@ -140,6 +140,18 @@ protected:
     /// is meaningless before the engine is known.
     bool settingsStageFirst() const override { return false; }
 
+    /// The sampling temperature control, so a subclass can keep a
+    /// temperature of its own in step with it. Null until
+    /// buildSettingsPage() has run.
+    ///
+    /// Exposed rather than made public: GO Grand Canonical MC's CHE mode
+    /// carries its own temperature (the pH term's), which is the SAME
+    /// physical temperature and must therefore default to this one and
+    /// follow it until the user says otherwise. Reading it back out of
+    /// collectConfig() would work and would also drag forty unrelated
+    /// fields along for one number.
+    QDoubleSpinBox* samplingTemperatureSpin() const { return temperature_; }
+
 private Q_SLOTS:
     void refreshCost();
 

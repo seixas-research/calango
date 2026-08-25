@@ -172,6 +172,45 @@ automatic rule and manual overrides:
 
 Overrides live on the structure and are saved in the project file.
 
+\subsection{Hydrogen bonds}
+\label{sec:hydrogen-bonds}
+
+The \ui{Hydrogen Bonds} tab perceives D--H$\cdots$A contacts
+\emph{geometrically} --- a maximum donor--acceptor separation
+(2.0--6.0\,\AA, default 3.5\,\AA) and a minimum D--H$\cdots$A angle
+(90--180$^\circ$, default 120$^\circ$) --- and draws them as a broken
+stroke. These are not stored overrides: they re-derive from the geometry, so
+they follow a trajectory instead of freezing at the frame they were detected
+on. A live count distinguishes ``criteria too strict'' from ``none
+present''.
+
+\begin{description}
+  \item[\ui{Color}] The stroke colour.
+  \item[\ui{Line style}] \ui{Solid}, \ui{Dashed} (the default, and what
+    this overlay has always drawn) or \ui{Dotted}. A broken stroke is the
+    convention for an interaction that is \emph{not} a covalent bond, and
+    it says so beside the solid cylinders it sits among without needing a
+    caption. Solid is for a figure in which the hydrogen bonds are the
+    subject; dotted keeps the dash spacing and shortens the marks, for a
+    dense structure where dashes compete with the geometry they cross.
+  \item[\ui{Line width}] On the same scale as the unit cell's own line
+    width, so the same number is the same thickness on both.
+\end{description}
+
+The stroke is real geometry, not an OpenGL line: core-profile OpenGL clamps
+line width (to 1\,px outright under macOS's profile), so a width control
+over a line primitive would do nothing at all. The marks are built as thin
+crossed quads, exactly as the unit cell's edges are built as thin tubes and
+for the same reason. The one consequence is that the stroke is in
+\emph{world} units, so it scales with the camera like a bond rather than
+staying a fixed number of pixels.
+
+The live viewport draws hydrogen bonds, and so does the off-screen
+framebuffer capture behind image export, film frames and the animated
+GIF/MP4. The \emph{ray-traced} export (POV-Ray, Tachyon) does not: its
+scene is built from the structure and the render style, and hydrogen bonds
+are a separate overlay that has never been part of it.
+
 \subsection{Rules apply to the whole trajectory}
 \label{sec:bond-rules-trajectory}
 

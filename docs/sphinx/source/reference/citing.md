@@ -11,14 +11,19 @@ result.
 
 One continuously-numbered, Nature-format reference list ("Surname, F. M."
 authors, an abbreviated italicized journal, a bold volume, pages or an
-article number, the year in parentheses), grouped under four headers:
+article number, the year in parentheses), grouped under five headers:
 
 | Group | Covers |
 |---|---|
 | **Core** | ASE — the library every generated script builds its structure and runs its calculator through — and Calango itself |
 | **Databases** | Whichever of Materials Project, C2DB and PubChem the Database Browser actually queried |
 | **Calculators** | The DFT/MD engines the wizards generate scripts for — GPAW, Quantum ESPRESSO, VASP, SIESTA, LAMMPS, MACE, xTB, DFTB+ — cite the ones a given result actually ran on, not the whole list |
+| **Methods** | A paper a Calango *module implements the scheme of*, so a result from that module rests on it the way a GPAW result rests on GPAW. Currently one entry: the computational hydrogen electrode, which GO Grand Canonical MC's **CHE** reference scheme implements ({doc}`/builders/nanomaterials`) |
 | **Libraries** | Python packages customary to cite where a venue expects it: spglib, NumPy, phonopy, icet, dftd4 |
+
+**Methods** has the narrowest membership rule of the five, and it is worth
+stating: an entry belongs there when a module *implements* the scheme, not
+when the documentation cites the physics. It is not a reading list.
 
 Some entries carry a short note under them — "cite together with ASE,
 above", "for the default GFN2-xTB method" — where a project's own citation

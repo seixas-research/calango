@@ -142,12 +142,50 @@ until the picture is right. Manual rules come in three kinds, one tab each:
 - {guilabel}`By Chemical Elements` — an element pair (Si–O, C–C) and a
   min/max distance window (0.0–20.0 Å, default 0.0–2.0): every matching pair
   in range is bonded — or unbonded — in one action, with a live match count.
-- {guilabel}`Hydrogen Bonds` — geometric D–H⋯A perception, rendered as
-  dashed lines: maximum donor–acceptor separation 2.0–6.0 Å (default
+- {guilabel}`Hydrogen Bonds` — geometric D–H⋯A perception, rendered as a
+  broken stroke: maximum donor–acceptor separation 2.0–6.0 Å (default
   **3.5 Å**) and minimum D–H⋯A angle 90–180° (default **120°**), plus a
-  color and a live count. These are *not* stored overrides — they re-derive
-  from the geometry, so they follow a trajectory instead of freezing at the
-  frame they were detected on.
+  colour, a {guilabel}`Line style`, a {guilabel}`Line width` and a live
+  count. These are *not* stored overrides — they re-derive from the
+  geometry, so they follow a trajectory instead of freezing at the frame
+  they were detected on.
+
+### Stroking the hydrogen-bond contacts
+
+{guilabel}`Line style` is **Solid**, **Dashed** (the default, and what this
+overlay has always drawn) or **Dotted**. A broken stroke is the convention
+for an interaction that is *not* a covalent bond, and it says so beside the
+solid cylinders it sits among without needing a caption. Solid is for a
+figure in which the hydrogen bonds are the subject — a network worth
+following mark by mark loses more to the gaps than it gains from them.
+Dotted keeps the dash spacing and shortens the marks, for a dense structure
+where dashes start competing with the geometry they cross.
+
+{guilabel}`Line width` is on the **same scale as the unit cell's own line
+width** ({doc}`/representation`), so the same number is the same thickness
+on both.
+
+:::{note}
+The stroke is real geometry, not an OpenGL line. Core-profile OpenGL clamps
+line width — to 1 px outright under macOS's profile — so a width control
+over a line primitive would do nothing at all on the machine it was set on.
+The marks are therefore built as thin crossed quads, exactly as the unit
+cell's edges are built as thin tubes and for the same reason.
+
+The one consequence to know about: the stroke is in **world units**, so it
+scales with the camera like a bond rather than staying a fixed number of
+pixels.
+:::
+
+**Which render paths draw them.** The live viewport does, and so does the
+off-screen framebuffer capture that image export, film frames and the
+animated GIF/MP4 all go through — those are the same `render()` call, so the
+style and width reach them unchanged. The **ray-traced** export (POV-Ray,
+Tachyon) does **not**: its scene is built from the structure and the render
+style, and hydrogen bonds are a separate overlay that has never been part of
+it. A ray-traced figure of a hydrogen-bonded structure silently has no
+hydrogen bonds in it; that predates these controls and is tracked in
+`FUTURE.md`.
 
 {guilabel}`Active overrides` lists every override as *added* or *suppressed*
 with the pair and its distance; {guilabel}`Clear Override` and

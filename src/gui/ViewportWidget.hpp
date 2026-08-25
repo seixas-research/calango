@@ -220,6 +220,23 @@ public:
         core::HydrogenBondOptions options;
         QColor color{120, 200, 255};
         float dashLength = 0.18f; ///< Å per dash (gaps are the same length)
+        /// Solid / dashed / dotted. DASHED is the default because it is
+        /// what this overlay has always drawn, and because a broken stroke
+        /// is the convention for a contact that is not a covalent bond —
+        /// the same argument the unit cell's dashed edges rest on. Solid
+        /// exists for figures where the H-bonds ARE the subject and the
+        /// breaks cost more than they say.
+        render::HydrogenBondLineStyle lineStyle =
+            render::HydrogenBondLineStyle::Dashed;
+        /// Stroke width, in units of
+        /// StructureRenderer::kHydrogenBondBaseRadius (0.015 Å of radius
+        /// each) — the same scale the cell wireframe's own width uses, so
+        /// "2" means one thickness across the viewport.
+        ///
+        /// The stroke is world-space geometry rather than a GL line: see
+        /// StructureRenderer::buildHydrogenBondDashes for why, and for the
+        /// one consequence (it scales with the camera, like a bond).
+        float lineWidth = 1.5f;
     };
     HydrogenBondStyle& hydrogenBondStyle() { return hbondStyle_; }
     /// Re-run detection on the current structure and push the dashes. Call

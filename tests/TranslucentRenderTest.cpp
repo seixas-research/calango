@@ -123,6 +123,60 @@ QImage renderAt(QOpenGLFunctions_3_3_Core* gl, const core::Structure& structure,
     return image;
 }
 
+/// Render one frame carrying ONLY the hydrogen-bond overlay: no atoms, no
+/// bonds, no cell. The overlay is what is being counted, and a frame with
+/// the structure in it would drown a few dozen thin marks in ten thousand
+/// pixels of gold.
+///
+/// The contacts are two long horizontal lines across the middle of the cell,
+/// far enough apart to stay separate at every width tested here.
+QImage renderHydrogenBonds(QOpenGLFunctions_3_3_Core* gl,
+                           render::HydrogenBondLineStyle style, float width,
+                           bool enabled = true)
+{
+    QOpenGLFramebufferObject fbo(kSize, kSize,
+                                 QOpenGLFramebufferObject::CombinedDepthStencil);
+    fbo.bind();
+    gl->glViewport(0, 0, kSize, kSize);
+    gl->glEnable(GL_DEPTH_TEST);
+    gl->glDepthFunc(GL_LESS);
+    gl->glClearColor(0.1f, 0.11f, 0.13f, 1.0f);
+    gl->glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    core::Structure empty;
+    empty.setCell(core::UnitCell({8, 0, 0}, {0, 8, 0}, {0, 0, 8}));
+    render::StructureRenderer renderer;
+    renderer.initialize(gl);
+    renderer.style().showCell = false;
+    renderer.setStructure(&empty);
+
+    std::vector<float> stream;
+    if (enabled) {
+        const std::vector<std::pair<QVector3D, QVector3D>> contacts = {
+            {QVector3D(1.5f, 3.4f, 4.0f), QVector3D(6.5f, 3.4f, 4.0f)},
+            {QVector3D(1.5f, 4.6f, 4.0f), QVector3D(6.5f, 4.6f, 4.0f)},
+        };
+        render::StructureRenderer::buildHydrogenBondDashes(
+            contacts, QColor(120, 200, 255), 0.18f, style, width, stream);
+    }
+    renderer.setHydrogenBonds(stream);
+
+    render::OrbitCamera camera;
+    // Straight on, so a mark's drawn area is its length times its width and
+    // nothing is foreshortened — the counts below are then comparable
+    // between styles rather than between projections.
+    camera.frame(QVector3D(4.0f, 4.0f, 4.0f), 3.6f);
+    renderer.render(camera.view(), camera.projection(1.0f));
+
+    gl->glFinish();
+    QImage image(kSize, kSize, QImage::Format_RGB888);
+    gl->glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    gl->glReadPixels(0, 0, kSize, kSize, GL_RGB, GL_UNSIGNED_BYTE,
+                     image.bits());
+    fbo.release();
+    return image;
+}
+
 /// Mean absolute per-channel difference, 0-255.
 double meanDifference(const QImage& a, const QImage& b)
 {
@@ -1072,6 +1126,58 @@ int main(int argc, char** argv)
         check(lost > 0.5,
               "and the structure's shadow lands on it, off a normal that is "
               "not +z");
+    }
+
+    // --- The hydrogen-bond overlay actually reaches the framebuffer ------
+    //
+    // This overlay used to be GL_LINES; it is now triangles, because
+    // core-profile GL gives no usable line width (1 px outright under
+    // macOS's profile) and the Bond Editor offers a width control. That
+    // change is exactly the kind a compile cannot see: a wrong winding, a
+    // stale primitive mode or a zero-radius quad all produce a frame with
+    // nothing in it, and a frame with nothing in it is still a frame.
+    //
+    // So the checks are on PIXELS, and they are the three statements the
+    // control makes: the overlay is drawn at all; the width knob changes
+    // how much of it is drawn; and the three line styles differ from each
+    // other in the direction their names promise.
+    std::printf("The hydrogen-bond overlay is drawn, and its width is a "
+                "width:\n");
+    {
+        using render::HydrogenBondLineStyle;
+        const QImage none =
+            renderHydrogenBonds(gl, HydrogenBondLineStyle::Dashed, 1.5f, false);
+        const QImage dashed =
+            renderHydrogenBonds(gl, HydrogenBondLineStyle::Dashed, 1.5f);
+        const QImage thick =
+            renderHydrogenBonds(gl, HydrogenBondLineStyle::Dashed, 6.0f);
+        const QImage solid =
+            renderHydrogenBonds(gl, HydrogenBondLineStyle::Solid, 1.5f);
+        const QImage dotted =
+            renderHydrogenBonds(gl, HydrogenBondLineStyle::Dotted, 1.5f);
+        const int emptyPixels = drawnPixels(none);
+        const int dashedPixels = drawnPixels(dashed);
+        const int thickPixels = drawnPixels(thick);
+        const int solidPixels = drawnPixels(solid);
+        const int dottedPixels = drawnPixels(dotted);
+        std::printf("       drawn pixels: none=%d dashed=%d thick=%d "
+                    "solid=%d dotted=%d\n",
+                    emptyPixels, dashedPixels, thickPixels, solidPixels,
+                    dottedPixels);
+        check(emptyPixels == 0,
+              "an empty overlay stream draws nothing — so every count below "
+              "is the overlay and only the overlay");
+        check(dashedPixels > 100,
+              "the default dashed overlay is genuinely on screen (triangles, "
+              "front and back faces both, since the main pass culls neither)");
+        check(thickPixels > 2 * dashedPixels,
+              "width 6 covers several times what width 1.5 does — the "
+              "control is a width, not a no-op the way glLineWidth would be "
+              "here");
+        check(solidPixels > dashedPixels,
+              "solid covers more than dashed: same marks, no gaps");
+        check(dottedPixels < dashedPixels,
+              "and dotted covers less: the same spacing with shorter marks");
     }
 
     std::printf(failures == 0 ? "\nAll translucent-render checks passed.\n"

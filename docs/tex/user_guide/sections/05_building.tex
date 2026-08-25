@@ -715,3 +715,90 @@ to see to generalize, from one generated set.
 The generated trajectory opens immediately as a scrubbable tab, so the
 displacement magnitude can be judged by eye --- and regenerated with a
 different seed or amplitude --- before it is saved anywhere.
+
+\section{2D Ripples}
+\label{sec:ripples}
+
+\menu{Modules}\menusep\menu{2D Materials}\menusep\menu{2D Ripples} imposes a
+sinusoidal out-of-plane corrugation on a monolayer supercell, and contracts
+the cell in-plane so the sheet's own length is unchanged. It is the one entry
+on that menu that \emph{produces} a structure --- the four below it read one
+--- and, like Random Noise Setup, it is a pure in-process generator with no
+script and no job.
+
+A monolayer built by any of the 2D builders comes out perfectly flat, and a
+real one is not: suspended graphene and every other 2D crystal carries static
+ripples, and their amplitude is what couples to the electronic structure, the
+bending rigidity and the effective membrane area.
+
+\subsection{The profile}
+
+The displacement is along the out-of-plane normal, sinusoidal in the in-plane
+\emph{fractional} coordinates:
+\[
+  h(f_1, f_2) = A\,\sin(2\pi n_1 f_1)\,\sin(2\pi n_2 f_2),
+  \qquad
+  h(f_1) = A\,\sin(2\pi n_1 f_1).
+\]
+
+Fractional, not Cartesian, and that is what makes it work on the cells these
+materials actually have. Written as $\sin(2\pi x/L_x)$ the profile is
+periodic only in an orthogonal cell; written in fractional coordinates with
+an \emph{integer} number of periods it is periodic by construction for any
+cell shape --- which matters immediately, because graphene, h-BN and the TMDs
+all have in-plane vectors at $120^\circ$. A supercell of graphene's primitive
+cell is the ordinary case here, not the awkward one.
+
+\begin{description}
+  \item[\ui{Out-of-plane axis}] Seeded from the geometry and left editable.
+    Getting it wrong does not produce a slightly wrong sheet --- it
+    corrugates the structure sideways.
+  \item[\ui{Direction}] Both in-plane directions (an egg-box corrugation),
+    or one only (straight crests running across the sheet).
+  \item[\ui{Amplitude A}] Peak height, so the sheet spans $2A$ between its
+    lowest and highest points.
+  \item[\ui{Periods per cell}] A whole number, per in-plane axis. The
+    control has no other setting: fractional 0 and 1 are the same periodic
+    image, so a fractional period count is a seam in the sheet that no
+    amount of relaxation repairs.
+  \item[\ui{Contract the cell to preserve arc length}] On by default.
+\end{description}
+
+\subsection{The in-plane contraction}
+
+Rippling a sheet does not stretch it: the extra path the ripple takes comes
+out of the \emph{footprint}. Leaving the cell at its flat length while
+displacing the atoms applies a tensile strain equal to the whole arc-length
+excess, silently, and growing as $A^2$. So each rippled cell vector is
+contracted to the $L$ satisfying
+\[
+  \int_0^{L}\sqrt{1 + (\mathrm{d}h/\mathrm{d}x)^2}\;\mathrm{d}x = L_0 ,
+\]
+solved numerically. The leading behaviour $L_0 - L \approx \pi^2 n^2 A^2/L$
+is an anchor for the numerics, not a substitute: over a 25\,\AA{} cell it is
+out by 0.11\,\% of the cell length at $A = 2$\,\AA{} and 0.69\,\% at
+$A = 3$\,\AA{} --- that much accidental tensile strain, for free.
+
+Only the direction(s) the profile varies along are contracted, the lattice
+angle survives exactly, and the vacuum axis is untouched. Measured on a
+$6\times6$ graphene supercell at $A = 0.6$\,\AA: the mean C--C bond goes from
+1.420282\,\AA{} flat to 1.423687\,\AA{} ($+0.24\,\%$) with the contraction,
+against 1.435091\,\AA{} ($+1.04\,\%$) without it.
+
+\subsection{The amplitude series}
+
+\ui{Amplitude series} generates a whole ramp instead of a single structure:
+$N$ frames from \ui{A minimum} to \ui{A maximum}, opened as one scrubbable
+trajectory. This is the point of the module --- a single rippled sheet
+answers nothing; $E(A)$ does. Save it and load it into an Orchestration
+\textbf{Structure Container} node to fan a calculation out over the series.
+
+Every frame is a full build at its own amplitude, contraction included: the
+contraction is quadratic in $A$, so an interpolated series would be right
+only at its two ends. Each frame carries its own amplitude as the per-atom
+scalar field \texttt{ripple\_amplitude}, which survives an extended-XYZ round
+trip.
+
+An amplitude the cell cannot hold is refused rather than clamped --- a
+sinusoid of amplitude $A$ with $n$ periods is at least $4nA$ long whatever
+its footprint --- and the wizard says so before \ui{Generate} is pressed.

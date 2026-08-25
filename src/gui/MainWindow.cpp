@@ -70,6 +70,7 @@
 #include "gui/ThermodynamicIntegrationWizard.hpp"
 #include "gui/RandomNoiseViewer.hpp"
 #include "gui/RandomNoiseWizard.hpp"
+#include "gui/TwoDRipplesWizard.hpp"
 #include "gui/CddWizard.hpp"
 #include "gui/CondaEnvs.hpp"
 #include "gui/ConvergenceResultsWindow.hpp"
@@ -1818,6 +1819,17 @@ void MainWindow::createMenusAndDocks()
     // analyze census/geometry, analyze decoration order — and gets its own
     // submenu immediately below rather than continuing to grow this one.
     QMenu* twoDimensionalMenu = modulesMenu->addMenu(tr("&2D Materials"));
+    // First, and behind a separator: this is the only entry that PRODUCES a
+    // sheet. The four below all read one — a builder goes ahead of the
+    // readouts that consume it, and the separator marks the change of kind
+    // (the same shape the Graphene Oxide menu uses for build-then-analyze).
+    twoDimensionalMenu->addAction(tr("2D &Ripples…"), this,
+                                  &MainWindow::open2DRipples)
+        ->setToolTip(tr("Sinusoidal out-of-plane corrugation of a monolayer "
+                        "supercell, with the in-plane cell contracted so the "
+                        "sheet's arc length is preserved — one structure, or "
+                        "a whole amplitude series as a trajectory"));
+    twoDimensionalMenu->addSeparator();
     twoDimensionalMenu->addAction(tr("2D &Bands…"), this,
                                   &MainWindow::show2DBands)
         ->setToolTip(tr("Band structure of a sheet as surfaces "
@@ -9087,6 +9099,53 @@ void MainWindow::addRandomNoise()
                        "tab, then File → Save Trajectory As… to evaluate it "
                        "in Orchestration.")
                         .arg(frames.size() - 1));
+            });
+
+    wizard.exec();
+}
+
+void MainWindow::open2DRipples()
+{
+    if (!ensureAseAvailable())
+        return;
+    Document* doc = currentDocument();
+    if (!doc || !doc->structure || doc->structure->empty()) {
+        statusBar()->showMessage(tr("Open a 2D structure first."));
+        return;
+    }
+
+    // Captured before any tab is added, for the same reason Random Noise
+    // Setup captures it: regenerating would otherwise name the second build
+    // after the first one's tab.
+    const QString baseName = doc->fileName;
+
+    TwoDRipplesWizard wizard(doc->structure, this);
+    connect(&wizard, &TwoDRipplesWizard::structuresGenerated, this,
+            [this, baseName](
+                const std::vector<std::shared_ptr<core::Structure>>& frames) {
+                if (frames.empty())
+                    return;
+                if (frames.size() == 1) {
+                    // One amplitude: a plain document, because a
+                    // single-frame "trajectory" is a timeline with one stop
+                    // on it.
+                    addDocument(frames.front(),
+                                tr("%1 (rippled)").arg(baseName));
+                    statusBar()->showMessage(
+                        tr("Rippled %1 (%2 atoms)")
+                            .arg(baseName)
+                            .arg(frames.front()->size()));
+                    return;
+                }
+                addTrajectoryDocument(frames,
+                                      tr("%1 (ripples ×%2)")
+                                          .arg(baseName)
+                                          .arg(frames.size()));
+                statusBar()->showMessage(
+                    tr("Generated %1 rippled structures — scrub the new tab, "
+                       "then File → Save Trajectory As… to scan the "
+                       "amplitude in Orchestration.")
+                        .arg(frames.size()));
             });
 
     wizard.exec();
